@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 02 · The Message Relay</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
+<script src="../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 02 · Transactional Outbox</p>
+  <h1>The Message Relay</h1>
+  <p class="subtitle">The table, the claim query, and the one design decision the whole
+  relay turns on.</p>
+</header>
+
+<p><strong>The win for this lesson:</strong> by the end you can write the outbox DDL and the
+claim query from memory, justify every clause in both, and answer the follow-up that
+separates people who have read about this from people who have run it — <em>how long do you
+hold the lock?</em> This is the lesson with the primitive you flagged as new, so it goes
+slowly and it earns each line.</p>
+
+<p>Lesson 01 ended with one commit and no publisher. Something still has to publish. That
+something is the <em>message relay</em>: a separate process, the only component in the system
+that talks to the broker.</p>
+
+<h2>What the relay must do</h2>
+
+<p>Three steps, in a loop, forever:</p>
+
+<ol>
+  <li><strong>Claim</strong> a batch of unpublished rows — and stop any other worker
+      claiming the same ones.</li>
+  <li><strong>Publish</strong> each to the broker.</li>
+  <li><strong>Mark</strong> them done so they are never published again.</li>
+</ol>
+
+<p>Every one of those steps can fail, and there will be several relay workers running at
+once — you do not get to assume a single instance, because a single instance is a single
+point of failure and cannot be deployed without downtime. Hold both facts while you read
+the rest.</p>
+
+<h2>The table</h2>
+
+<pre><code class="language-sql">CREATE TABLE outbox_message (
+    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    message_id    uuid        NOT NULL DEFAULT gen_random_uuid(),
+    aggregate_type text       NOT NULL,
+    aggregate_id  uuid        NOT NULL,
+    event_type    text        NOT NULL,
+    payload       jsonb       NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    published_at  timestamptz,
+    attempts      smallint    NOT NULL DEFAULT 0,
+    last_error    text
+);
+
+CREATE INDEX outbox_unpublished_idx
+    ON outbox_message (id)
+    WHERE published_at IS NULL;</code></pre>
+
+<p class="caption">Ten columns and one index. The index is not an optimisation — see below.</p>
+
+<p>Why each column is there, because you will be asked:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Column</th><th>What it buys you</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>id bigint</code> identity</td>
+      <td>A cheap monotonic insertion order to sort and page by. Not a commit order — that
+      distinction has its own trap below.</td>
+    </tr>
+    <tr>
+      <td><code>message_id uuid</code></td>
+      <td>The <em>stable business identity</em> of the message, generated once at insert and
+      carried onto the broker. Redeliveries share it, which is what lets a consumer
+      deduplicate. Separate from <code>id</code> on purpose: <code>id</code> is a storage
+      detail, <code>message_id</code> is part of your contract.</td>
+    </tr>
+    <tr>
+      <td><code>aggregate_type</code>, <code>aggregate_id</code></td>
+      <td>What the event is <em>about</em>. Drives routing, and later drives per-aggregate
+      ordering. Debezium's outbox router uses exactly this pair, which is a good sign you
+      have the shape right.</td>
+    </tr>
+    <tr>
+      <td><code>payload jsonb</code></td>
+      <td>The message body, already serialised. The relay must never need to load your
+      domain objects — it is a dumb pipe, and that is a feature.</td>
+    </tr>
+    <tr>
+      <td><code>published_at</code></td>
+      <td><code>NULL</code> means "owed". The entire work queue is defined by this one
+      nullable column.</td>
+    </tr>
+    <tr>
+      <td><code>attempts</code>, <code>last_error</code></td>
+      <td>Your only defence against a poison message. Add them now; retrofitting them during
+      an incident is not fun.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout insight">
+  <span class="label">Why the index is partial</span>
+  <p><code>WHERE published_at IS NULL</code> means the index contains only the
+  <em>backlog</em> — normally a handful of rows — no matter how many million published rows
+  sit in the table. The claim query's cost tracks work outstanding rather than history. A
+  plain index on <code>(published_at, id)</code> would grow forever and you would feel it.
+  This one line is the difference between a relay that stays fast for years and one that
+  slowly dies.</p>
+</div>
+
+<h2>First attempt, and why it breaks</h2>
+
+<p>The obvious query:</p>
+
+<pre><code class="language-sql">SELECT * FROM outbox_message
+WHERE published_at IS NULL
+ORDER BY id
+LIMIT 100;</code></pre>
+
+<p>Run two workers. Both take the snapshot, both see the same hundred rows, both publish
+them. Every message goes out twice, forever — not as a rare crash artefact but as the steady
+state. Unacceptable.</p>
+
+<p>So reach for a lock:</p>
+
+<pre><code class="language-sql">SELECT * FROM outbox_message
+WHERE published_at IS NULL
+ORDER BY id
+LIMIT 100
+FOR UPDATE;</code></pre>
+
+<p>This is <em>correct</em>. It is also useless. Worker B blocks on the first row worker A
+has locked, and waits there until A commits. Postgres then re-checks the row, finds
+<code>published_at</code> is no longer <code>NULL</code>, and drops it from B's result. B
+was safe, and B did nothing for the length of A's entire publish batch. You have bought
+correctness by serialising your worker pool down to one worker. Add nine more and throughput
+does not move.</p>
+
+<aside class="sidenote">Note what <code>FOR UPDATE</code> costs even when nothing contends.
+The Postgres docs are blunt: <em>"locking a row might cause a disk write, e.g., <code>SELECT
+FOR UPDATE</code> modifies selected rows to mark them locked, and so will result in disk
+writes."</em> Claiming is a write, not a read.</aside>
+
+<h2><code>SKIP LOCKED</code></h2>
+
+<p>The fix is one clause. From the primary source:</p>
+
+<blockquote>
+  With <code>SKIP LOCKED</code>, any selected rows that cannot be immediately locked are
+  skipped. Skipping locked rows provides an inconsistent view of the data, so this is not
+  suitable for general purpose work, but can be used to avoid lock contention with multiple
+  consumers accessing a queue-like table.
+  <cite><a href="https://www.postgresql.org/docs/current/sql-select.html">PostgreSQL docs —
+  SELECT, The Locking Clause</a></cite>
+</blockquote>
+
+<p>Learn that sentence. It concedes the flaw and licenses the exception in the same breath,
+and an outbox is precisely the licensed case: a queue-like table with multiple consumers,
+where an inconsistent view is <em>fine</em> because no worker needs to see the whole queue —
+it only needs some rows nobody else is touching.</p>
+
+<pre><code class="language-sql">SELECT id, message_id, event_type, payload
+FROM outbox_message
+WHERE published_at IS NULL
+ORDER BY id
+LIMIT 100
+FOR UPDATE SKIP LOCKED;</code></pre>
+
+<p class="caption">The claim query. Write this from memory until it is boring.</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Clause</th><th>What it buys</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>WHERE published_at IS NULL</code></td>
+      <td>Defines the work queue, and matches the partial index exactly.</td>
+    </tr>
+    <tr>
+      <td><code>ORDER BY id</code></td>
+      <td>Oldest first, so nothing starves. Read the caveat below before you claim it gives
+      you ordering.</td>
+    </tr>
+    <tr>
+      <td><code>LIMIT 100</code></td>
+      <td>Bounds the transaction. Too small and you round-trip constantly; too large and you
+      hold locks and an open transaction for a long time.</td>
+    </tr>
+    <tr>
+      <td><code>FOR UPDATE</code></td>
+      <td>Takes an exclusive row lock, held <strong>until the transaction ends</strong> —
+      that duration is the whole design decision, below.</td>
+    </tr>
+    <tr>
+      <td><code>SKIP LOCKED</code></td>
+      <td>Rows another worker already holds are passed over instead of waited on. This is
+      what turns N workers into N× throughput.</td>
+    </tr>
+  </tbody>
+</table>
+
+<aside class="sidenote"><code>SKIP LOCKED</code> arrived in PostgreSQL 9.5. Its sibling
+<code>NOWAIT</code> raises an error instead of skipping — right for a single-owner claim,
+wrong for a worker pool, where erroring out on any contention is exactly the behaviour you
+are trying to avoid.</aside>
+
+<h2>Two things the docs say that will trip you</h2>
+
+<div class="callout trap">
+  <span class="label"><code>ORDER BY</code> runs first</span>
+  <p>The docs: <em>"It is possible for a <code>SELECT</code> command running at the
+  <code>READ COMMITTED</code> transaction isolation level and using <code>ORDER BY</code> and
+  a locking clause to return rows out of order. This is because <code>ORDER BY</code> is
+  applied first."</em> Sorting happens before locking, so with <code>SKIP LOCKED</code> your
+  batch is <em>"up to 100 of the oldest candidate rows, minus whichever were already
+  claimed"</em> — not "the oldest 100". Holes are normal. If you said <code>ORDER BY id</code>
+  gives you ordered delivery, you would be wrong, and this is where Lesson 05 starts.</p>
+</div>
+
+<p>The second is about <code>LIMIT</code>: <em>"If a <code>LIMIT</code> is used, locking stops
+once enough rows have been returned to satisfy the limit (but note that rows skipped over by
+<code>OFFSET</code> will get locked)."</em> The parenthesis is the point — never paginate an
+outbox with <code>OFFSET</code>. You would lock rows you are not even going to look at,
+blocking other workers from claiming them for nothing.</p>
+
+<h2>The real decision: how long do you hold the lock?</h2>
+
+<p>The row lock lasts until the transaction ends. The publish is a network call to the
+broker. So: does the publish happen <em>inside</em> the claiming transaction, or do you
+commit the claim first and publish after? This is the question behind "so how does your relay
+work?", and it is where an interviewer finds out whether you have thought about it.</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Approach</th><th>What you get, what you pay</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>A — hold the lock across the publish</strong><br>
+      claim → publish → mark → <code>COMMIT</code></td>
+      <td><strong>Get:</strong> the lock <em>is</em> the claim, so there is no separate
+      bookkeeping and no way to leak a claim — a dead worker's transaction dies with its
+      connection and every row is instantly free.<br>
+      <strong>Pay:</strong> an open transaction spanning a network call. A slow broker holds
+      your transaction open, which pins the vacuum horizon and can bloat the table. A hung
+      broker parks a connection from your pool indefinitely.</td>
+    </tr>
+    <tr>
+      <td><strong>B — lease, then publish</strong><br>
+      claim + stamp <code>claimed_at</code> → <code>COMMIT</code> → publish → mark</td>
+      <td><strong>Get:</strong> transactions measured in milliseconds. Broker latency never
+      touches the database.<br>
+      <strong>Pay:</strong> the lease can leak. A worker that dies after committing its claim
+      leaves rows stamped and unpublished, so you need an expiry and a reaper — and reaping
+      means republishing rows that may already have gone out. More duplicates.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Pick A by default</strong>, and say why out loud: with a bounded batch and an
+aggressive publish timeout, the transaction stays short, and you have removed an entire class
+of bug (leaked leases, reaper races) rather than managing it. Move to B when you have
+measured a real problem — a broker whose tail latency you do not control, or transaction
+duration showing up in your vacuum metrics. That is the shape of a good answer: a default, a
+reason, and a named trigger for changing your mind.</p>
+
+<div class="callout insight">
+  <span class="label">Neither one is exactly-once</span>
+  <p>In A, the publish can succeed and the <code>COMMIT</code> then fail — republished on
+  restart. In B, the mark-as-published can fail after the publish — republished when the
+  lease expires. Lesson 01's price is not an accident of implementation; it survives every
+  implementation. Say so before you are asked.</p>
+</div>
+
+<h2>Approach A in Python</h2>
+
+<pre><code class="language-python">from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+BATCH = 100
+
+async def drain_once(session: AsyncSession, broker: Broker) -> int:
+    """Claim, publish and mark one batch. Returns rows handled."""
+    async with session.begin():                     # one transaction, start to finish
+        rows = (
+            await session.scalars(
+                select(OutboxMessage)
+                .where(OutboxMessage.published_at.is_(None))
+                .order_by(OutboxMessage.id)
+                .limit(BATCH)
+                .with_for_update(skip_locked=True)  # ← the whole lesson
+            )
+        ).all()
+
+        for row in rows:
+            await broker.publish(
+                row.event_type,
+                row.payload,
+                message_id=str(row.message_id),     # consumer dedup key, Lesson 03
+            )
+            row.published_at = func.now()           # clock stays in the database
+
+    return len(rows)                                # COMMIT released the locks</code></pre>
+
+<p class="caption"><code>with_for_update(skip_locked=True)</code> is how SQLAlchemy 2.0
+spells it. <code>read=True</code> would give you <code>FOR SHARE</code> — not what you
+want.</p>
+
+<p>And the loop around it. Note the back-off: a full batch means there is more waiting, so go
+straight round again; an empty batch means sleep rather than hammer the database.</p>
+
+<pre><code class="language-python">MIN_SLEEP = 0.05
+MAX_SLEEP = 1.0
+
+async def run_relay(sessionmaker: async_sessionmaker, broker: Broker) -> None:
+    sleep_for = MIN_SLEEP
+    while True:
+        async with sessionmaker() as session:
+            handled = await drain_once(session, broker)
+
+        if handled == BATCH:
+            sleep_for = MIN_SLEEP
+            continue                          # backlog remains — go straight round again
+
+        sleep_for = min(sleep_for * 2, MAX_SLEEP) if handled == 0 else MIN_SLEEP
+        await asyncio.sleep(sleep_for)</code></pre>
+
+<p class="caption">A fresh session per batch. That sleep is the latency floor for every event
+in the system — it only grows while the queue is genuinely empty, and collapses back the
+moment work appears.</p>
+
+<aside class="sidenote">Postgres <code>LISTEN</code>/<code>NOTIFY</code> can wake the relay
+the instant a row lands, collapsing that latency floor. It layers <em>on top of</em> polling
+and never replaces it — notifications are not durable, so anything sent while the relay is
+disconnected is simply lost. Polling is the guarantee; <code>NOTIFY</code> is the
+speed-up.</aside>
+
+<h2>Approach B, if you need it</h2>
+
+<p>The lease claim is one statement: a sub-select that locks, wrapped in an
+<code>UPDATE … RETURNING</code> that stamps. The docs cover the sub-select case explicitly —
+<em>"When a locking clause appears in a sub-<code>SELECT</code>, the rows locked are those
+returned to the outer query by the sub-query"</em> — so the lock and the stamp cannot
+disagree.</p>
+
+<pre><code class="language-sql">WITH claimed AS (
+    SELECT id FROM outbox_message
+    WHERE published_at IS NULL
+      AND (claimed_at IS NULL OR claimed_at &lt; now() - interval '5 minutes')
+    ORDER BY id
+    LIMIT 100
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE outbox_message o
+   SET claimed_at = now(),
+       claimed_by = $1,
+       attempts   = o.attempts + 1
+  FROM claimed c
+ WHERE o.id = c.id
+RETURNING o.id, o.message_id, o.event_type, o.payload;</code></pre>
+
+<p class="caption">The claim commits with the transaction; the publish happens after. The
+five-minute clause <em>is</em> the reaper: expired leases simply become claimable again.</p>
+
+<p>This needs two columns the DDL above does not have, and leaving them out of the main
+schema is deliberate — Approach A never touches them, and a column nobody writes is a column
+that will confuse the next person. Add them when you adopt B, not before:</p>
+
+<pre><code class="language-sql">ALTER TABLE outbox_message
+    ADD COLUMN claimed_at timestamptz,
+    ADD COLUMN claimed_by text;</code></pre>
+
+<p class="caption">Both nullable, both meaningless under Approach A. The cost of B is not
+really these two columns — it is that <code>claimed_at</code> is now a piece of state with a
+clock attached, and every reasoning step about the relay has to account for a lease that can
+expire while the worker holding it is alive and merely slow.</p>
+
+<p>Incrementing <code>attempts</code> during the claim rather than on failure is deliberate:
+a row that kills the worker mid-publish still gets counted, so a poison message cannot loop
+forever undetected. Filtering on <code>attempts &lt; 10</code> then quarantines it instead of
+letting it block the queue.</p>
+
+<h2>The trap that eats messages</h2>
+
+<div class="callout trap">
+  <span class="label">Never track progress with a cursor</span>
+  <p>It is tempting to drop the <code>published_at</code> flag and keep a high-water mark:
+  <code>WHERE id &gt; last_seen_id</code>. It is fast, and it silently loses messages.</p>
+  <p><code>id</code> is assigned by <code>nextval</code> when the row is inserted, not when
+  its transaction commits. Transaction T1 takes id 100 and stays open; T2 takes id 101 and
+  commits. Your relay reads, sees 101, records <code>last_seen_id = 101</code>. T1 then
+  commits — and row 100 becomes visible <em>behind</em> your cursor. It is never published,
+  and nothing anywhere reports an error. The docs also guarantee gaps outright:
+  <em>"the value obtained by <code>nextval</code> is not reclaimed for re-use if the calling
+  transaction later aborts… PostgreSQL sequence objects cannot be used to obtain 'gapless'
+  sequences."</em></p>
+  <p>The nullable <code>published_at</code> column is immune to all of it. A row is owed
+  until someone marks it done, whenever it happens to become visible. Cheap, boring,
+  correct — and knowing <em>why</em> the clever version is wrong is a strong signal in an
+  interview.</p>
+</div>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>Write the table and the claim query from memory; justify the partial index, the
+  <code>FOR UPDATE</code>, and the <code>SKIP LOCKED</code> separately; scale the relay
+  horizontally without double-publishing; and answer the lock-duration follow-up with a
+  default, a reason and a trigger to switch.</p>
+</div>
+
+<h2>Name what is still broken</h2>
+
+<p>Three things this lesson deliberately did not fix. Naming them yourself, unprompted, reads
+as experience:</p>
+
+<ul>
+  <li><strong>Ordering is gone.</strong> <code>SKIP LOCKED</code> guarantees it: workers take
+  disjoint, out-of-order slices, so message 5 can hit the broker before message 4. That is
+  the microservices.io drawback — <em>"tricky to publish events in order"</em> — and it is
+  Lesson 05.</li>
+  <li><strong>Duplicates are still yours to handle.</strong> The <code>message_id</code>
+  column exists for it, but nothing consumes it yet. Lesson 03.</li>
+  <li><strong>The table grows forever.</strong> Marking rows published keeps them.
+  Lesson 06.</li>
+</ul>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question — guessing until it turns green is recognition, not recall.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">Two relay workers run the claim query with plain <code>FOR UPDATE</code>
+    (no <code>SKIP LOCKED</code>). What happens?</p>
+    <ul class="options">
+      <li><button data-opt="a">Both get the same batch and publish everything twice</button></li>
+      <li><button data-opt="b">The second worker errors out on the lock conflict</button></li>
+      <li><button data-opt="c">It is correct, but the second worker waits its turn</button></li>
+      <li><button data-opt="d">Postgres splits the rows between them automatically</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>That is the <em>no-locking</em> failure.
+    <code>FOR UPDATE</code> does prevent it — at the cost of throughput.</p></div>
+    <div class="feedback" data-for="b"><p>That is <code>NOWAIT</code>. Plain
+    <code>FOR UPDATE</code> waits rather than erroring.</p></div>
+    <div class="feedback" data-for="c"><p>Correct — and say both halves. Safe, but serialised:
+    B waits on the first locked row, then finds it no longer matches
+    <code>published_at IS NULL</code> and drops it. Ten workers do one worker's work.</p></div>
+    <div class="feedback" data-for="d"><p>No. Nothing distributes rows for you; that is
+    exactly the job <code>SKIP LOCKED</code> does.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Why is <code>SKIP LOCKED</code> acceptable here when the docs warn it
+    gives an inconsistent view of the data?</p>
+    <ul class="options">
+      <li><button data-opt="a">The outbox is append-only, so the view cannot drift</button></li>
+      <li><button data-opt="b">A worker needs some rows nobody holds, not a full view</button></li>
+      <li><button data-opt="c">The transaction is short, so inconsistency cannot bite</button></li>
+      <li><button data-opt="d">The partial index makes the skipped rows invisible</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>It is not append-only — <code>published_at</code>
+    gets updated. And the inconsistency comes from skipping, not from writes.</p></div>
+    <div class="feedback" data-for="b"><p>Exactly. The docs license precisely this case:
+    "multiple consumers accessing a queue-like table". Correctness needs disjoint claims,
+    not a complete view.</p></div>
+    <div class="feedback" data-for="c"><p>Duration is irrelevant — a short transaction with
+    an inconsistent view is still inconsistent. The workload is what makes it safe.</p></div>
+    <div class="feedback" data-for="d"><p>The index affects which rows are cheap to find, not
+    which are locked. Skipping happens at lock time regardless.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">The relay publishes to the broker <em>inside</em> the claiming
+    transaction. What is the main cost?</p>
+    <ul class="options">
+      <li><button data-opt="a">An open transaction spans a network call, holding locks</button></li>
+      <li><button data-opt="b">Duplicates become possible, and otherwise would not be</button></li>
+      <li><button data-opt="c">Other workers block on locked rows and stop progressing</button></li>
+      <li><button data-opt="d">The publish is rolled back if the transaction aborts</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Right. Broker latency becomes database transaction
+    duration: locks held longer, vacuum horizon pinned, a pool connection tied up if the
+    broker hangs. It is still the right default — just know the price.</p></div>
+    <div class="feedback" data-for="b"><p>Duplicates are possible either way. Commit can fail
+    after a successful publish; that is at-least-once, and it is unavoidable.</p></div>
+    <div class="feedback" data-for="c"><p><code>SKIP LOCKED</code> is what stops that —
+    other workers skip past and claim different rows.</p></div>
+    <div class="feedback" data-for="d"><p>It cannot be. The broker is not a transaction
+    participant — that was the whole point of Lesson 01.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">Why not replace <code>published_at</code> with a stored high-water mark
+    (<code>WHERE id &gt; last_seen_id</code>)?</p>
+    <ul class="options">
+      <li><button data-opt="a">Sequence gaps from aborted transactions leave id holes</button></li>
+      <li><button data-opt="b">A bigint cursor eventually overflows and wraps to zero</button></li>
+      <li><button data-opt="c">You would lose the ability to retry any failed publish</button></li>
+      <li><button data-opt="d">Ids are assigned at insert, so a slow commit lands late</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Gaps are real, but harmless on their own — skipping
+    an id that never existed costs nothing. The lethal part is ordering.</p></div>
+    <div class="feedback" data-for="b"><p>A bigint will not overflow in any timeframe you
+    need to care about.</p></div>
+    <div class="feedback" data-for="c"><p>Retry is a real consequence, but secondary. The
+    primary failure is silent message loss.</p></div>
+    <div class="feedback" data-for="d"><p>Yes — and this is the answer that impresses.
+    <code>nextval</code> fires at insert, not at commit, so a long transaction's row becomes
+    visible <em>behind</em> a cursor that has already moved past it. Never published, no
+    error anywhere.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">What does <code>WHERE published_at IS NULL</code> on the index buy that
+    a plain index on the same column would not?</p>
+    <ul class="options">
+      <li><button data-opt="a">It stops two workers from claiming the very same row</button></li>
+      <li><button data-opt="b">The index holds only the backlog, so cost tracks work</button></li>
+      <li><button data-opt="c">It enforces that each row is published at most once</button></li>
+      <li><button data-opt="d">It lets Postgres skip locked rows without a heap fetch</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>That is <code>FOR UPDATE SKIP LOCKED</code>. An
+    index never provides mutual exclusion.</p></div>
+    <div class="feedback" data-for="b"><p>Correct. A few backlog rows indexed instead of every
+    row ever published — the claim query stays the same speed on day 1 and year 3.</p></div>
+    <div class="feedback" data-for="c"><p>No constraint is being enforced; a partial index on
+    a non-unique column enforces nothing.</p></div>
+    <div class="feedback" data-for="d"><p>Locking always touches the heap — the docs note it
+    may even cause a disk write.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it out loud</h2>
+
+<div class="recall">
+  <p class="prompt">Whiteboard, no notes, 90 seconds: draw the outbox table (columns and the
+  index), write the claim query, and talk through what each clause buys — then answer "how
+  long do you hold the lock?" before anyone asks you. Then reveal and compare.</p>
+  <button class="reveal">Reveal model answer</button>
+  <div class="answer">
+    <p>"The table is id, message_id, aggregate type and id, event type, jsonb payload,
+    created_at, a nullable published_at, and attempts plus last_error for poison messages.
+    The index is partial — on id, <code>WHERE published_at IS NULL</code> — so it only
+    contains the backlog and the claim query never gets slower as history grows.</p>
+    <p>The relay polls: <code>SELECT … WHERE published_at IS NULL ORDER BY id LIMIT 100 FOR
+    UPDATE SKIP LOCKED</code>. <code>FOR UPDATE</code> stops two workers taking the same row;
+    without <code>SKIP LOCKED</code> that would be correct but serialised, since the second
+    worker just blocks on the first locked row. <code>SKIP LOCKED</code> makes them skip past
+    to rows nobody holds, so workers take disjoint slices and scale horizontally. The docs
+    call it unsuitable for general work but right for multiple consumers on a queue-like
+    table — which is exactly what this is.</p>
+    <p>I publish inside that transaction and commit, so the lock is the claim and a dead
+    worker frees its rows automatically. The cost is an open transaction across a network
+    call — bounded batch and a tight publish timeout keep it short. If broker tail latency
+    became a problem I would switch to leasing: stamp claimed_at, commit, publish after, and
+    accept a reaper for expired leases.</p>
+    <p>Either way it is at-least-once — publish can succeed and the commit fail. And the
+    ordering is genuinely gone, because <code>SKIP LOCKED</code> hands out out-of-order
+    slices by design."</p>
+    <p><em>Score the parts you dropped, not the wording. Dropping "without SKIP LOCKED it
+    serialises" or the lock-duration trade-off is what costs you the follow-up.</em></p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<h2>Read this next</h2>
+
+<p><strong>Primary source:</strong>
+<a href="https://www.postgresql.org/docs/current/sql-select.html">PostgreSQL — SELECT, The
+Locking Clause</a>. Short. Read the whole clause section, including the
+<code>ORDER BY</code>-runs-first and <code>OFFSET</code> warnings — quoting the docs at an
+interviewer is disproportionately effective.</p>
+
+<p>Then <a href="https://microservices.io/patterns/data/polling-publisher.html">Pattern:
+Polling publisher</a>, which is two minutes and gives you the vocabulary plus the named
+drawback you will be defending in Lesson 05.</p>
+
+<h2>Coming next</h2>
+
+<p><strong><a href="0003-at-least-once-and-the-idempotent-consumer.html">Lesson 03 —
+at-least-once and the idempotent consumer</a>.</strong> The <code>message_id</code> column
+pays off: where every duplicate is born, how a consumer deduplicates, the inbox pattern, and
+what RabbitMQ does and does not do for you. It also fills in the <code>broker.publish</code>
+call above — which, on RabbitMQ, hides a default that can discard every message while
+reporting success.</p>
+
+<p class="ask-teacher">Push back on any of this. Good things to throw at me now: "what batch
+size should I actually use?", "why not just use <code>LISTEN</code>/<code>NOTIFY</code> and
+skip polling?", "what happens if the relay falls behind?", or "is a Postgres table not just a
+worse queue than the queue I already have?"</p>
+
+<p class="nav-links">
+  <a href="0001-the-dual-write-problem.html">← Lesson 01</a>
+  <a href="0003-at-least-once-and-the-idempotent-consumer.html">Lesson 03 →</a>
+  <a href="../reference/glossary.html">Glossary</a>
+  <a href="../MISSION.md">Mission</a>
+  <a href="../RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

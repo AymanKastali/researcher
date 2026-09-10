@@ -1,0 +1,5 @@
+=== does the delivery limit count a polite nack?
+    quorum queue, x-delivery-limit=3, DLX bound, one poison message
+
+  basic.nack(requeue=true), limit=3: deliveries=12  still on queue=0  dead-lettered=0
+  channel closed without ack, limit=3: deliveries=4  still on queue=0  dead-lettered=0

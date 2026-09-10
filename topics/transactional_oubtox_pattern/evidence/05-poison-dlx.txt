@@ -1,0 +1,41 @@
+
+=== setup: 6 orders, order 3 is poison, x-delivery-limit=3
+
+=== the consumer's view
+    15:38:34.545 consumer  consuming order.paid.q <- order.# (single_active=True, prefetch=5, slow=0.0)
+    15:38:40.555 consumer  processed  6137d449-6467-4792-82cf-722312258c06 order=1 seq=1 redelivered=False
+    15:38:40.557 consumer  processed  59ab2c0b-674e-4a95-a27b-ca328437f902 order=2 seq=1 redelivered=False
+    15:38:40.558 consumer  POISON order=3 redelivered=False — rejecting, requeue
+    15:38:40.559 consumer  processed  032ec14d-863f-4481-9950-acfe797d236c order=4 seq=1 redelivered=False
+    15:38:40.562 consumer  processed  4d3e7c18-83ab-47cd-ab44-bdb3a1199a58 order=5 seq=1 redelivered=False
+    15:38:40.564 consumer  processed  9d643cd8-da92-4525-aa3c-9a3e1bea2062 order=6 seq=1 redelivered=False
+    15:38:40.564 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.566 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.567 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.568 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.570 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.571 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.573 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.574 consumer  POISON order=3 redelivered=True — rejecting, requeue
+    15:38:40.575 consumer  POISON order=3 redelivered=True — rejecting, requeue
+
+        [ ... 6,000+ more identical POISON lines, trimmed ... ]
+
+Traceback (most recent call last):
+  File "/home/qas/Documents/me/researcher/topics/transactional_oubtox_pattern/project/.venv/lib/python3.13/site-packages/aio_pika/tools.py", line 336, in __task_inner
+    self.loop.call_soon(self.finished.set)
+  File "/home/qas/miniconda3/lib/python3.13/asyncio/base_events.py", line 833, in call_soon
+    self._check_closed()
+  File "/home/qas/miniconda3/lib/python3.13/asyncio/base_events.py", line 556, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Task was destroyed but it is pending!
+task: <Task pending name='Task-46' coro=<OneShotCallback.__task_inner() done, defined at /home/qas/Documents/me/researcher/topics/transactional_oubtox_pattern/project/.venv/lib/python3.13/site-packages/aio_pika/tools.py:316>>
+    15:38:52.510 dlq       0 message(s) on the dead-letter queue
+
+=== queue state
+    name	type	messages	messages_ready
+    requeue.probe.classic	classic	0	0
+    requeue.probe.quorum	quorum	0	0
+    order.paid.dlq	quorum	0	0
+    order.paid.q	quorum	1	1

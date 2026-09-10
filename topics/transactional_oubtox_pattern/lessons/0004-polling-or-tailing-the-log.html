@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 04 · Polling or Tailing the Log</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
+<script src="../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 04 · Transactional Outbox</p>
+  <h1>Polling or Tailing the Log</h1>
+  <p class="subtitle">The comparison question. What change data capture actually buys you,
+  what it does not, and why the bill arrives on your primary database.</p>
+</header>
+
+<p><strong>The win for this lesson:</strong> by the end you can answer <em>"why not just use
+CDC?"</em> in ninety seconds from mechanism rather than vibes — naming the one guarantee log
+tailing gives you that polling cannot, the guarantee it does <em>not</em> give you however
+often people claim otherwise, and the operational liability it puts on your primary. Then you
+can pick one, for this stack, and defend it.</p>
+
+<p>This is a <a href="../MISSION.md">mission</a> criterion in its own right, and it is the
+question interviewers reach for when they want to find out whether you have run this in anger
+or only read about it.</p>
+
+<h2>Both answers to the same question</h2>
+
+<p>Read the two pattern pages side by side and the first thing you notice is that they open
+identically. Both state their Context as <em>"You have applied the Transactional Outbox
+pattern"</em>, and both state the same Problem:</p>
+
+<blockquote>
+  How to publish messages/events into the outbox in the database to the message broker?
+  <cite><a href="https://microservices.io/patterns/data/polling-publisher.html">Pattern:
+  Polling publisher</a> and <a href="https://microservices.io/patterns/data/transaction-log-tailing.html">Pattern:
+  Transaction log tailing</a> — microservices.io</cite>
+</blockquote>
+
+<p>One answers <em>"publish messages by polling the database's outbox table."</em> The other
+answers <em>"tail the database transaction log and publish each message/event inserted into
+the outbox to the message broker."</em></p>
+
+<div class="callout insight">
+  <span class="label">CDC is not an alternative to the outbox</span>
+  <p>It is an alternative to the <strong>relay loop</strong>. The table from Lesson 02 stays,
+  the single-transaction insert from Lesson 01 stays, the inbox from Lesson 03 stays. Only the
+  mechanism that moves rows out of the table changes.</p>
+  <p>Say this early in an interview and you have reframed the question from "which pattern"
+  to "which relay implementation" — which is the correct frame, and a much easier argument to
+  win.</p>
+</div>
+
+<p>There is a genuinely different design in which CDC replaces the outbox table entirely —
+tail the <code>orders</code> table itself and derive events from row changes. That is a real
+option and a bad one: your events become your schema, every column rename is a breaking
+public API change, and you cannot emit an event that does not correspond to a row. Naming
+that design and rejecting it is worth a sentence. It is not what this lesson compares.</p>
+
+<h2>What disappears when you tail the log</h2>
+
+<p>Here is the table Debezium's Outbox Event Router expects by default, straight from the
+documentation:</p>
+
+<pre><code class="language-plaintext">Column        |          Type          | Modifiers
+--------------+------------------------+-----------
+id            | uuid                   | not null
+aggregatetype | character varying(255) | not null
+aggregateid   | character varying(255) | not null
+type          | character varying(255) | not null
+payload       | jsonb                  |</code></pre>
+
+<p class="caption">Five columns. <code>id</code> is the event's unique identifier,
+<code>aggregatetype</code> selects the destination topic, <code>aggregateid</code> becomes the
+message key — which is what gives you per-aggregate ordering downstream — and
+<code>payload</code> is the event body. All of them are remappable if your column names
+differ. Source: <a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html">Debezium
+— Outbox Event Router</a>.</p>
+
+<p>Hold that against Lesson 02's table and notice what is <em>missing</em>: no
+<code>published_at</code>, no <code>attempts</code>, no <code>last_error</code>, no partial
+index on unpublished rows. The router treats the outbox as an append-only queue — only
+<code>INSERT</code>s are expected, <code>DELETE</code>s are filtered out, and an
+<code>UPDATE</code> is a configuration error you can escalate to fatal.</p>
+
+<p>That single design choice deletes most of Lesson 02:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Polling relay</th><th>Log tailing</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>SELECT … FOR UPDATE SKIP LOCKED</code> to claim a batch</td>
+      <td><strong>Gone.</strong> There is one reader and it reads a stream, so there is
+      nothing to claim and no contention to skip.</td>
+    </tr>
+    <tr>
+      <td><code>UPDATE … SET published_at = now()</code> after publishing</td>
+      <td><strong>Gone.</strong> Progress lives in the replication slot's position, not in
+      your table. The row is never written twice.</td>
+    </tr>
+    <tr>
+      <td>Poll interval, batch size, a second query every 200 ms forever</td>
+      <td><strong>Gone.</strong> Changes are pushed as they are decoded, so the latency floor
+      that polling imposes disappears.</td>
+    </tr>
+    <tr>
+      <td>Duplicate source 3: a relay dying mid-batch replays the batch</td>
+      <td><strong>Gone.</strong> There is no batch to replay. Sources 1 and 2 from Lesson 03
+      survive intact — see below.</td>
+    </tr>
+    <tr>
+      <td>Retention: delete rows once <code>published_at</code> is set</td>
+      <td><strong>Still yours</strong>, and easier — the router filters deletes out, so
+      pruning the table emits nothing.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>An honest summary: log tailing removes a component you wrote and maintain, along with every
+bug in it. That is a real benefit and you should say so before you attack it.</p>
+
+<h3>The middle option: keep polling, but ring a doorbell</h3>
+
+<p>Between a timer and a replication slot there is a third choice that costs almost nothing:
+keep the polling relay exactly as it is, and wake it with <code>LISTEN</code>/<code>NOTIFY</code>
+fired from the producer's own transaction. Near-push latency, no slot, no new component.</p>
+
+<p>The property that makes it safe is that <code>NOTIFY</code> is transactional, and the
+PostgreSQL manual is explicit: <em>"if a <code>NOTIFY</code> is executed inside a transaction,
+the notify events are not delivered until and unless the transaction is committed."</em> A
+relay woken by the notification therefore always finds the row already visible. There is no
+window in which the doorbell rings before the row exists.</p>
+
+<p>Three details to have ready, all from the same page:</p>
+
+<ul>
+  <li>Duplicate signals collapse — <em>"If the same channel name is signaled multiple times
+  with identical payload strings within the same transaction, only one instance of the
+  notification event is delivered."</em> One wake-up per commit, not one per row, which is
+  what you want.</li>
+  <li>The payload is small — <em>"In the default configuration it must be shorter than 8000
+  bytes."</em> Treat it as a doorbell, never as the event.</li>
+  <li>The queue can fill, and the failure lands on the writer: <em>"If this queue becomes
+  full, transactions calling <code>NOTIFY</code> will fail at commit."</em> It is 8&nbsp;GB by
+  default, and it only backs up when a session holds a long transaction after
+  <code>LISTEN</code> — but the consequence is a failed business commit, so keep the fallback
+  timer and treat a missed notification as ordinary.</li>
+</ul>
+
+<p>It does not fix ordering, and it does not remove the sweep. It just moves the common case
+from "up to one poll interval" to "as fast as the relay can wake up".</p>
+
+<h2>The one thing polling cannot buy</h2>
+
+<p>Commit order. Not "roughly the order things happened" — the actual order the database
+committed them in, as a guarantee:</p>
+
+<blockquote>
+  Concurrent transactions are decoded in commit order, and only changes belonging to a
+  specific transaction are decoded between the <code>begin</code> and <code>commit</code>
+  callbacks.
+  <cite><a href="https://www.postgresql.org/docs/current/logicaldecoding-output-plugin.html">PostgreSQL
+  — Logical Decoding Output Plugins</a></cite>
+</blockquote>
+
+<p>Recall the trap Lesson 02 planted. A polling relay orders by <code>id</code>, and
+<code>id</code> comes from a sequence — but <code>nextval</code> fires when the row is
+<em>inserted</em>, not when its transaction <em>commits</em>. A long transaction can take id
+100 and commit after a short one that took id 101. Your relay reads id 100 first and publishes
+two events in the wrong order, having done nothing wrong. The locking clause makes it worse:
+<em>"ORDER BY is applied first"</em>, so a <code>SKIP LOCKED</code> batch is not even the
+oldest N rows.</p>
+
+<p>The write-ahead log has no such gap, because the log <em>is</em> the commit record. There
+is nothing to infer. The related guarantee falls out for free —
+<em>"aborted transactions and their contents never get decoded"</em> — though be precise: a
+polling relay never sees rolled-back rows either, because they were never committed. That one
+is a wash, and claiming it as a CDC advantage is the kind of over-reach an interviewer
+notices.</p>
+
+<div class="callout insight">
+  <span class="label">Order is won at the source and lost downstream</span>
+  <p>Commit order at the log is necessary, not sufficient. Publish those events to RabbitMQ,
+  run four consumers with a prefetch of 100, and they are reordered again immediately. CDC
+  buys you a correctly-ordered <em>stream</em>; keeping that order to the point of effect is a
+  separate problem, and it is Lesson 05.</p>
+</div>
+
+<h2>What does not change — and this is the answer that scores</h2>
+
+<p>Log tailing is <strong>still at-least-once</strong>. Its own pattern page lists both
+<em>"Guaranteed to be accurate"</em> as a benefit and <em>"Tricky to avoid duplicate
+publishing"</em> as a drawback, which sounds contradictory until you know the mechanism.
+Here it is:</p>
+
+<blockquote>
+  A logical slot will emit each change just once in normal operation. The current position of
+  each slot is persisted only at checkpoint, so in the case of a crash the slot might return
+  to an earlier LSN, which will then cause recent changes to be sent again when the server
+  restarts.
+  <cite><a href="https://www.postgresql.org/docs/current/logicaldecoding-explanation.html">PostgreSQL
+  — Logical Decoding Concepts</a></cite>
+</blockquote>
+
+<p>"Just once in normal operation" is not a guarantee; it is a description of the happy path.
+The slot's position is checkpointed, so a crash rewinds it and replays whatever fell between
+the last checkpoint and the failure. Add the connector's own crash-and-restart, and the
+publish-then-record gap that exists in <em>any</em> relay, and duplicate source 1 from Lesson
+03 is exactly where it was.</p>
+
+<div class="callout trap">
+  <span class="label">"CDC gives you exactly-once"</span>
+  <p>It does not, and this is the most common wrong answer in the whole topic. Log tailing
+  removes one of the three duplicate sources — the mid-batch replay — and leaves the other
+  two. The inbox table from Lesson 03 is <strong>unchanged</strong>: same
+  <code>(consumer_name, message_id)</code> key, same single transaction, same commit-then-ack.
+  Your outbox row still needs a stable id to carry across, which is precisely what Debezium's
+  <code>id uuid</code> column is for.</p>
+  <p>If someone offers you "guaranteed to be accurate" as if it meant exactly-once, the
+  correction is: accurate about <em>what committed</em>, not about <em>how many times you will
+  hear it</em>.</p>
+</div>
+
+<h2>The bill: a replication slot on your primary</h2>
+
+<p>Everything above is a fair fight. This section is where the decision usually gets made.</p>
+
+<p>First, logical decoding is a server-level setting, not a per-application one.
+<em>"Finally, <code>logical</code> adds information necessary to support logical decoding"</em>
+— and <em>"this parameter can only be set at server start."</em> So enabling it is a restart
+of the primary, and it is not free afterwards: <em>"using a level of <code>logical</code> will
+increase the WAL volume, particularly if many tables are configured for
+<code>REPLICA IDENTITY FULL</code> and many <code>UPDATE</code> and <code>DELETE</code>
+statements are executed."</em></p>
+
+<p>Then the slot itself, which is the part to memorise:</p>
+
+<blockquote>
+  Replication slots persist across crashes and know nothing about the state of their
+  consumer(s). They will prevent removal of required resources even when there is no
+  connection using them. This consumes storage because neither required WAL nor required rows
+  from the system catalogs can be removed by <code>VACUUM</code> as long as they are required
+  by a replication slot. In extreme cases this could cause the database to shut down to
+  prevent transaction ID wraparound. So if a slot is no longer required it should be dropped.
+  <cite><a href="https://www.postgresql.org/docs/current/logicaldecoding-explanation.html">PostgreSQL
+  — Logical Decoding Concepts</a></cite>
+</blockquote>
+
+<div class="callout trap">
+  <span class="label">The asymmetry that decides it</span>
+  <p>A polling relay that is down is a <em>messaging</em> problem. Rows pile up in a table,
+  lag rises, you get paged, you restart it, it catches up. The database does not care.</p>
+  <p>A CDC connector that is down is a <em>database availability</em> problem. The slot holds
+  WAL that cannot be recycled and catalog rows that cannot be vacuumed, and it does so
+  silently until the disk is full. Postgres offers you exactly one escape, and it is not a
+  good one: <code>max_slot_wal_keep_size</code>, which defaults to <code>-1</code> meaning
+  <em>"replication slots may retain an unlimited amount of WAL files."</em> Set it, and
+  <em>"the standby using the slot may no longer be able to continue replication due to removal
+  of required WAL files."</em></p>
+  <p>So the choice under a long outage is: fill the disk, or invalidate the slot and lose the
+  changes it had not yet read. Both are incidents. Neither is one your polling relay could
+  have caused.</p>
+</div>
+
+<p>There is a second-order version of this that catches people who did everything right.
+Replication slots are per-database, so a <em>quiet</em> captured database sharing a server
+with a busy one produces no changes to confirm, the slot's position never advances, and the
+shared WAL grows anyway. Debezium's answer is to manufacture traffic:
+<code>heartbeat.interval.ms</code>, with <code>heartbeat.action.query</code> writing to a
+heartbeat table so there is something in the captured database to acknowledge. The same fix
+covers idle RDS instances, where background writes you never see keep the WAL moving.
+<a href="https://debezium.io/documentation/reference/stable/connectors/postgresql.html">The
+connector docs</a> have a section titled "WAL disk space consumption" — the existence of that
+heading is the honest summary of this whole section.</p>
+
+<h2>Choosing, out loud</h2>
+
+<p>Three questions, answered in order. The first one that gives a hard answer decides it.</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Question</th><th>What the answer means</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Do you already run the CDC platform?</strong></td>
+      <td>If Debezium and Kafka Connect are already deployed and someone already owns the
+      slots, tailing is nearly free and polling is duplicated effort. If not, you are adopting
+      a distributed system to avoid writing a loop.</td>
+    </tr>
+    <tr>
+      <td><strong>Do you need global commit order?</strong></td>
+      <td>If yes, polling cannot give it to you and no amount of tuning will. If
+      per-aggregate order is enough — it usually is — polling plus a partition key gets you
+      there, and that is Lesson 05.</td>
+    </tr>
+    <tr>
+      <td><strong>Who carries the pager for the primary?</strong></td>
+      <td>If that is not your team, you are proposing to put a disk-filling liability on
+      someone else's database. Expect to justify the heartbeat and monitoring story before you
+      get the slot.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>The answer for this stack</h3>
+
+<p><strong>Poll.</strong> Postgres, RabbitMQ, SQLAlchemy async, no existing streaming
+platform: the reference deployment for Debezium is a Kafka Connect source connector, and the
+Outbox Event Router is a Kafka Connect transform. The obvious escape from that is Debezium
+Server, which runs a connector standalone and writes to a sink of your choice — so the
+question is whether RabbitMQ is one of those sinks.</p>
+
+<div class="callout trap">
+  <span class="label">Checked: RabbitMQ is not a Debezium Server sink</span>
+  <p>The sink list in the Debezium Server documentation is Kinesis, Google Cloud Pub/Sub,
+  Pub/Sub Lite, HTTP Client, Pulsar, Azure Event Hubs, Redis Streams, NATS Streaming, NATS
+  JetStream, Apache Fluss, Apache Kafka, Pravega, and Infinispan. <strong>RabbitMQ is not on
+  it.</strong></p>
+  <p>So for this stack the CDC route is not "swap the relay for Debezium". It is: adopt Kafka
+  and Kafka Connect, or write and operate a custom sink, or use the generic HTTP sink and
+  build the bridge to RabbitMQ yourself — and then still own delivery semantics across that
+  bridge. That is a much larger commitment than the comparison table makes it look, and it is
+  the sentence that settles the decision.</p>
+</div>
+
+<p>Either way you would be adding a streaming platform to feed a broker you already have,
+and paying for it with a replication slot on the primary.</p>
+
+<p>Against that, the polling relay is roughly forty lines you have already read, its worst
+failure mode is lag, and its headline drawback — <em>"tricky to publish events in order"</em>
+— is one you can largely design around. Revisit the decision when you outgrow the latency
+floor, when a second and third service want the same mechanism, or when the ordering
+requirement hardens from per-aggregate to global.</p>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>State that CDC replaces the relay and not the outbox; name commit order as the single
+  guarantee polling cannot buy, and explain the sequence-versus-commit gap that causes it;
+  refuse the exactly-once claim and say which duplicate source actually disappears; describe
+  the replication slot's failure mode and the <code>max_slot_wal_keep_size</code> dilemma; and
+  pick one for a given scenario with three questions rather than a shrug.</p>
+</div>
+
+<h2>Name what is still broken</h2>
+
+<ul>
+  <li><strong>Order still dies downstream.</strong> Even a perfectly ordered stream is
+  scrambled by concurrent consumers and a prefetch above one. Per-aggregate keys, single-
+  consumer queues, and when "out of order" is actually fine — Lesson 05.</li>
+  <li><strong>Nobody is watching the relay.</strong> Both designs need a health metric, and it
+  is the same one: the age of the oldest unpublished row, or the slot's lag. Lesson 06.</li>
+  <li><strong>Retention is unowned in both designs.</strong> CDC makes pruning safe but does
+  not do it for you, and the inbox has the same problem. Lesson 06.</li>
+</ul>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question — guessing until it turns green is recognition, not recall.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">Both pattern pages open with the same Context — "You have applied the
+    Transactional Outbox pattern" — and the same Problem. What does that tell you?</p>
+    <ul class="options">
+      <li><button data-opt="a">CDC and polling are two names for one mechanism</button></li>
+      <li><button data-opt="b">The outbox table is optional once you tail logs</button></li>
+      <li><button data-opt="c">CDC replaces the relay loop, not the outbox table</button></li>
+      <li><button data-opt="d">Either approach can be adopted without a broker</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>They are different mechanisms with different
+    guarantees — that is the whole lesson. What they share is the problem they solve.</p></div>
+    <div class="feedback" data-for="b"><p>That is a different design: tailing the business
+    tables directly. It couples your events to your schema, and it is not what either page
+    describes.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. Same context, same problem, two solutions —
+    so the outbox table, the single-transaction insert and the inbox all survive the switch.
+    Reframing the question this way is worth saying out loud.</p></div>
+    <div class="feedback" data-for="d"><p>The Problem statement names the message broker
+    explicitly. Getting rows to a broker is the entire point.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Why can log tailing promise commit order when a polling relay
+    cannot?</p>
+    <ul class="options">
+      <li><button data-opt="a">Only one reader exists, so nothing runs concurrently</button></li>
+      <li><button data-opt="b">Postgres decodes concurrent transactions in commit order</button></li>
+      <li><button data-opt="c">Sequence values are allocated when a transaction commits</button></li>
+      <li><button data-opt="d">A relay sorts on timestamps, whose resolution is coarse</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>A single reader fixes contention, not ordering. Run
+    one polling relay with one worker and it still sorts by a column that does not encode
+    commit order.</p></div>
+    <div class="feedback" data-for="b"><p>Correct, and it is a documented guarantee rather
+    than an emergent property: concurrent transactions are decoded in commit order, because
+    the log is the commit record.</p></div>
+    <div class="feedback" data-for="c"><p>The exact belief Lesson 02 killed.
+    <code>nextval</code> fires at insert time, so a long transaction can hold a lower id and
+    commit later.</p></div>
+    <div class="feedback" data-for="d"><p>Resolution is not the problem. A
+    <code>timestamptz</code> default has the same defect as the sequence: it is stamped when
+    the statement runs, not when it commits.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">You migrate the relay to Debezium. Which part of Lesson 03's consumer
+    can you now delete?</p>
+    <ul class="options">
+      <li><button data-opt="a">The prefetch limit, as the connector paces delivery</button></li>
+      <li><button data-opt="b">The commit-then-ack rule, as the slot tracks progress</button></li>
+      <li><button data-opt="c">The consumer_name column, as one connector reads it</button></li>
+      <li><button data-opt="d">None of it — log tailing is still at-least-once</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Prefetch is a broker-to-consumer setting. Nothing on
+    the publishing side of the broker affects how many unacked deliveries a channel
+    holds.</p></div>
+    <div class="feedback" data-for="b"><p>The slot tracks what the <em>connector</em> read
+    from Postgres. It knows nothing about your consumer's transaction or its ack.</p></div>
+    <div class="feedback" data-for="c"><p>That column is about the several consumers of one
+    message, not about who publishes it. Adding a connector does not merge billing and
+    search.</p></div>
+    <div class="feedback" data-for="d"><p>Correct. The slot position is only checkpointed, so
+    a crash rewinds it and replays. One duplicate source disappears — the mid-batch replay —
+    and the inbox handles the rest exactly as before.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">Your Debezium connector is switched off for a long weekend and nobody
+    notices. What breaks first?</p>
+    <ul class="options">
+      <li><button data-opt="a">The primary's disk fills, since the slot retains WAL</button></li>
+      <li><button data-opt="b">The outbox bloats, since no rows are marked published</button></li>
+      <li><button data-opt="c">The consumer's inbox grows, since replays are buffered</button></li>
+      <li><button data-opt="d">Nothing until restart, when the backlog floods through</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct, and it is why this decision belongs to
+    whoever owns the primary. Slots know nothing about their consumer and hold resources
+    anyway — in extreme cases far enough to force a shutdown against transaction ID
+    wraparound.</p></div>
+    <div class="feedback" data-for="b"><p>There is no <code>published_at</code> in a CDC
+    outbox. The table does grow, but slowly and predictably — the WAL is the urgent
+    problem.</p></div>
+    <div class="feedback" data-for="c"><p>Nothing reaches the consumer at all while the
+    connector is off, so the inbox is the one component having a quiet weekend.</p></div>
+    <div class="feedback" data-for="d"><p>The flood is real and worth planning for, but it
+    happens after you survive the outage. The disk does not wait that long.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">A quiet captured database shares a server with a busy one, and WAL keeps
+    growing. What is going on?</p>
+    <ul class="options">
+      <li><button data-opt="a">The busy database holds a slot that never advances</button></li>
+      <li><button data-opt="b">Decoding retains WAL for every uncaptured table too</button></li>
+      <li><button data-opt="c">The quiet slot never advances, so shared WAL is held</button></li>
+      <li><button data-opt="d">Postgres cannot recycle WAL while wal_level is logical</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Close, but backwards. The busy database is
+    generating the WAL; it is the quiet one's slot that fails to confirm a position and pins
+    it.</p></div>
+    <div class="feedback" data-for="b"><p>Retention is driven by slot position, not by which
+    tables are captured. The mechanism is the unconfirmed LSN.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. Slots are per-database, the WAL is shared,
+    and a database with no changes gives the connector nothing to acknowledge. Fix it with
+    <code>heartbeat.interval.ms</code> and a heartbeat table so there is always something to
+    confirm.</p></div>
+    <div class="feedback" data-for="d"><p><code>logical</code> increases WAL volume, but
+    recycling still happens normally once every slot has confirmed past a segment.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it out loud</h2>
+
+<div class="recall">
+  <p class="prompt">Whiteboard, no notes, 90 seconds. The prompt is: <em>"why are you polling a
+  table instead of just tailing the WAL?"</em> Cover what CDC replaces, the one thing it buys,
+  the thing it does not buy, the cost on the primary, and your actual decision. Then reveal
+  and score what you dropped.</p>
+  <button class="reveal">Reveal model answer</button>
+  <div class="answer">
+    <p>"First, they are answers to the same question, not competing patterns. Both assume you
+    have already applied the outbox: the table, the single-transaction insert and the
+    idempotent consumer are identical either way. What changes is only how rows leave the
+    table.</p>
+    <p>What tailing buys is commit order. Postgres decodes concurrent transactions in commit
+    order, because the log is the commit record. A polling relay can't match that — it sorts
+    by a sequence, and <code>nextval</code> fires at insert, so a long transaction can hold a
+    lower id and commit after a shorter one. It also removes a component: no claim query, no
+    mark-as-published update, no poll interval, and no mid-batch replay when the relay dies.
+    Debezium's router even treats the table as append-only — inserts only, deletes filtered
+    out — so pruning is free of side effects.</p>
+    <p>What it does not buy is exactly-once. A logical slot emits each change once in normal
+    operation, but its position is only persisted at checkpoint, so a crash rewinds it and
+    replays. Its own pattern page lists 'tricky to avoid duplicate publishing' as a drawback.
+    So the inbox stays, keyed on consumer name plus message id, and the outbox row still needs
+    a stable uuid to carry across.</p>
+    <p>The cost is a replication slot on the primary. <code>wal_level</code> has to be
+    logical, which is a restart and more WAL volume. Worse, slots know nothing about their
+    consumer: a connector that is switched off still pins WAL and blocks vacuum, and in
+    extreme cases that ends in a shutdown to prevent transaction ID wraparound. The only lever
+    is <code>max_slot_wal_keep_size</code>, and setting it just changes the failure — the slot
+    becomes unable to continue instead. There is a subtler version too: slots are
+    per-database, so a quiet captured database on a busy server never advances its slot and
+    the WAL grows anyway, which is what heartbeats are for.</p>
+    <p>So for this system: Postgres, RabbitMQ, no Kafka. Debezium's reference deployment is a
+    Kafka Connect connector, so I'd be adding a streaming platform to reach a broker I already
+    run, and paying for it with a slot on the primary. Polling is forty lines whose worst
+    failure is lag. I'd revisit it if we needed global ordering, if the latency floor started
+    to hurt, or if a third service wanted the same mechanism — at that point one connector
+    beats three relays."</p>
+    <p><em>Score the parts you dropped, not the wording. The three most costly omissions are
+    "CDC replaces the relay, not the outbox", "still at-least-once, because the slot position
+    is only checkpointed", and the replication-slot liability.</em></p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<h2>Read this next</h2>
+
+<p><strong>Primary source:</strong>
+<a href="https://www.postgresql.org/docs/current/logicaldecoding-explanation.html">PostgreSQL —
+Logical Decoding Concepts</a>. Short, and it is where both halves of this lesson live: the
+once-in-normal-operation caveat and the paragraph about slots knowing nothing about their
+consumers. Your <a href="../MISSION.md">mission</a> names logical decoding as new ground, so
+this is the page to actually read rather than skim.</p>
+
+<p>Then <a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html">Debezium
+— Outbox Event Router</a> for the shape of a battle-tested outbox table, and the "WAL disk
+space consumption" section of
+<a href="https://debezium.io/documentation/reference/stable/connectors/postgresql.html">the
+PostgreSQL connector docs</a> for what operating one is really like.</p>
+
+<h2>Coming next</h2>
+
+<p><a href="0005-ordering-and-how-much-you-need.html"><strong>Lesson 05 — ordering, and how
+much you need</strong></a>. Three lessons have now ended by deferring it: the
+sequence-versus-commit gap in Lesson 02, idempotence-does-nothing-for-order in Lesson 03, and
+the reordering-downstream callout above. Time to face it, and to work out how much ordering
+you actually need — because the honest answer is usually "per aggregate", and that is far
+cheaper than it sounds.</p>
+
+<p class="ask-teacher">Push back. Good things to throw at me now: "what does the relay code
+look like with <code>LISTEN</code>/<code>NOTIFY</code> instead of a timer?", "could I tail the
+WAL myself from Python rather than running Debezium?", "what actually happens to an
+invalidated slot — can I recover it?", or "if CDC removes the relay, what monitors the
+pipeline?" And the one worth arguing about: "you picked polling — talk me out of it."</p>
+
+<p class="nav-links">
+  <a href="0003-at-least-once-and-the-idempotent-consumer.html">← Lesson 03</a>
+  <a href="0005-ordering-and-how-much-you-need.html">Lesson 05 →</a>
+  <a href="../reference/glossary.html">Glossary</a>
+  <a href="../MISSION.md">Mission</a>
+  <a href="../RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 06 · Operating It</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
+<script src="../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 06 · Transactional Outbox</p>
+  <h1>Operating It</h1>
+  <p class="subtitle">The design is finished. Now something has to watch it, something has to
+  give up on a message that will never succeed, and something has to stop the table growing
+  forever — and the first two are in direct conflict with the ordering you just bought.</p>
+</header>
+
+<p><strong>The win for this lesson:</strong> by the end you can answer <em>"what would you put
+on the dashboard, and what happens to a message that can never be processed?"</em> You will
+name the one metric that distinguishes busy from stuck, price the poison-message trade against
+the ordering guarantee from <a href="0005-ordering-and-how-much-you-need.html">Lesson 05</a>,
+and give a retention plan for all three tables you now own.</p>
+
+<p>This closes the <a href="../MISSION.md">mission</a>'s production-failure list. Ordering and
+multiple relay instances are done; poison messages, relay lag and outbox bloat are what is
+left, and they turn out to be one problem wearing three coats.</p>
+
+<h2>Count lies. Age does not.</h2>
+
+<p>The instinct is to graph the backlog: <code>count(*) WHERE published_at IS NULL</code>. It
+is the wrong metric, and it is wrong in the direction that hurts. Forty thousand unpublished
+rows draining at ten thousand a second is a healthy system under load. One unpublished row
+that has been sitting there for nine minutes is an outage. Count cannot tell those apart.</p>
+
+<p>The metric that can is the <strong>age of the oldest unpublished row</strong>. It is the
+end-to-end latency of the relay expressed as a single number, and it is bounded by design: in
+a healthy system it never exceeds one poll interval plus one publish.</p>
+
+<pre><code class="language-sql">SELECT abs(hashtext(aggregate_id::text)) % :shard_count AS shard,
+       count(*)                             AS backlog,
+       max(now() - created_at)              AS oldest,
+       max(attempts)                        AS worst_attempts
+FROM outbox_message
+WHERE published_at IS NULL
+GROUP BY 1;</code></pre>
+
+<p class="caption">The <code>GROUP BY</code> is not decoration. Lesson 05 gave each shard its
+own worker, so one dead worker means one stalled shard — and a global
+<code>max()</code> over eight shards reports the stall while a global <code>avg()</code>
+hides it entirely. Measured cost of this query against a 106 MB outbox with a 500-row
+backlog: <strong>13 buffers</strong>, an index scan over the backlog only.</p>
+
+<p>Three alerts fall straight out of it, and each one names a different failure:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>What fires</th><th>What it means, and what you do</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Oldest row exceeds a small multiple of your poll interval</strong>, on any
+      single shard</td>
+      <td>That shard's worker is dead, wedged, or blocked behind something. Because it is
+      per-shard, the alert names the worker. Derive the threshold from your own poll interval
+      rather than copying a number — healthy lag <em>is</em> the poll interval.</td>
+    </tr>
+    <tr>
+      <td><strong>Backlog growing monotonically</strong> while lag also grows</td>
+      <td>Publishing is slower than writing. This is a capacity problem, not a fault: more
+      shards, more workers, or a bigger batch. It is the only one of the three that is fixed
+      by scaling.</td>
+    </tr>
+    <tr>
+      <td><strong>Any row with <code>attempts</code> above zero and climbing</strong></td>
+      <td>A poison message, before it has become an incident. This is the cheapest alert in
+      the system and the one people forget to write, because Lesson 02 added the column and
+      then nothing ever read it.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout insight">
+  <span class="label">Why age is the honest metric</span>
+  <p>Every other number describes the relay. Age describes the <em>promise</em> — how stale
+  the world's view of your data is right now. That is the number a downstream team actually
+  cares about, and it is the one you can put in an SLO.</p>
+  <p>It also degrades gracefully into the answer for the next question. "What is your event
+  latency?" is the same query.</p>
+</div>
+
+<h2>A poison message in the relay stops everything behind it</h2>
+
+<p>The claim query orders by <code>id</code>. If the row at the head can never be published —
+a payload the broker rejects, an aggregate the serialiser chokes on, a routing key bound to
+nothing — then every poll returns that same row, forever.</p>
+
+<pre><code class="language-plaintext">-- poll 1                          -- poll 2, and every poll after it
+ id | event_type | attempts        id | event_type | attempts
+----+------------+----------      ----+------------+----------
+  1 | paid       |       12         1 | paid       |       12
+  2 | shipped    |        0         2 | shipped    |        0</code></pre>
+
+<p class="caption">Measured, PostgreSQL 17.11. The head never moves, because nothing was
+published and <code>published_at</code> is what moves it. <code>SKIP LOCKED</code> does not
+save you here: it skips rows another transaction holds <em>right now</em>, and between
+attempts nobody holds this one.</p>
+
+<p>So exclude it. Give the outbox the delivery limit that the broker gives the queue:</p>
+
+<pre><code class="language-sql">SELECT * FROM outbox_message
+WHERE published_at IS NULL
+  AND attempts &lt; :max_attempts     -- looks like the obvious fix
+ORDER BY id
+LIMIT 100
+FOR UPDATE SKIP LOCKED;</code></pre>
+
+<div class="callout trap">
+  <span class="label">Verified: that fix undoes Lesson 05</span>
+  <p>Two aggregates, one with a stuck first event. With <code>attempts &lt; 10</code> in the
+  claim query, here is what the relay would publish:</p>
+  <pre><code class="language-plaintext">   agg    |  would_publish
+----------+-----------------
+ 11111111 | shipped
+ 22222222 | paid -> shipped</code></pre>
+  <p>An order announced as <strong>shipped</strong> that was never announced as
+  <strong>paid</strong> — precisely the failure Lesson 05 opened with, reintroduced by the
+  poison-message fix. Skipping a row does not skip an event; it skips a <em>state
+  transition</em>, and everything after it is now a lie.</p>
+</div>
+
+<p>The unit you must skip is not the row. It is the <strong>aggregate</strong>. Park the whole
+stream and let the rest of the shard drain around it:</p>
+
+<pre><code class="language-sql">SELECT * FROM outbox_message o
+WHERE o.published_at IS NULL
+  AND o.attempts &lt; :max_attempts
+  AND NOT EXISTS (                       -- nothing overtakes a parked aggregate
+        SELECT 1 FROM outbox_message p
+        WHERE p.aggregate_id = o.aggregate_id
+          AND p.published_at IS NULL
+          AND p.attempts &gt;= :max_attempts)
+ORDER BY o.id
+LIMIT 100
+FOR UPDATE SKIP LOCKED;</code></pre>
+
+<p class="caption">Same fixture, this query: aggregate <code>22222222</code> drains both its
+events, aggregate <code>11111111</code> publishes nothing at all. The guarantee holds — a
+consumer that never hears about order 42 again is recoverable; a consumer told it shipped
+without being paid is not.</p>
+
+<p>Two things to say before you are asked. First, the correlated subquery runs on every
+candidate row — the same evaluation-order lesson that killed the advisory lock in Lesson 05 —
+so at real volume you keep a small <code>parked_aggregate</code> table written when a row hits
+the limit, and anti-join that instead. Second, a parked aggregate is a
+<strong>human</strong> event, not a retry: the row needs
+<code>last_error</code> read by a person, and unparking is a deliberate act. That is a feature.
+Nothing in this design silently discards a business fact.</p>
+
+<p>Here is the version you would ship, rather than a description of it:</p>
+
+<pre><code class="language-sql">CREATE TABLE parked_aggregate (
+    aggregate_type text        NOT NULL,
+    aggregate_id   text        NOT NULL,
+    parked_at      timestamptz NOT NULL DEFAULT now(),
+    reason         text        NOT NULL,
+    PRIMARY KEY (aggregate_type, aggregate_id)
+);
+
+SELECT * FROM outbox_message o
+WHERE o.published_at IS NULL
+  AND NOT EXISTS (                       -- one small table, not a self-scan
+        SELECT 1 FROM parked_aggregate p
+        WHERE p.aggregate_type = o.aggregate_type
+          AND p.aggregate_id   = o.aggregate_id)
+ORDER BY o.id
+LIMIT 100
+FOR UPDATE SKIP LOCKED;</code></pre>
+
+<p class="caption">The self-referencing version scans the outbox twice; this one probes a
+table that holds one row per <em>parked</em> aggregate — normally zero rows, and a table you
+can read at a glance during an incident.</p>
+
+<aside class="sidenote">
+  <p>Record the failure in its own committed write —
+  <code>UPDATE … SET attempts = attempts + 1, last_error = …</code> — before the transaction
+  that failed to publish ends. If you let the error handling roll back with the work, the
+  attempt count never rises and the row retries forever at full speed, which is the same
+  outage plus a hot loop.</p>
+</aside>
+
+<h2>A poison message in the consumer: let the broker count — if you let it</h2>
+
+<p>The consumer side already has this built, and it is one of the reasons Lesson 03 chose
+quorum queues. RabbitMQ counts the failures for you: <em>"Quorum queues keep track of the
+number of unsuccessful (re)delivery attempts and expose it in the
+<code>x-delivery-count</code> header that is included with any redelivered message."</em> And
+it acts on the count — <em>"When a message has been redelivered more times than the limit the
+message will be dropped (removed) or dead-lettered (if a DLX is configured)."</em></p>
+
+<pre><code class="language-python">queue = await channel.declare_queue(
+    "order.3",
+    durable=True,
+    arguments={
+        "x-queue-type": "quorum",
+        "x-single-active-consumer": True,      # Lesson 05, unchanged
+        "x-dead-letter-exchange": "outbox.dlx",
+        "x-dead-letter-routing-key": "order.parked",
+    },
+)</code></pre>
+
+<p class="caption">Shown as queue arguments so the whole declaration reads in one place. The
+docs prefer policies for exactly this: <em>"Hardcoded x-arguments are strongly recommended
+against since they cannot be updated without redeploying applications and deleting the queue
+before it can be redeclared, while policies can be updated at any moment."</em> Set
+<code>delivery-limit</code> and <code>dead-letter-exchange</code> by policy in production.</p>
+
+<p>You get the limit whether you ask for it or not — <em>"Starting with RabbitMQ 4.0, the
+delivery limit for quorum queues defaults to 20"</em> — and turning it off is explicitly
+discouraged: <em>"The value of <code>-1</code> disables the limit altogether. It is
+<strong>not</strong> recommended that users disable this limit as repeated requeues can
+threaten the stability of a queue or RabbitMQ cluster."</em></p>
+
+<div class="callout trap">
+  <span class="label">The limit does not count the rejection you are most likely to write</span>
+  <p>"Let the broker count" is only true if you return the message the way the broker
+  counts. It does not count all of them. From the same page:
+  <em>"Unlimited explicit returns (via <code>nack</code> or AMQP 1.0 <code>modify</code> with
+  <code>delivery_failed=false</code>) are allowed without counting toward the delivery
+  limit."</em> The counter moves for <em>"<code>reject</code>, AMQP 1.0 <code>modify</code>
+  with <code>delivery_failed=true</code>, or channel termination with pending
+  messages."</em></p>
+  <p><strong>Measured, because this one is worth checking.</strong> A quorum queue with
+  <code>x-delivery-limit: 3</code> and a DLX bound. A consumer that catches its exception and
+  calls <code>message.nack(requeue=True)</code> got the same poison message
+  <strong>12 times</strong> and was still going when the run was stopped — never counted, never
+  dead-lettered. The same queue, same limit, with the message returned by closing the channel
+  instead: <strong>4 deliveries, then gone</strong>. The limit works. It just never sees a
+  polite <code>nack</code>.</p>
+  <p>So the retry loop you write by reflex —
+  <code>except Exception: await message.nack(requeue=True)</code> — is the one shape the
+  delivery limit will not end. Use <code>reject</code> when you mean "count this against the
+  message", and keep <code>nack</code> for "put it back, this was my fault, not the
+  message's".</p>
+</div>
+
+<div class="callout trap">
+  <span class="label">Your dead-letter path can lose the message</span>
+  <p>Two sentences from the same page, and both belong in your answer.
+  <em>"Dead-lettered messages are re-published without publisher confirms turned on
+  internally. Therefore using DLX in a clustered RabbitMQ environment is not guaranteed to be
+  safe. Messages can be lost if the target queue is not available to accept messages."</em></p>
+  <p>The default strategy is the unsafe one — <em>"<code>at-most-once</code> remains the
+  default dead-letter-strategy for quorum queues"</em> — and the fix is to ask for the other:
+  <em>"Quorum queues support a safer form of dead-lettering that uses
+  <code>at-least-once</code> guarantees for the message transfer between queues."</em></p>
+  <p>Noticing that the graveyard has a hole in it is the kind of detail that ends the
+  question.</p>
+</div>
+
+<p>The dead-lettered copy carries its own history: an <code>x-death</code> header whose array
+is <em>"ordered by recency, that is the most recent dead-lettering event is recorded in the
+first array element"</em>, with the queue, reason and count. That is your triage data — read
+it before you replay anything.</p>
+
+<aside class="sidenote">
+  <p>Dead-lettering can loop, and RabbitMQ guards against it: <em>"It is possible to form a
+  cycle of message dead-lettering where the same message reaches the same queue twice. To
+  prevent automatic infinite message looping within RabbitMQ, RabbitMQ will detect a cycle and
+  drop the message if there was no rejection in the entire cycle."</em> Note the escape
+  clause — a cycle that <em>does</em> contain a rejection is not caught, so a
+  requeue-on-error handler wired back to its own queue is still yours to get wrong.</p>
+</aside>
+
+<div class="callout insight">
+  <span class="label">The trade you are actually making</span>
+  <p>Ordering and poison-message isolation pull in opposite directions, and there is no
+  position that gets both. You bought per-aggregate order by making each stream serial, and
+  serial is exactly what turns one bad message into a stalled stream. Every mitigation —
+  the delivery limit, the dead-letter exchange, the parked aggregate — is a decision to
+  break that order at a stated point.</p>
+  <p>So state the point. "After twenty attempts we stop, dead-letter it, and page someone"
+  is an answer. "It retries until it works" is an outage with a countdown on it.</p>
+</div>
+
+<h2>Bloat: the failure nothing warns you about</h2>
+
+<p>The outbox is close to the worst-case shape for PostgreSQL's storage model. Every row is
+inserted, updated exactly once when the relay marks it published, and then deleted. Both the
+update and the delete leave a dead tuple behind, because <em>"an <code>UPDATE</code> or
+<code>DELETE</code> of a row does not immediately remove the old version of the row."</em></p>
+
+<p>Here is what that costs, measured on 200,000 rows:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>After</th><th>Total relation size</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Inserting 200,000 events</td><td>61 MB — 52 MB of heap</td></tr>
+    <tr><td>The relay setting <code>published_at</code> on each one</td>
+        <td><strong>119 MB</strong> — 106 MB of heap</td></tr>
+    <tr><td>Deleting 91% of them, then a plain <code>VACUUM</code></td>
+        <td><strong>119 MB</strong>, holding 17,996 live rows</td></tr>
+    <tr><td><code>VACUUM FULL</code></td><td>24 kB, and an
+        <code>ACCESS EXCLUSIVE</code> lock for the duration</td></tr>
+  </tbody>
+</table>
+
+<p class="caption">PostgreSQL 17.11, autovacuum disabled on the table so the numbers are of a
+known vacuum. Two things to take away: one <code>UPDATE</code> per row <strong>doubled</strong>
+the heap, and deleting nine rows in ten returned <strong>nothing</strong> to the operating
+system.</p>
+
+<p>The second result is the documented behaviour, not a surprise: plain <code>VACUUM</code>
+<em>"will not return the space to the operating system, except in the special case where one
+or more pages at the end of a table become entirely free and an exclusive table lock can be
+easily obtained."</em> A retention job deletes the <em>oldest</em> rows, so the pages it frees
+are at the front of the heap. The exception never applies.</p>
+
+<div class="callout trap">
+  <span class="label">Verified: the relay never notices, and that is the danger</span>
+  <p>On that same 106 MB table holding 18,000 live rows, the claim query touched
+  <strong>104 buffers</strong> and the per-shard lag query touched <strong>13</strong>. Both
+  read only the backlog through the partial index from Lesson 02.</p>
+  <p>So there is no latency signal, no slow query, no alert. The partial index that makes the
+  relay fast is precisely what makes bloat invisible — the system stays healthy on every
+  metric you are watching, right up until the disk fills. Monitor
+  <code>pg_total_relation_size</code> on the outbox as a first-class metric, because nothing
+  else will tell you.</p>
+</div>
+
+<h3>Retention: delete rows, or drop tables</h3>
+
+<p>The batched delete is the obvious approach and it works. Keep the window generous, keep the
+batches small enough not to hold a long transaction, and let autovacuum do the rest.</p>
+
+<pre><code class="language-sql">DELETE FROM outbox_message
+WHERE id IN (SELECT id FROM outbox_message
+             WHERE published_at &lt; now() - interval '7 days'
+             ORDER BY id LIMIT 10000);</code></pre>
+
+<p class="caption">Batched by id, not by a bare <code>WHERE</code> on the whole window — a
+single delete of a week's traffic is one long transaction, one lock set, and one enormous
+burst of dead tuples for autovacuum to chase.</p>
+
+<p>The alternative removes the work rather than scheduling it. Range-partition the outbox by
+day, and retention becomes a <code>DROP TABLE</code>. The docs put the case plainly:
+<em>"Dropping an individual partition using <code>DROP TABLE</code>, or doing
+<code>ALTER TABLE DETACH PARTITION</code>, is far faster than a bulk operation. These commands
+also entirely avoid the <code>VACUUM</code> overhead caused by a bulk
+<code>DELETE</code>."</em></p>
+
+<pre><code class="language-sql">CREATE TABLE outbox_message (
+    id           bigint GENERATED ALWAYS AS IDENTITY,
+    -- … all of Lesson 02's columns, unchanged …
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    published_at timestamptz,
+    PRIMARY KEY (created_at, id)         -- the partition key must be in the key
+) PARTITION BY RANGE (created_at);
+
+CREATE TABLE outbox_message_2026_09_10 PARTITION OF outbox_message
+    FOR VALUES FROM ('2026-09-10') TO ('2026-09-11');
+
+CREATE INDEX outbox_unpublished_idx ON outbox_message (id) WHERE published_at IS NULL;</code></pre>
+
+<p class="caption">The partial index is declared once on the parent and Postgres creates a
+local partial index on every partition. Verified: both children reported
+<code>indpred IS NOT NULL</code>.</p>
+
+<div class="callout trap">
+  <span class="label">Nothing creates tomorrow's partition for you</span>
+  <p>The obvious follow-up question — <em>who makes the next partition?</em> — has a blunt
+  answer in the PostgreSQL docs, and it is not "Postgres does". There is no built-in
+  scheduler. The manual simply tells you to build one: <em>"In the above example we would be
+  creating a new partition each month, so it might be wise to write a script that generates
+  the required DDL automatically."</em></p>
+  <p>For an outbox that is sharper than it sounds, because of what happens when the script
+  does not run: <em>"Inserting data into the parent table that does not map to one of the
+  existing partitions will cause an error; an appropriate partition must be added
+  manually."</em> The outbox insert shares a transaction with the business write — that is
+  the whole pattern — so a missing partition does not fail the relay or delay an event.
+  <strong>It fails the order.</strong> Partitioning moves a retention problem into the
+  checkout path.</p>
+  <p>Two things make that safe, and say both: create partitions well ahead (a scheduled job
+  building the next N days, monitored like any other job), and attach a
+  <code>DEFAULT</code> partition so an unmapped row lands somewhere instead of raising. The
+  default partition is a shock absorber, not a plan — rows in it still have to be moved
+  before that range can be attached.</p>
+</div>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Removing 200,000 published rows</th><th>Cost</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>DELETE</code>, then the <code>VACUUM</code> it makes necessary</td>
+        <td>122 ms + 29 ms, and the space is not returned</td></tr>
+    <tr><td><code>DROP TABLE</code> on the day's partition</td>
+        <td><strong>9 ms</strong>, no vacuum, 60 MB back immediately</td></tr>
+  </tbody>
+</table>
+
+<p class="caption">Do not quote the ratio — it is a small fixture. Quote the shapes:
+<code>DELETE</code> is linear in rows and manufactures dead tuples, <code>DROP</code> is an
+unlink and manufactures none. The gap widens with every row you add.</p>
+
+<div class="callout win">
+  <span class="label">Measured: partitioning costs the claim query nothing</span>
+  <p>The obvious objection is that <code>ORDER BY id</code> now has to merge across
+  partitions. It does — the plan gains a <code>Merge Append</code> — and on identical data
+  (200,000 rows, 500 unpublished) the buffer counts were <strong>203 partitioned versus 202
+  flat</strong>. Each partition's partial index is scanned in id order and the results are
+  merged; nothing is re-sorted.</p>
+  <p>The real cost is elsewhere, and the docs name it: <em>"Too many partitions can mean
+  longer query planning times and higher memory consumption during both query planning and
+  execution."</em> Daily partitions with a seven-day window is seven tables. Hourly
+  partitions with a year's retention is a different conversation.</p>
+</div>
+
+<h3>Three tables, and only two of them get pruned</h3>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Table</th><th>Retention</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Outbox</strong> — grows with event volume</td>
+      <td>Partition by day, drop past your window. Keep it long enough to replay from, which
+      means long enough to survive a weekend.</td>
+    </tr>
+    <tr>
+      <td><strong>Inbox</strong> — grows with event volume</td>
+      <td>Delete rows older than your maximum plausible redelivery delay. The delivery limit
+      now bounds that: once a message dead-letters it is never redelivered, so the window you
+      must cover is the retry window, not eternity. There is still no number in any doc —
+      derive yours from your own limit and backoff.</td>
+    </tr>
+    <tr>
+      <td><strong>Aggregate cursor</strong> — grows with your <em>domain</em></td>
+      <td><strong>Do not prune it on age.</strong> One row per aggregate, not per event, and
+      deleting a row re-opens the gate a stale event would have been stopped by. Prune it only
+      when the aggregate itself is deleted, in the same transaction.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="caption">The asymmetry is the point, and it is worth saying out loud: two of these
+tables are logs and one is state. Logs age out. State does not.</p>
+
+<h2>The runbook, in one page</h2>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Symptom</th><th>Cause, and first move</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>One shard's oldest row is climbing, others flat</td>
+      <td>That worker is down or wedged. Restart it; <code>SKIP LOCKED</code> and the shard
+      filter make that safe mid-flight.</td>
+    </tr>
+    <tr>
+      <td>Every shard's oldest row is climbing together</td>
+      <td>The broker or the database, not the relay. Check publisher confirms failing and
+      check the outbox is writable.</td>
+    </tr>
+    <tr>
+      <td>Lag flat and low, backlog growing</td>
+      <td>Not a fault. You are write-bound; add shards and workers, and remember the reshard
+      needs a drain.</td>
+    </tr>
+    <tr>
+      <td>A row's <code>attempts</code> is climbing</td>
+      <td>Poison message. Read <code>last_error</code> now, before the limit parks the whole
+      aggregate.</td>
+    </tr>
+    <tr>
+      <td>Messages appearing in the dead-letter queue</td>
+      <td>Read <code>x-death</code> for the reason and count. Fix, then republish
+      deliberately — the inbox makes the replay safe.</td>
+    </tr>
+    <tr>
+      <td>Disk filling, every latency metric normal</td>
+      <td>Bloat. Nothing else presents this way. Check
+      <code>pg_total_relation_size</code> against live row count, and check the retention job
+      is actually running.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>Name age-of-oldest-unpublished as the health metric and say why count is not; write the
+  per-shard lag query; explain why a poison row stalls a shard and why the obvious fix
+  reintroduces the ordering bug; park an aggregate instead of skipping a row; configure the
+  quorum-queue delivery limit and a DLX, and volunteer that the default dead-letter strategy
+  is <code>at-most-once</code> and can lose the message; and give a retention plan that
+  distinguishes the two tables that age out from the one that must not.</p>
+</div>
+
+<h2>Name what is still broken</h2>
+
+<ul>
+  <li><strong>Replay is described, not designed.</strong> "Republish from the dead-letter
+  queue" needs a tool, and that tool needs to decide whether it re-enters at the original
+  routing key or a repair queue.</li>
+  <li><strong>The dead-letter hop did not do what the docs say, and that is unresolved.</strong>
+  In the run above the counted-out message left the queue after four deliveries — but it
+  never appeared on the bound dead-letter queue, which was empty. The docs say
+  <em>"dropped (removed) or dead-lettered (if a DLX is configured)"</em>, and a DLX
+  <em>was</em> configured. Something about that setup is wrong, or the at-most-once default
+  dropped it silently. Until it is chased down, treat the <code>x-death</code> field list
+  here as quoted, not observed, and do not promise an interviewer that a counted-out message
+  is definitely retrievable.</li>
+  <li><strong>No number for retention, still.</strong> "Seven days" is an illustration. The
+  delivery limit bounds the redelivery window in principle, but only for returns the broker
+  counts — which, as above, is not the return most consumers send.</li>
+</ul>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question. Two of these reach back to earlier lessons on purpose.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Which single metric tells you whether the relay is healthy?</p>
+    <ul class="options">
+      <li><button data-opt="a">The count of unpublished rows sitting in the outbox</button></li>
+      <li><button data-opt="b">The age of the oldest unpublished row in the outbox</button></li>
+      <li><button data-opt="c">The rate of rows the relay publishes each second</button></li>
+      <li><button data-opt="d">The count of unacknowledged deliveries in the queue</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Count cannot separate busy from stuck. Forty
+    thousand rows draining fast is healthy; one row stuck for nine minutes is an outage, and
+    count ranks them the wrong way round.</p></div>
+    <div class="feedback" data-for="b"><p>Correct. It is the relay's end-to-end latency as one
+    number, bounded in a healthy system by one poll interval plus one publish — and it is the
+    number a downstream team actually cares about.</p></div>
+    <div class="feedback" data-for="c"><p>Throughput describes the relay, not the promise. A
+    high publish rate is perfectly compatible with one aggregate stalled since Tuesday.</p></div>
+    <div class="feedback" data-for="d"><p>Worth watching, but it is the consumer's health. A
+    relay that has stopped publishing shows an empty queue, which looks like calm.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">A row at the head of a shard fails on every publish attempt, and the
+    claim query is Lesson 02's unchanged. What happens to that shard?</p>
+    <ul class="options">
+      <li><button data-opt="a">SKIP LOCKED lets the rows behind it past the failure</button></li>
+      <li><button data-opt="b">It drains apart from that row, whose age keeps rising</button></li>
+      <li><button data-opt="c">Nothing in the shard is published again, ever, at all</button></li>
+      <li><button data-opt="d">The broker's delivery limit removes it after 20 tries</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p><code>SKIP LOCKED</code> skips rows another
+    transaction is holding <em>at that instant</em>. Between attempts nobody holds this row,
+    so every poll picks it up again.</p></div>
+    <div class="feedback" data-for="b"><p>That is what the naive <code>attempts &lt; N</code>
+    filter buys you — and this question is about the query without it. Unfiltered,
+    <code>ORDER BY id</code> means the head has to move before anything else can.</p></div>
+    <div class="feedback" data-for="c"><p>Correct, and measured: the same two rows come back
+    on every poll. <code>published_at</code> is what advances the head, and a row that never
+    publishes never sets it.</p></div>
+    <div class="feedback" data-for="d"><p>The delivery limit is a queue feature. This message
+    never reached the broker — the outbox has no limit unless you build one.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">Why is adding <code>AND attempts &lt; 10</code> to the claim query the
+    wrong way to get past a poison row?</p>
+    <ul class="options">
+      <li><button data-opt="a">The planner stops using the partial index on that table</button></li>
+      <li><button data-opt="b">Attempts rises on lease expiry, so it counts the wrong thing</button></li>
+      <li><button data-opt="c">Rows over the limit are never seen by the retention job</button></li>
+      <li><button data-opt="d">Later events of that aggregate overtake the skipped one</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>The index is still chosen — the predicate that
+    selects it is <code>published_at IS NULL</code>, and an extra filter on a cheap column
+    does not displace it.</p></div>
+    <div class="feedback" data-for="b"><p>Where you increment it is a real design question,
+    but it is not the flaw here. The filter is wrong even with a perfectly accurate
+    count.</p></div>
+    <div class="feedback" data-for="c"><p>They are still there and still deletable. Retention
+    filters on <code>published_at</code>, which is unrelated to the attempt count.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and measured: the relay publishes
+    <code>shipped</code> for an aggregate whose <code>paid</code> it skipped. That is Lesson
+    05's opening failure, reintroduced. Park the aggregate, not the row.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">A message in a shard queue can never be handled successfully. What ends
+    the retry loop?</p>
+    <ul class="options">
+      <li><button data-opt="a">The quorum queue delivery limit, which defaults to 20</button></li>
+      <li><button data-opt="b">The consumer's prefetch, once it holds enough unacked</button></li>
+      <li><button data-opt="c">The publisher confirm timing out and dropping the copy</button></li>
+      <li><button data-opt="d">The inbox row, which records it as already processed</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct — with the condition that decides whether it
+    is true in your code. Quorum queues count failed deliveries and, past the limit, drop or
+    dead-letter; configure a DLX so it is the second one. But the count only moves for
+    <code>reject</code> or a dropped channel. A consumer that returns the message with
+    <code>nack(requeue=True)</code> is never counted out — measured at 12 deliveries and
+    still cycling against a limit of 3.</p></div>
+    <div class="feedback" data-for="b"><p>Prefetch bounds how many deliveries are in flight.
+    It never terminates anything — a single message failing forever satisfies any prefetch
+    setting.</p></div>
+    <div class="feedback" data-for="c"><p>Confirms are the publish half, and this message was
+    published successfully. Nothing about the consumer's failure travels back to
+    them.</p></div>
+    <div class="feedback" data-for="d"><p>The inbox row is written in the same transaction as
+    the work, so a failure rolls it back too. That is deliberate — otherwise a crash mid-work
+    would mark the message done.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text"><em>Reaching back to Lesson 02.</em> The outbox holds 18,000 live rows
+    in 106 MB and no alert has fired. Why not?</p>
+    <ul class="options">
+      <li><button data-opt="a">Autovacuum reports bloat only past its own scale factor</button></li>
+      <li><button data-opt="b">The partial index keeps query cost on the backlog only</button></li>
+      <li><button data-opt="c">Dead tuples are excluded from the reported table size</button></li>
+      <li><button data-opt="d">The relay reads the index alone and never the heap</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Autovacuum's thresholds decide when it runs, not
+    what you are told. It does not raise alerts at all.</p></div>
+    <div class="feedback" data-for="b"><p>Correct, and this is the trap. The claim query
+    touched 104 buffers on that table because the partial index only indexes the backlog. No
+    latency signal, no slow query — the metric you must add is table size itself.</p></div>
+    <div class="feedback" data-for="c"><p>The opposite: dead tuples occupy pages and are
+    counted in full. That 106 MB is almost entirely them.</p></div>
+    <div class="feedback" data-for="d"><p>It fetches the payload, so it does read the heap —
+    just only for the backlog rows. It is the index's <em>narrowness</em> that hides the
+    bloat, not an index-only scan.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text"><em>Reaching back to Lesson 05.</em> Which of your three tables must
+    <em>not</em> be pruned on a time window?</p>
+    <ul class="options">
+      <li><button data-opt="a">The outbox, since unpublished rows may still be claimed</button></li>
+      <li><button data-opt="b">The inbox, since a redelivery can arrive after any delay</button></li>
+      <li><button data-opt="c">The cursor, since dropping it un-gates the stale events</button></li>
+      <li><button data-opt="d">All three grow with traffic and all three need pruning</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Retention filters on <code>published_at</code>, so
+    unpublished rows are never candidates. The outbox is pruned, just not blindly.</p></div>
+    <div class="feedback" data-for="b"><p>It is pruned on a window — you just have to choose
+    one longer than your retry window, which the delivery limit now bounds.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. It is one row per aggregate, not per event,
+    so it grows with your domain rather than your traffic. Delete a cursor row and the next
+    stale event for that aggregate walks straight through the gate.</p></div>
+    <div class="feedback" data-for="d"><p>Two of them are logs and one is state. That
+    asymmetry is the answer — the cursor is not a record of what happened, it is the thing
+    that decides what happens next.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it from memory</h2>
+
+<div class="recall">
+  <p class="prompt">Close the page. Ninety seconds, out loud: <em>"you've built the outbox —
+  what do you monitor, and what happens to a message that can never be processed?"</em></p>
+  <button class="reveal">Reveal a model answer</button>
+  <div class="answer">
+    <p>One metric above all others: the age of the oldest unpublished row, grouped by shard.
+    Count can't distinguish busy from stuck — forty thousand rows draining fast is healthy and
+    one row stuck for nine minutes is an outage. Age is the relay's end-to-end latency as a
+    single number, and in a healthy system it never exceeds a poll interval plus a publish.
+    Per shard, because one worker owns each shard, so a global average hides a dead one. Then
+    two more: backlog growing while lag grows means I'm write-bound and should add shards, and
+    any row whose attempt count is climbing is a poison message before it's an incident.</p>
+
+    <p>For a message that can never be processed, there are two sides. On the consumer side
+    the broker already counts for me: quorum queues track failed deliveries in
+    <code>x-delivery-count</code> and past the delivery limit — 20 by default in RabbitMQ 4 —
+    they drop or dead-letter it. So I configure a dead-letter exchange and read the
+    <code>x-death</code> header for triage. I'd flag that the default dead-letter strategy is
+    at-most-once and the docs say DLX in a cluster isn't guaranteed safe, so I'd turn on
+    at-least-once dead-lettering.</p>
+
+    <p>On the relay side nothing counts for me, so I build it. A row at the head that never
+    publishes stops the whole shard, because <code>ORDER BY id</code> means the head has to
+    move and <code>SKIP LOCKED</code> doesn't help — nobody's holding it between attempts. The
+    obvious fix, filtering on attempts, is wrong: it publishes an aggregate's later events
+    after skipping an earlier one, which is exactly the ordering bug the previous lesson
+    eliminated. So I park the whole aggregate, let the rest of the shard drain around it, and
+    treat unparking as a human decision.</p>
+
+    <p>And the one nothing warns you about is bloat. Every outbox row is inserted, updated
+    once when it's published, then deleted — the update alone doubles the heap, and a plain
+    vacuum after a retention delete doesn't return space to the OS because the freed pages are
+    at the front of the table. The relay never notices, because the partial index means its
+    cost tracks the backlog and not the table, so every latency metric stays green until the
+    disk fills. I'd monitor table size directly and partition by day so retention is a
+    <code>DROP TABLE</code> rather than a delete plus a vacuum.</p>
+
+    <p>Three tables, and only two of them age out: the outbox and the inbox are logs, but the
+    aggregate cursor is state — one row per aggregate — and deleting it re-opens the gate for
+    a stale event.</p>
+
+    <p class="caption">Scoring: the three costly omissions are reaching for count instead of
+    age, skipping the row rather than parking the aggregate, and forgetting that bloat is
+    silent. Bonus for volunteering that the dead-letter path can itself lose the message.</p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<p><strong>Read next, in this order.</strong> The primary source for this lesson is
+<a href="https://www.rabbitmq.com/docs/quorum-queues">RabbitMQ — Quorum Queues</a>: read the
+"Poison Message Handling" and "Dead Lettering" sections, which are short and give you the
+delivery limit, the headers and the two dead-letter strategies. Then
+<a href="https://www.rabbitmq.com/docs/dlx">RabbitMQ — Dead Letter Exchanges</a> for the
+conditions and the <code>x-death</code> header. On the Postgres side,
+<a href="https://www.postgresql.org/docs/current/ddl-partitioning.html">Table Partitioning
+§5.12</a> is worth reading for the "Declarative Partitioning" section alone, and
+<a href="https://www.postgresql.org/docs/current/routine-vacuuming.html">Routine Vacuuming
+§24.1</a> explains every number in this lesson.</p>
+
+<p><strong>Coming next.</strong> The design is complete and the operations are specified;
+what has never happened is running any of it.
+<a href="0007-run-it.html"><strong>Lesson 07 — run it</strong></a>: Postgres and RabbitMQ in
+Docker, the relay and the consumer as real processes, and a deliberate kill -9 in the middle
+to watch at-least-once actually happen.</p>
+
+<p class="ask-teacher">Anything above unclear, or want it pushed harder? Ask me — that is what
+I am here for. Good questions to throw at me now: "show me the parked-aggregate table and the
+anti-join version of the claim query", "what does a safe replay tool from the dead-letter
+queue look like?", "how would I size the retention window from the delivery limit?", or "walk
+me through partitioning an outbox that is already in production."</p>
+
+<p class="nav-links">
+  <a href="0005-ordering-and-how-much-you-need.html">← Lesson 05</a>
+  <a href="0007-run-it.html">Lesson 07 →</a>
+  <a href="../reference/glossary.html">Glossary</a>
+  <a href="../MISSION.md">Mission</a>
+  <a href="../RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

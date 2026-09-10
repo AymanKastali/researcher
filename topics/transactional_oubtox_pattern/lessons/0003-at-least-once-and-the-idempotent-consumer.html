@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 03 · At-Least-Once and the Idempotent Consumer</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
+<script src="../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 03 · Transactional Outbox</p>
+  <h1>At-Least-Once and the Idempotent Consumer</h1>
+  <p class="subtitle">The other half of the pattern. Where every duplicate comes from, and
+  the one transaction boundary that makes them harmless.</p>
+</header>
+
+<p><strong>The win for this lesson:</strong> by the end you can enumerate every place a
+duplicate is born, state the difference between exactly-once <em>delivery</em> and
+exactly-once <em>processing</em> without flinching, write the inbox table and handler from
+memory, and say what your broker does and does not do for you. An outbox without this half is
+an incomplete answer, and interviewers know it.</p>
+
+<p>Lessons 01 and 02 both ended on the same admission: <em>at-least-once</em>. Lesson 01
+called it the price; Lesson 02 showed it survives both relay designs. This lesson is where you
+stop apologising for it and start engineering around it.</p>
+
+<h2>Where duplicates are born</h2>
+
+<p>Name all three. Candidates who name one have read a blog post; candidates who name three
+have thought about the system.</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Hop</th><th>How the duplicate happens</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>1 · Relay → broker</strong></td>
+      <td>The publish succeeds and the <code>COMMIT</code> that marks the row published then
+      fails — or the worker dies in the gap. The row is still <code>published_at IS NULL</code>,
+      so the next poll publishes it again. Unavoidable in both Lesson 02 approaches.</td>
+    </tr>
+    <tr>
+      <td><strong>2 · Broker → consumer</strong></td>
+      <td>Redelivery. The consumer takes the message, does the work, and dies before acking.
+      The broker sees an unacked message and hands it to someone else. This happens even if
+      the relay published exactly once.</td>
+    </tr>
+    <tr>
+      <td><strong>3 · Relay restart</strong></td>
+      <td>A relay that crashes mid-batch replays the whole batch, because the claim was never
+      committed. Approach B's reaper does the same thing when a lease expires on a worker that
+      actually did publish.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Notice that these are independent. Fixing one does nothing for the others — which is
+exactly why broker features that dedup hop 1 do not remove the need to handle hop 2.</p>
+
+<h2>The distinction that gets you marked correct</h2>
+
+<div class="callout insight">
+  <span class="label">Delivery vs. processing</span>
+  <p>Exactly-once <strong>delivery</strong> is not achievable across a network. The sender
+  cannot distinguish "the message was lost" from "the ack was lost", so it must either retry
+  (risking a duplicate) or not retry (risking a loss). There is no third option.</p>
+  <p>Exactly-once <strong>processing</strong> is achievable, and is what people actually mean.
+  It is built, not bought: <em>at-least-once delivery plus an idempotent consumer</em>. If an
+  interviewer offers you "exactly-once", correct the word gently and then describe how you
+  build the real thing. That exchange is worth more than the rest of the answer.</p>
+</div>
+
+<h2>Idempotence, precisely</h2>
+
+<p>A handler is idempotent when running it twice leaves the same state as running it once.
+Two ways to get there, and you should reach for them in this order:</p>
+
+<h3>1. Make the operation naturally idempotent</h3>
+
+<p>Free, and no extra table. The test is whether the operation's result depends on the current
+state:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Statement</th><th>Idempotent?</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>UPDATE orders SET status = 'shipped' WHERE id = $1</code></td>
+      <td><strong>Yes.</strong> Assignment to an absolute value. Run it a thousand times.</td>
+    </tr>
+    <tr>
+      <td><code>UPDATE accounts SET balance = balance + 10 WHERE id = $1</code></td>
+      <td><strong>No.</strong> Read-modify-write. Every replay moves the value.</td>
+    </tr>
+    <tr>
+      <td><code>INSERT INTO shipments (order_id, …) VALUES ($1, …)</code></td>
+      <td><strong>Only with a unique constraint</strong> on <code>order_id</code>. Then the
+      duplicate raises instead of inserting, and the database is the dedup.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>That last row is worth pausing on. A unique constraint on the <em>business</em> key is
+often all the idempotence you need, and it is stronger than a dedup table because it holds
+even against duplicates you never anticipated. Check for it before you build anything.</p>
+
+<h3>2. Record what you have processed</h3>
+
+<p>When the operation cannot be made naturally idempotent, remember the message. From the
+canonical statement of the pattern:</p>
+
+<blockquote>
+  Make a consumer idempotent by having it record the IDs of processed messages in the
+  database. […] After starting the database transaction, the message handler inserts the
+  message's ID into the <code>PROCESSED_MESSAGE</code> table. Since the
+  <code>(subscriberId, messageID)</code> is the table's primary key the <code>INSERT</code>
+  will fail if the message has been already processed successfully.
+  <cite><a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html">Pattern:
+  Idempotent consumer — microservices.io</a></cite>
+</blockquote>
+
+<h2>The inbox table</h2>
+
+<pre><code class="language-sql">CREATE TABLE inbox_message (
+    consumer_name text        NOT NULL,
+    message_id    uuid        NOT NULL,
+    processed_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (consumer_name, message_id)
+);</code></pre>
+
+<p class="caption">Three columns. The composite primary key <em>is</em> the mechanism — it is
+not a modelling nicety.</p>
+
+<p>Two things to defend:</p>
+
+<ul>
+  <li><strong><code>message_id</code> is the outbox's <code>message_id</code></strong>, carried
+  across the broker untouched. This is why Lesson 02 gave the outbox a
+  <code>message_id uuid</code> separate from its <code>bigint</code> primary key: <code>id</code>
+  is storage, <code>message_id</code> is the contract, and it is the contract that has to
+  survive the trip.</li>
+  <li><strong><code>consumer_name</code> is in the key</strong> because a message usually has
+  several independent consumers — billing, search indexing, email. Each must decide separately
+  whether it has seen the message. Key on <code>message_id</code> alone and the first consumer
+  to finish silently suppresses the message for everyone else.</li>
+</ul>
+
+<h2>The whole lesson in one boundary</h2>
+
+<p>Everything above is setup. This is the part that matters:</p>
+
+<div class="callout insight">
+  <span class="label">The dedup record and the side effect commit together</span>
+  <p>The inbox <code>INSERT</code> and the business write go in the <strong>same local
+  transaction</strong>. One commit, both or neither.</p>
+</div>
+
+<p>Why it has to be that way — walk the alternatives and watch the dual-write problem
+reappear, this time on the consuming side:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Order</th><th>What goes wrong</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Insert the id, commit, <em>then</em> do the work</td>
+      <td><strong>Message loss.</strong> Die in the gap and the message is permanently marked
+      processed while nothing happened. Redelivery finds the row and drops it. Nothing anywhere
+      reports an error — the worst failure mode there is.</td>
+    </tr>
+    <tr>
+      <td>Do the work, commit, <em>then</em> insert the id</td>
+      <td><strong>Duplicate work.</strong> Not fatal, but you built a dedup table and it does
+      not dedup. You have paid for a guarantee you do not have.</td>
+    </tr>
+    <tr>
+      <td>Both in one transaction</td>
+      <td><strong>Correct.</strong> A crash rolls back both, redelivery replays cleanly, and
+      the second attempt is genuinely the first.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>It is the same argument as Lesson 01, reflected. The outbox exists because you cannot
+atomically write to a database and a broker. The inbox exists because you cannot atomically
+write to a database and <em>ack</em> a broker. Both are solved the same way: put the second
+write into the first database, and make it one commit.</p>
+
+<h2>The consumer in Python</h2>
+
+<pre><code class="language-python">import json
+from uuid import UUID
+
+from aio_pika.abc import AbstractIncomingMessage
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+CONSUMER = "billing"
+
+async def handle(session: AsyncSession, message: AbstractIncomingMessage) -> bool:
+    """Process a message exactly once. Returns False if it was a duplicate."""
+    async with session.begin():                       # ONE transaction for both writes
+        claimed = await session.execute(
+            insert(InboxMessage)
+            .values(
+                consumer_name=CONSUMER,
+                message_id=UUID(message.message_id),  # the outbox row's uuid, intact
+            )
+            .on_conflict_do_nothing()                 # ← seen before? no rows affected
+        )
+        if claimed.rowcount == 0:
+            return False                              # already processed; ack and move on
+
+        await apply_business_effect(session, json.loads(message.body))
+
+    return True                                       # both writes committed together</code></pre>
+
+<p class="caption"><code>on_conflict_do_nothing()</code> is Postgres' <code>ON CONFLICT DO
+NOTHING</code>, imported from the <code>postgresql</code> dialect rather than the generic
+<code>sqlalchemy</code> namespace. Checking <code>rowcount</code> is what turns a swallowed
+conflict into a decision. Catching a raised <code>IntegrityError</code> works too, but it
+poisons the transaction and you have to roll back to a savepoint — this is cleaner.</p>
+
+<p>Now the loop around it, where the second ordering rule lives:</p>
+
+<pre><code class="language-python">from aio_pika.abc import AbstractQueue
+
+async def consume(sessionmaker: async_sessionmaker, queue: AbstractQueue) -> None:
+    async with queue.iterator() as messages:          # manual ack — never no_ack=True
+        async for message in messages:
+            async with sessionmaker() as session:
+                await handle(session, message)        # commits, or raises
+
+            await message.ack()                       # only after the commit succeeded</code></pre>
+
+<p class="caption">If <code>handle</code> raises we never reach the ack, so the delivery stays
+unacknowledged and RabbitMQ requeues it when the channel closes. That is the behaviour you
+want — and it is also why the delivery limit matters, because a message that always raises
+would otherwise loop forever.</p>
+
+<div class="callout trap">
+  <span class="label">Commit, then ack. Never the reverse.</span>
+  <p>Ack first and you have told the broker to forget the message while your own transaction
+  may still fail. Nothing will ever redeliver it: the work is lost with no error. Commit first
+  and the worst case is that the ack fails, the broker redelivers, and the inbox catches it
+  on the next pass. The asymmetry is total — one ordering risks a duplicate you have already
+  defended against, the other risks silent loss.</p>
+  <p>The relay had the mirror-image rule: publish, <em>then</em> mark. Same reasoning both
+  times — always fail toward the duplicate.</p>
+</div>
+
+<h2>What RabbitMQ gives you — and what it does not</h2>
+
+<p>Broker pinned: RabbitMQ. That <em>simplifies</em> this section, because the answer is
+<strong>no deduplication at all</strong> — and the docs say so outright rather than burying
+it:</p>
+
+<blockquote>
+  Due to this behavior, consumers must be prepared to handle redeliveries and otherwise be
+  implemented with idempotence in mind.
+  <cite><a href="https://www.rabbitmq.com/docs/confirms">RabbitMQ — Consumer Acknowledgements
+  and Publisher Confirms</a></cite>
+</blockquote>
+
+<p>There is no broker feature to reach for instead, so the inbox table is not belt-and-braces
+— it is the entire mechanism. Do not be tempted by the <code>redelivered</code> flag, either.
+It tells you a delivery <em>might</em> be a repeat; it never tells you whether <em>you</em>
+already processed it, and the docs warn that <em>"a consumer can receive a message that was
+previously delivered to another consumer."</em> You cannot deduplicate on a boolean.</p>
+
+<aside class="sidenote">Other brokers do offer publish-side dedup. SQS FIFO: <em>"If you
+retry the <code>SendMessage</code> action within the 5-minute deduplication interval, Amazon
+SQS doesn't introduce any duplicates into the queue"</em> — a fixed five minutes, not a
+setting. NATS JetStream: <em>"For two minutes after a message is stored, the server turns
+away a second message that carries the same <code>Nats-Msg-Id</code> header"</em> — two
+minutes is the <em>default</em> and the window is configurable. Worth a sentence in an
+interview, but note what they are: they dedup the <em>send</em>, inside a window shorter than
+a real outage, and neither touches redelivery. Even there the inbox stays. RabbitMQ just
+makes the choice for you.</aside>
+
+<h3>Four consumer settings that are not optional</h3>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Setting</th><th>Why, in the docs' words</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Manual acknowledgement</strong><br>never auto-ack</td>
+      <td>Auto-ack acks on delivery, before your handler has run: <em>"if consumers's TCP
+      connection or channel is closed before successful delivery, the message sent by the
+      server will be lost. Therefore, automatic message acknowledgement should be considered
+      unsafe."</em> It quietly converts your at-least-once pipeline into at-most-once.</td>
+    </tr>
+    <tr>
+      <td><strong>Prefetch</strong><br><code>basic.qos</code></td>
+      <td><em>"The value defines the max number of unacknowledged deliveries that are permitted
+      on a channel."</em> Leave it unbounded and one crashed consumer requeues its entire
+      in-flight backlog at once. The docs suggest <em>"values in the 100 through 300 range
+      usually offer optimal throughput."</em></td>
+    </tr>
+    <tr>
+      <td><strong>Quorum queues</strong></td>
+      <td>They <em>"should be considered the default choice when needing a replicated, highly
+      available queue"</em>, and they change what a publisher confirm means: for quorum queues
+      the ack arrives only once <em>"a quorum replicas have accepted and confirmed the message
+      to the elected leader."</em></td>
+    </tr>
+    <tr>
+      <td><strong>Delivery limit + a DLX</strong></td>
+      <td>Quorum queues count redeliveries in an <code>x-delivery-count</code> header, and
+      since RabbitMQ 4.0 <em>"the delivery limit for quorum queues defaults to 20."</em> Past
+      it, <em>"the message will be dropped (removed) or dead-lettered (if a DLX is
+      configured)."</em> Read that as: <strong>configure the dead-letter exchange, or the
+      default is deletion.</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>The trap on the relay side</h3>
+
+<p>Lesson 02's relay called <code>await broker.publish(...)</code> and moved on. On RabbitMQ
+that one line hides two decisions, and either of them left at its default turns your relay
+into a shredder.</p>
+
+<p><strong>First, the publish has to wait for a confirm.</strong> Without
+<code>confirm.select</code> publishing is fire-and-forget: the call returns, you set
+<code>published_at</code>, and the message may never have reached the broker. With confirms on,
+the ack means something strong — <em>"for persistent messages routed to durable queues, this
+means persisting to disk."</em> In aio-pika <code>publisher_confirms=True</code> is the channel
+default and <code>exchange.publish()</code> returns the confirmation, so <em>check</em> it
+rather than assuming it.</p>
+
+<div class="callout trap">
+  <span class="label">A confirm does not mean the message reached a queue</span>
+  <p>The docs, precisely: <em>"For unroutable messages, the broker will issue a confirm once
+  the exchange verifies a message won't route to any queue (returns an empty list of
+  queues)."</em> And unroutable is not an error by default — <em>"the publisher set the
+  <code>mandatory</code> message property to <code>false</code> (this is the default), the
+  message is discarded."</em></p>
+  <p>Hold those two against your relay. One typo in a routing key, or a queue nobody declared:
+  the exchange routes the message nowhere, discards it, and <strong>confirms it to you
+  anyway</strong>. Your relay marks the row published. The outbox now reports one hundred per
+  cent delivery while every message goes in the bin — and the outbox was supposed to be the
+  component that made loss impossible.</p>
+  <p>Publish with <code>mandatory=True</code> and treat a returned message as a failed publish,
+  leaving <code>published_at</code> NULL so the row is retried; or bind an
+  <a href="https://www.rabbitmq.com/docs/ae">alternate exchange</a> to catch strays. Doing
+  neither is the most expensive default in this lesson.</p>
+  <p><strong>One correction worth carrying, because it cuts the other way.</strong> That
+  quoted default is the AMQP protocol's. Your client library may not share it — and this one
+  does not: aio-pika 10.0.1 declares <code>mandatory: bool = True</code> on
+  <code>Exchange.publish</code> (checked in <code>aio_pika/exchange.py</code> and
+  <code>abc.py</code>), so it is <em>already</em> on unless you switch it off. Set it
+  explicitly anyway. You are stating an intention that a library upgrade must not silently
+  reverse, and in an interview "I never rely on a client default for a durability property"
+  is the stronger sentence.</p>
+</div>
+
+<pre><code class="language-python">import json
+
+from aio_pika import DeliveryMode, Message
+from aio_pika.abc import AbstractExchange
+from pamqp.commands import Basic
+
+async def publish(exchange: AbstractExchange, row: OutboxMessage) -> None:
+    """Publish one outbox row, or raise. Raising leaves published_at NULL."""
+    confirmation = await exchange.publish(
+        Message(
+            body=json.dumps(row.payload).encode(),
+            message_id=str(row.message_id),        # the consumer's dedup key
+            type=row.event_type,
+            content_type="application/json",
+            delivery_mode=DeliveryMode.PERSISTENT, # pointless without a durable queue
+        ),
+        routing_key=f"{row.aggregate_type}.{row.event_type}",
+        mandatory=True,                            # unroutable -> raises, not silence
+        timeout=5.0,                               # bounds Lesson 02's open transaction
+    )
+    if not isinstance(confirmation, Basic.Ack):
+        raise RuntimeError(f"broker did not ack {row.message_id}")</code></pre>
+
+<p class="caption">This is the body of Lesson 02's <code>broker.publish</code>, made honest.
+Every raise path leaves the row unpublished, so Approach A's transaction rolls back and the
+next poll retries it — the duplicate you are defended against, never the loss you are not.
+Note where <code>message_id</code> lands: AMQP's standard <code>message_id</code> property,
+which is exactly what the consumer's inbox will key on.</p>
+
+<h2>The one duplicate you cannot roll back</h2>
+
+<p>The inbox works because the dedup record and the effect share a transaction. That argument
+collapses the moment the effect leaves the database — sending an email, charging a card,
+calling a partner API. <code>ROLLBACK</code> does not un-send an email.</p>
+
+<p>Two honest answers, and having them ready is a mark of experience:</p>
+
+<ul>
+  <li><strong>Push idempotence to the remote side.</strong> Send a stable idempotency key —
+  your <code>message_id</code> again — and let the provider collapse the retry. This is exactly
+  why payment APIs ask for one.</li>
+  <li><strong>Order the work so the duplicate is the cheap failure.</strong> Commit local state
+  first, then make the external call from a follow-up step that can be safely retried. You have
+  now reinvented the outbox: the external call becomes another row in another outbox table.
+  Say that out loud — noticing the pattern recurring is the point.</li>
+</ul>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>Enumerate the three sources of duplicates; separate exactly-once delivery from
+  exactly-once processing and say why one is impossible; write the inbox DDL and handler from
+  memory; justify the single transaction and the commit-then-ack ordering; and configure
+  RabbitMQ so that neither an unroutable publish nor an auto-ack quietly eats a message.</p>
+</div>
+
+<h2>Name what is still broken</h2>
+
+<ul>
+  <li><strong>The inbox grows forever</strong>, exactly like the outbox. It needs a retention
+  policy tied to your maximum plausible redelivery delay — delete rows older than that and
+  duplicates beyond it slip through. Lesson 06.</li>
+  <li><strong>Ordering is still gone.</strong> Idempotence makes replays harmless; it does
+  nothing about message 5 arriving before message 4. A handler can be perfectly idempotent and
+  still apply a stale update over a fresh one. Lesson 05.</li>
+  <li><strong>A poison message now fails in two places</strong> — the relay cannot publish it,
+  or the consumer cannot process it. Different queues, different escape hatches. Lesson 06.</li>
+</ul>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question — guessing until it turns green is recognition, not recall.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Your consumer inserts the message id into the inbox and commits, then
+    does the business work and commits again. What is the failure mode?</p>
+    <ul class="options">
+      <li><button data-opt="a">Duplicate work occurs whenever the second commit fails</button></li>
+      <li><button data-opt="b">The message is lost if the process dies between commits</button></li>
+      <li><button data-opt="c">Other consumers block on the inbox row until both finish</button></li>
+      <li><button data-opt="d">Nothing breaks; two commits beat one long transaction</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>The second commit failing is the <em>symptom</em>,
+    but the result is not duplicated work — it is work that never happens at all.</p></div>
+    <div class="feedback" data-for="b"><p>Correct, and this is the dangerous one. The id says
+    "processed", so redelivery is dropped, and no error is ever raised. Silent loss beats
+    duplicate work as the thing to fear.</p></div>
+    <div class="feedback" data-for="c"><p>No lock is held across the two transactions — the
+    first one committed and released everything.</p></div>
+    <div class="feedback" data-for="d"><p>The opposite. Splitting them recreates the dual-write
+    problem inside your own database.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">Your relay has publisher confirms on, receives an ack for every message,
+    and marks every row published. Nothing ever arrives. Why?</p>
+    <ul class="options">
+      <li><button data-opt="a">Consumers auto-acked on delivery, so the queue drained</button></li>
+      <li><button data-opt="b">Confirms are batched, so acks referred to older messages</button></li>
+      <li><button data-opt="c">The messages were unroutable: discarded, but confirmed</button></li>
+      <li><button data-opt="d">The queue was not durable, so a restart discarded them</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>No consumer is involved — the messages never reached
+    a queue for anyone to receive. Auto-ack loses messages, but only ones that arrived.</p></div>
+    <div class="feedback" data-for="b"><p>Each <code>basic.ack</code> carries a
+    <code>delivery-tag</code> identifying exactly which message it confirms. Batching does not
+    misattribute them.</p></div>
+    <div class="feedback" data-for="c"><p>Correct, and it is the nastiest default in RabbitMQ.
+    The broker confirms once the exchange verifies the message routes nowhere, and with
+    <code>mandatory</code> false it discards it. Publish with <code>mandatory=True</code>.</p></div>
+    <div class="feedback" data-for="d"><p>A real failure mode, but it needs a broker restart
+    to bite — and a persistent message on a durable queue is only acked after it hits
+    disk.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">Which handler is naturally idempotent, needing no dedup record at
+    all?</p>
+    <ul class="options">
+      <li><button data-opt="a"><code>UPDATE accounts SET balance = balance + 10 WHERE id = $1</code></button></li>
+      <li><button data-opt="b"><code>INSERT INTO audit_log (order_id, note) VALUES ($1, $2)</code></button></li>
+      <li><button data-opt="c"><code>UPDATE orders SET status = 'shipped' WHERE id = $1</code></button></li>
+      <li><button data-opt="d"><code>UPDATE counters SET seen = seen + 1 WHERE key = $1</code></button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Read-modify-write. Every replay adds another ten —
+    the textbook non-idempotent operation.</p></div>
+    <div class="feedback" data-for="b"><p>An unconstrained insert appends a second row on
+    replay. Add a unique constraint on <code>order_id</code> and it becomes idempotent.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. Assignment to an absolute value: the result
+    does not depend on the current state, so replays converge on the same row.</p></div>
+    <div class="feedback" data-for="d"><p>Same shape as the balance increment — the new value
+    is derived from the old one, so it drifts.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">A consumer acks the broker before committing its own transaction. What
+    is the consequence?</p>
+    <ul class="options">
+      <li><button data-opt="a">The broker redelivers a message that was already handled</button></li>
+      <li><button data-opt="b">The inbox insert conflicts and the handler raises an error</button></li>
+      <li><button data-opt="c">Work is duplicated, since the ack leaves the inbox row</button></li>
+      <li><button data-opt="d">A failed commit loses the message; nothing redelivers it</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>That is what acking <em>late</em> risks — and it is
+    the safe direction, because the inbox absorbs it.</p></div>
+    <div class="feedback" data-for="b"><p>No conflict arises; the ordering of ack and commit
+    does not affect the uniqueness check.</p></div>
+    <div class="feedback" data-for="c"><p>Duplication is the failure you have already defended
+    against. This ordering causes the one you have not.</p></div>
+    <div class="feedback" data-for="d"><p>Right. The broker has forgotten the message while
+    your transaction can still roll back, so the work silently never happens. Always fail
+    toward the duplicate: commit, then ack.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Why is the inbox keyed on <code>(consumer_name, message_id)</code> rather
+    than on <code>message_id</code> alone?</p>
+    <ul class="options">
+      <li><button data-opt="a">Because uuid values collide too often to key on alone</button></li>
+      <li><button data-opt="b">Several consumers see one message and each dedups itself</button></li>
+      <li><button data-opt="c">It keeps the index partial, holding only unprocessed rows</button></li>
+      <li><button data-opt="d">It lets the broker route each message to the right group</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Version-4 uuid collisions are not a practical
+    concern. The reason is about who is asking, not about uniqueness.</p></div>
+    <div class="feedback" data-for="b"><p>Correct. Billing, search and email all consume the
+    same event; with a bare <code>message_id</code> key, whichever finishes first would suppress
+    the message for the rest. microservices.io keys on
+    <code>(subscriberId, messageID)</code> for exactly this reason.</p></div>
+    <div class="feedback" data-for="c"><p>Nothing here is partial — every processed message is
+    recorded, and a composite key does not filter rows.</p></div>
+    <div class="feedback" data-for="d"><p>The table is private to the consumer. The broker
+    never reads it and routing is decided long before it exists.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it out loud</h2>
+
+<div class="recall">
+  <p class="prompt">Whiteboard, no notes, 90 seconds. The prompt is: <em>"your outbox is
+  at-least-once — so what?"</em> Cover where duplicates come from, the delivery/processing
+  distinction, the inbox table, the transaction boundary, the ack ordering, and the RabbitMQ
+  settings that stop a message vanishing. Then reveal and score what you dropped.</p>
+  <button class="reveal">Reveal model answer</button>
+  <div class="answer">
+    <p>"Duplicates come from three places. The relay can publish and then fail to mark the row
+    published, so it republishes. The broker redelivers anything a consumer did not ack. And a
+    relay that dies mid-batch replays that batch on restart. They are independent, so fixing
+    one does not help the others.</p>
+    <p>Exactly-once delivery isn't achievable — the sender can't tell a lost message from a
+    lost ack, so it either retries and risks duplicates or doesn't and risks loss. What is
+    achievable is exactly-once processing: at-least-once delivery plus an idempotent consumer.</p>
+    <p>First I check whether the handler is already idempotent — setting a status is, adding to
+    a balance isn't — or whether a unique constraint on the business key gives it to me free.
+    If not, I add an inbox table keyed on consumer name plus message id, where message id is
+    the one the outbox row generated and carried across the broker. Consumer name is in the key
+    because several consumers see the same message and each has to dedup independently.</p>
+    <p>The handler inserts the id with <code>ON CONFLICT DO NOTHING</code> and does the business
+    write <em>in the same transaction</em>. If <code>rowcount</code> is zero it's a replay, and
+    I ack and drop it. Splitting those into two commits recreates the dual-write problem on the
+    consumer side — insert-first loses messages silently, work-first duplicates.</p>
+    <p>Then I commit and only then ack. Acking first means a failed commit loses the message
+    with nothing to redeliver it. Always fail toward the duplicate.</p>
+    <p>RabbitMQ contributes nothing here — no core deduplication, and the docs say plainly
+    that consumers must be implemented with idempotence in mind. So the inbox isn't a backstop,
+    it's the mechanism. On the consumer: manual acks, because auto-ack is documented as unsafe
+    and turns at-least-once into at-most-once; a bounded prefetch; and quorum queues with the
+    delivery limit and a dead-letter exchange, so a poison message leaves the queue instead of
+    looping twenty times and being silently deleted.</p>
+    <p>On the relay I publish with confirms <em>and</em> mandatory set. An unroutable message
+    gets confirmed anyway and then discarded, so without mandatory the outbox would report
+    perfect delivery straight into a bin. The outbox row's message_id goes in the AMQP
+    message_id property — that is what the inbox keys on."</p>
+    <p><em>Score the parts you dropped, not the wording. The three most costly omissions are
+    the single transaction, commit-then-ack, and "a confirm does not mean it was
+    routed".</em></p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<h2>Read this next</h2>
+
+<p><strong>Primary source:</strong>
+<a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html">Pattern:
+Idempotent consumer — microservices.io</a>. Two minutes, and it gives you the
+<code>(subscriberId, messageID)</code> key and the exact vocabulary an interviewer will use.</p>
+
+<p>Then, now that the broker is pinned,
+<a href="https://www.rabbitmq.com/docs/confirms">RabbitMQ — Consumer Acknowledgements and
+Publisher Confirms</a>, which is the single highest-value page for you in this whole topic:
+it is where both halves of the delivery guarantee are specified, and it is unusually
+well-written. Follow it with
+<a href="https://www.rabbitmq.com/docs/quorum-queues">Quorum Queues</a> for
+<code>x-delivery-count</code>, the delivery limit and dead-lettering.</p>
+
+<h2>Coming next</h2>
+
+<p><strong><a href="0004-polling-or-tailing-the-log.html">Lesson 04 — polling publisher vs.
+transaction log tailing</a>.</strong> The comparison
+question, and the one where "it depends" has to be replaced with a decision and a reason. You
+now have both halves of the pattern working, so the argument is about <em>how</em> messages
+leave the table, not whether the pattern holds.</p>
+
+<p class="ask-teacher">Push back. Good things to throw at me now: "how long do I keep inbox
+rows?", "can I put the inbox row inside the business table instead of its own table?", "what
+if my consumer is not backed by a database at all?", or "isn't this just reimplementing what
+the broker should do?" And now that you are on RabbitMQ: "should the relay use one channel or
+one per worker?", or "what does <code>message.process()</code> in aio-pika actually ack, and
+when?"</p>
+
+<p class="nav-links">
+  <a href="0002-the-message-relay.html">← Lesson 02</a>
+  <a href="0004-polling-or-tailing-the-log.html">Lesson 04 →</a>
+  <a href="../reference/glossary.html">Glossary</a>
+  <a href="../MISSION.md">Mission</a>
+  <a href="../RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
