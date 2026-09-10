@@ -328,8 +328,11 @@ it:</p>
   limit</strong> are now measured in Lesson 06, where they overturned what this course
   previously taught.</p>
   <p>The harness that produced them has been deleted; its captured output has not. Every
-  measurement those two lessons quote is transcribed in <code>evidence/</code> beside these
-  lessons, run against PostgreSQL 17.11 and a three-node RabbitMQ 4.3.5 cluster.</p>
+  measurement those two lessons quote is transcribed in
+  <a href="https://github.com/AymanKastali/researcher/tree/main/topics/transactional_outbox_pattern/evidence">evidence/</a>
+  beside these lessons, run against PostgreSQL 17.11 and a three-node RabbitMQ 4.3.5
+  cluster. Read it for what is <em>not</em> there as much as what is: no failover run, and
+  a counted-out message that left the queue without arriving on its dead-letter queue.</p>
 </div>
 
 <h2>Check yourself</h2>
