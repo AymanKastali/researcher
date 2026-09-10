@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Researcher · Contents</title>
+<link rel="stylesheet" href="topics/transactional_oubtox_pattern/assets/lesson.css">
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Researcher</p>
+  <h1>Transactional Outbox</h1>
+  <p class="subtitle">Seven lessons taking the pattern from the dual-write problem to
+  operating it in production, built for recall under questioning rather than
+  recognition.</p>
+</header>
+
+<p>Read them in order the first time — each one ends by deferring something the next
+picks up. After that, the <a href="topics/transactional_oubtox_pattern/reference/glossary.html">glossary</a>
+is the page to come back to.</p>
+
+<h2>Lessons</h2>
+
+<ul class="contents">
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0001-the-dual-write-problem.html">
+    <span class="n">Lesson 01</span>
+    <span class="t">The Dual-Write Problem</span>
+    <span class="d">Why there is no safe order in which to do two writes, and what the
+    outbox actually buys you.</span></a></li>
+
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0002-the-message-relay.html">
+    <span class="n">Lesson 02</span>
+    <span class="t">The Message Relay</span>
+    <span class="d">The table, the claim query, and the one design decision the whole
+    relay turns on.</span></a></li>
+
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0003-at-least-once-and-the-idempotent-consumer.html">
+    <span class="n">Lesson 03</span>
+    <span class="t">At-Least-Once and the Idempotent Consumer</span>
+    <span class="d">Where every duplicate comes from, and the one transaction boundary
+    that makes them harmless.</span></a></li>
+
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0004-polling-or-tailing-the-log.html">
+    <span class="n">Lesson 04</span>
+    <span class="t">Polling or Tailing the Log</span>
+    <span class="d">What change data capture buys you, what it does not, and why the bill
+    arrives on your primary database.</span></a></li>
+
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0005-ordering-and-how-much-you-need.html">
+    <span class="n">Lesson 05</span>
+    <span class="t">Ordering, and How Much You Need</span>
+    <span class="d">Refuse the requirement you were handed, then buy the smaller one
+    cheaply. Carries a measured correction: single active consumer is not enough.</span></a></li>
+
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0006-operating-it.html">
+    <span class="n">Lesson 06</span>
+    <span class="t">Operating It</span>
+    <span class="d">Monitoring, poison messages and retention — the first two in direct
+    conflict with the ordering you just bought.</span></a></li>
+
+  <li><a href="topics/transactional_oubtox_pattern/lessons/0007-run-it.html">
+    <span class="n">Lesson 07</span>
+    <span class="t">Run It</span>
+    <span class="d">Postgres and RabbitMQ in Docker, the relay killed with
+    <code>SIGKILL</code> in the exact millisecond that matters.</span></a></li>
+</ul>
+
+<h2>Reference</h2>
+
+<ul class="contents">
+  <li><a href="topics/transactional_oubtox_pattern/reference/glossary.html">
+    <span class="n">Reference</span>
+    <span class="t">Glossary</span>
+    <span class="d">The vocabulary an interviewer will use. Precision here is most of the
+    signal.</span></a></li>
+
+  <li><a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_oubtox_pattern/RESOURCES.md">
+    <span class="n">Sources</span>
+    <span class="t">Resources</span>
+    <span class="d">Every citation in the lessons, with what each source is good for and
+    where it stops being trustworthy.</span></a></li>
+
+  <li><a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_oubtox_pattern/evidence/README.md">
+    <span class="n">Evidence</span>
+    <span class="t">Run transcripts</span>
+    <span class="d">The captured output behind every measured number in Lessons 05 and
+    06, and an honest list of what was never run.</span></a></li>
+
+  <li><a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_oubtox_pattern/MISSION.md">
+    <span class="n">Why</span>
+    <span class="t">Mission</span>
+    <span class="d">What this course is for, and what is deliberately out of
+    scope.</span></a></li>
+</ul>
+
+<footer class="lesson-footer">
+  <p class="ask-teacher">The lessons are the source of truth here. Every claim in them is
+  either cited to a primary source or backed by a transcript in
+  <code>evidence/</code> — and where something is still unverified, the lesson says
+  so.</p>
+</footer>
+
+</article>
+</body>
+</html>

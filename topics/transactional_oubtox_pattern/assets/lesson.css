@@ -464,6 +464,53 @@ td.term-col { width: 34%; }
 }
 .nav-links a { margin-right: 1.5rem; }
 
+/* --- Contents index ------------------------------------------------------
+   Used by the repo-root index.html — the page you reach by bookmarking the
+   site on a phone. Big tap targets, because that is what it is for: the whole
+   row is the link, not just the title. 44px is the minimum comfortable touch
+   target (WCAG 2.2 SC 2.5.8 asks for 24px; Apple and Google both say 44).
+   ------------------------------------------------------------------------- */
+
+.contents {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  border-top: 1px solid var(--rule);
+}
+.contents li { border-bottom: 1px solid var(--rule); }
+
+.contents a {
+  display: block;
+  min-height: 44px;
+  padding: 0.85rem 0.2rem;
+  background: none;
+  text-decoration: none;
+  color: var(--ink);
+}
+.contents a:hover,
+.contents a:focus-visible { background: var(--panel); }
+
+.contents .n {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  display: block;
+  margin-bottom: 0.2rem;
+}
+.contents .t {
+  display: block;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 0.15rem;
+}
+.contents .d {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
 /* --- RESPONSIVE ----------------------------------------------------------
    Three steps, largest first. Every lesson must be readable on a phone —
    this is a project rule, not a polish pass.
