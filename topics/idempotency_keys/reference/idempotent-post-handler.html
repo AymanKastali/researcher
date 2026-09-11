@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference · The Idempotent POST Handler</title>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Reference · Idempotency Keys</p>
+  <h1>The Idempotent POST Handler</h1>
+  <p class="subtitle">The algorithm, the decision table and the vocabulary, compressed onto one
+  printable page. Built from
+  <a href="../lessons/0001-the-key-and-the-servers-algorithm.html">Lesson 01</a>,
+  <a href="../lessons/0002-what-you-store-and-for-how-long.html">Lesson 02</a>,
+  <a href="../lessons/0003-the-key-across-a-trust-boundary.html">Lesson 03</a> and
+  <a href="../lessons/0004-foreign-state-mutations.html">Lesson 04</a>.</p>
+</header>
+
+<h2>The one-sentence problem</h2>
+
+<p>A client whose request times out cannot distinguish <em>never arrived</em> from <em>still
+running</em> from <em>completed, response lost</em> — so it must either risk a duplicate or
+risk a loss. An idempotency key is a name the client picks <strong>in advance</strong>, so the
+question becomes a lookup the server can answer.</p>
+
+<h2>The algorithm</h2>
+
+<ol>
+  <li><strong>Claim.</strong> <code>INSERT … ON CONFLICT DO NOTHING</code> on
+  <code>(caller, key)</code>. Never read-then-write.</li>
+  <li><strong>Branch</strong> on the conflict — see the decision table.</li>
+  <li><strong>Work + record, in one transaction.</strong> Business write, <code>completed</code>
+  state, and the stored response commit together. <em>Holds only while the work is local</em> —
+  if it calls another system, see <a href="#phases">atomic phases</a>.</li>
+  <li><strong>Return the stored response</strong> — same status code and body, original and
+  every replay.</li>
+</ol>
+
+<h2>Decision table</h2>
+
+<table class="stacked">
+  <thead>
+    <tr><th>State of the key</th><th>Response</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Absent</strong> — claim succeeded</td>
+      <td>Process normally. Whatever the operation's own status code is.</td>
+    </tr>
+    <tr>
+      <td><strong>Present, <code>completed</code></strong>, same payload</td>
+      <td>Replay the stored <code>response_code</code> and <code>response_body</code>.
+      <strong>Never re-execute.</strong></td>
+    </tr>
+    <tr>
+      <td><strong>Present, <code>in_progress</code></strong>, same payload</td>
+      <td><code>409 Conflict</code>. Nothing to replay yet; the client retries shortly.</td>
+    </tr>
+    <tr>
+      <td><strong>Present, payload fingerprint differs</strong></td>
+      <td><code>422 Unprocessable Content</code>. A client bug — the key was reused.</td>
+    </tr>
+    <tr>
+      <td><strong>Header absent</strong> on an endpoint that requires it</td>
+      <td><code>400 Bad Request</code>, with a link to your idempotency documentation.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="caption">Status codes from
+<a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">draft-ietf-httpapi-idempotency-key-header-07</a>
+§2.6–2.7. All are <code>SHOULD</code>, and the draft is expired — convention, not standard.</p>
+
+<h2>Stored, or not stored</h2>
+
+<p>The guarantee covers only what the endpoint produced. Everything in front of the idempotency
+layer is outside it — <em>"We save results only after the execution of an endpoint begins."</em></p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Response</th><th>Cached against the key?</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>2xx</code> success</td><td><strong>Yes</strong> — replayed until reaped.</td></tr>
+    <tr>
+      <td><code>4xx</code> from the endpoint (decline, business rule)</td>
+      <td><strong>Yes.</strong> Same key returns the same refusal. Fix the request → new key.</td>
+    </tr>
+    <tr>
+      <td><code>500</code> from inside the endpoint</td>
+      <td><strong>Yes</strong>, and permanently. Treat as <em>indeterminate</em>, not failed.</td>
+    </tr>
+    <tr>
+      <td><code>400</code> / <code>401</code> / <code>429</code> raised in front of the layer</td>
+      <td><strong>No.</strong> Nothing executed; the same key may answer differently later.</td>
+    </tr>
+    <tr>
+      <td><code>409</code> concurrent retry</td>
+      <td><strong>No</strong> — the layer emitted it. Safe to retry <em>unchanged</em>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Scope, fingerprint, or ignored</h2>
+
+<p>Every field of an incoming request is in one of three buckets. The first two are both
+decisions, and they are not interchangeable.</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Bucket</th><th>Meaning, and what moving a field there does</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Scope</strong> — you look up <em>with</em> it</td>
+      <td>Same key, different scope value ⇒ <strong>a different operation</strong>, which
+      executes. Must be derived server-side from the authenticated caller — draft §5 requires
+      attributes <em>"known only to the resource"</em>. AWS scopes on Region/Zone on purpose.</td>
+    </tr>
+    <tr>
+      <td><strong>Fingerprint</strong> — you compare <em>after</em> the lookup</td>
+      <td>Same key, different value ⇒ <strong>a key reuse</strong>, so <code>422</code>. Never put
+      it in the lookup itself.</td>
+    </tr>
+    <tr>
+      <td><strong>Ignored</strong> — in neither</td>
+      <td>A field a client can change between attempts without you noticing. Fine, as long as it
+      is a choice.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="caption">Scope also has a <strong>time axis</strong>: Stripe requires keys unique
+<em>"within your account over the last 24 hours, at a minimum"</em> — so the retention window is
+the temporal half of the scope, not housekeeping.</p>
+
+<h2>The table</h2>
+
+<pre><code class="language-sql">CREATE TABLE idempotency_key (
+    user_id        bigint      NOT NULL,   -- scope: never key on the bare string
+    key            text        NOT NULL,
+    request_hash   text        NOT NULL,   -- fingerprint -> the 422 case
+    state          text        NOT NULL,   -- 'in_progress' | 'completed'
+    response_code  int,                    -- the two columns people forget
+    response_body  jsonb,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, key)
+);</code></pre>
+
+<h2 id="phases">When the work leaves your database</h2>
+
+<p>A <strong>foreign state mutation</strong> is any step your transaction cannot roll back. The
+test is not who operates the system — a broker you own, a cache, another of your own services
+behind HTTP all count. <em>"Once we make our first foreign state mutation, we're committed one way
+or another."</em></p>
+
+<p>Cut the request into <strong>atomic phases</strong>, each committing a <strong>recovery
+point</strong> onto the key row. Three mechanical rules:</p>
+
+<ol>
+  <li><em>"Upserting the idempotency key gets its own atomic phase."</em></li>
+  <li><em>"Every foreign state mutation gets its own atomic phase."</em></li>
+  <li>Everything else groups into the phases between them — local writes are free.</li>
+</ol>
+
+<table class="stacked">
+<tbody>
+<tr>
+  <td class="term-col"><strong>Commit before you call out</strong></td>
+  <td><em>"Atomic phases should be safely committed <strong>before</strong> initiating any foreign
+  state mutation."</em> Putting the call inside the transaction means a failed commit rolls back
+  the record but not the charge — and the key row vanishes too, so the retry looks new and
+  double-charges. It also holds a row lock across a network call.</td>
+</tr>
+<tr>
+  <td><strong>A resumed phase reloads</strong></td>
+  <td>A retry re-enters at its recovery point, not at the top, so no local variable from an earlier
+  phase exists. Carrying state down works on the first attempt and crashes on every resume.</td>
+</tr>
+<tr>
+  <td><strong>Replay is the terminal state</strong></td>
+  <td>A <code>finished</code> key enters the loop, breaks immediately, returns the stored response.
+  Duplicate detection was never bolted on the front — it is the last node of the machine.</td>
+</tr>
+<tr>
+  <td><strong>Put a derived key on your own outbound calls</strong></td>
+  <td>Now you are the client. Derive it from something stable (the key row's id) — a value
+  generated at call time differs on the retry and buys nothing. The recovery point tells you the
+  call <em>may</em> have happened, never whether it did, so your correctness becomes a property of
+  the far side's API.</td>
+</tr>
+<tr>
+  <td><strong>Defer what you can — the deferral is a transactional outbox</strong></td>
+  <td>Stage the work as a row in the same transaction and let a separate process drain it:
+  <em>"we get a guarantee that the operation commits along with the rest of the transaction."</em>
+  The send stops being a foreign call and becomes a local write.</td>
+</tr>
+<tr>
+  <td><strong>"Indeterminate" inverts</strong></td>
+  <td>To a client of an API that <em>accepts</em> a key, a timeout means <strong>retry</strong>. To
+  a caller of one that does not: <em>"Indeterminate errors like a connection reset or timeout will
+  have to be marked as failed."</em> The rule never depended on the error — only on whether the far
+  side can absorb a duplicate. Ambiguity is not permission.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Rules that are easy to get wrong</h2>
+
+<table class="stacked">
+<tbody>
+<tr>
+  <td class="term-col"><strong>One transaction</strong></td>
+  <td>Claim state, stored response and business write commit together. Mark-first loses the
+  work silently; work-first double-executes. A marker is only trustworthy if it commits with
+  the thing it marks.</td>
+</tr>
+<tr>
+  <td><strong>Fingerprint is a check, not a lookup</strong></td>
+  <td>Look up on <code>(caller, key)</code>, then compare. Fold the fingerprint into the lookup
+  and a reused key with a changed payload finds nothing, claims a new row and
+  <strong>executes twice</strong>. Hash the method and path too, not just the body.</td>
+</tr>
+<tr>
+  <td><strong>Store the body</strong></td>
+  <td>The retrying client never saw the original result. Skipping the work but returning an
+  empty acknowledgement leaves it just as stuck.</td>
+</tr>
+<tr>
+  <td><strong>Cache failures too</strong></td>
+  <td>Stripe stores the status and body <em>"regardless of whether it succeeds or fails"</em>,
+  <code>500</code>s included. The endpoint becomes a function of the key.</td>
+</tr>
+<tr>
+  <td><strong>Scope the key</strong></td>
+  <td>Composite lookup key (caller + key), and the caller half must be <strong>derived
+  server-side</strong> — anything the client sends, an attacker sends too. Otherwise a guessed key
+  reads another client's stored response (draft §5). Remember <em>why</em> it matters here and not
+  elsewhere: <strong>a replay returns before the endpoint runs</strong>, so the ownership checks
+  inside your handler never execute.</td>
+</tr>
+<tr>
+  <td><strong>Scope vs entropy</strong></td>
+  <td>Scope defends you against <em>other people</em>; entropy defends you against
+  <em>yourself</em>. Two of one account's own operations colliding on a short key means the second
+  silently never happens — and it looks exactly like idempotency working. Validate the key against
+  a published format before using it in a lookup.</td>
+</tr>
+<tr>
+  <td><strong>Two replay contracts</strong></td>
+  <td>Byte-identical replay (Stripe) vs idempotent effect with a current body (Google AIP-155:
+  <em>"permissible to substitute the historical success response with a similar response that
+  reflects more current data"</em>). Know which one you promise.</td>
+</tr>
+<tr>
+  <td><strong>Reap old keys</strong></td>
+  <td>Two independent requirements: longer than any client's retry window, <em>and</em> long
+  enough that a Friday incident is repairable on Monday. The larger wins. Past the horizon a
+  retry silently becomes a new request. Stripe 24h; Brandur ~72h. <strong>Publish it</strong>
+  (draft §2.3) — and flag rows still <code>in_progress</code> at the cutoff for a human rather
+  than deleting them.</td>
+</tr>
+<tr>
+  <td><strong>A cached <code>500</code> can stay wrong</strong></td>
+  <td>The stored response never changes, but the underlying state may later be reconciled
+  forward into a real charge. The correction must reach the client <em>out of band</em> — a
+  webhook. Same answer every time ≠ the right answer.</td>
+</tr>
+<tr>
+  <td><strong>One key per operation, not per attempt</strong></td>
+  <td>A fresh UUID per click makes a double-submit two honest operations. Derive the key from a
+  stable object (cart id) when the duplicate you fear is the user, not the network.</td>
+</tr>
+<tr>
+  <td><strong>The layer has a front door</strong></td>
+  <td>Rate limiting, auth and request validation run <em>before</em> it, so those responses are
+  not stored and are not replayable.</td>
+</tr>
+<tr>
+  <td><strong>POST only</strong></td>
+  <td><code>GET</code> and <code>DELETE</code> are already idempotent per RFC 9110 §9.2.2. A
+  key on them does nothing.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>Vocabulary</h2>
+
+<table class="stacked">
+<tbody>
+<tr>
+  <td class="term-col"><strong>Idempotency key</strong></td>
+  <td><em>"A unique value generated by the client which the resource uses to recognize
+  subsequent retries of the same request."</em> One per logical operation, not per attempt.</td>
+</tr>
+<tr>
+  <td><strong>Idempotency fingerprint</strong></td>
+  <td>A hash the <em>server</em> derives from the request payload, used alongside the key to
+  detect the <code>422</code> case. Draft §2.4.</td>
+</tr>
+<tr>
+  <td><strong>Replay</strong></td>
+  <td>Returning the stored response instead of executing. Stripe flags it with the response
+  header <code>Idempotent-Replayed: true</code>.</td>
+</tr>
+<tr>
+  <td><strong>Scope</strong></td>
+  <td>The other half of the composite lookup key — the caller identity, plus in some APIs a
+  location (AWS Region/Zone) and always a time window. Decides what counts as <em>the same
+  request</em>.</td>
+</tr>
+<tr>
+  <td><strong>Atomic phase</strong></td>
+  <td>Brandur's term: local state mutations that occur in transactions <em>between</em> foreign
+  state mutations.</td>
+</tr>
+<tr>
+  <td><strong>Foreign state mutation</strong></td>
+  <td>Work inside the handler that touches another system and cannot be rolled back — an email,
+  a card charge, a partner API. The case the single transaction does not cover.</td>
+</tr>
+<tr>
+  <td><strong>Recovery point</strong></td>
+  <td><em>"A name of a check point that we get to after having successfully executed any atomic
+  phase or foreign state mutation."</em> Stored on the key row; a retry resumes there.</td>
+</tr>
+<tr>
+  <td><strong>Completer</strong></td>
+  <td>A process that finishes requests whose clients dropped mid-flight. The reaper's opposite
+  number — one ends requests, the other abandons them. Needs an internal auth path that can retry
+  anyone's request, so keep it small and never let it return a body to a caller.</td>
+</tr>
+<tr>
+  <td><strong>Enqueuer</strong></td>
+  <td>Drains staged job rows to the real queue after their transaction commits — the drain half
+  of a transactional outbox. Also called a relay or a dispatcher.</td>
+</tr>
+<tr>
+  <td><strong>Indeterminate</strong></td>
+  <td>Stripe's word for the state a <code>500</code> leaves you in. Not "failed" — unknown. What
+  you should <em>do</em> about it depends on the far side, not on the error.</td>
+</tr>
+</tbody>
+</table>
+
+<h2>The same idea, three spellings</h2>
+
+<table class="stacked">
+  <thead>
+    <tr><th>API</th><th>Shape</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Stripe</strong></td>
+      <td><code>Idempotency-Key</code> header · ≤255 chars · 24h expiry ·
+      <code>Idempotent-Replayed: true</code> · mismatch errors</td>
+    </tr>
+    <tr>
+      <td><strong>AWS EC2</strong></td>
+      <td><code>ClientToken</code> parameter · ≤64 ASCII chars · Regional or Zonal scope ·
+      <code>IdempotentParameterMismatch</code></td>
+    </tr>
+    <tr>
+      <td><strong>Google APIs</strong></td>
+      <td><code>request_id</code> message field · ≤36 ASCII chars · UUID recommended · window
+      unspecified (AIP-155)</td>
+    </tr>
+  </tbody>
+</table>
+
+<footer class="lesson-footer">
+<p class="ask-teacher">Every quotation on this page was taken from the fetched source text, not
+from memory. The sources, and where each one stops being trustworthy, are in
+<a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/RESOURCES.md">RESOURCES.md</a>.</p>
+
+<p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
+  <a href="../lessons/0001-the-key-and-the-servers-algorithm.html">Lesson 01</a>
+  <a href="../lessons/0002-what-you-store-and-for-how-long.html">Lesson 02</a>
+  <a href="../lessons/0003-the-key-across-a-trust-boundary.html">Lesson 03</a>
+  <a href="../lessons/0004-foreign-state-mutations.html">Lesson 04</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/MISSION.md">Mission</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/RESOURCES.md">Resources</a>
+</p>
+</footer>
+
+</article>
+
+<script src="../../../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

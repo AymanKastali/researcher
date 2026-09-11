@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 02 · What You Store, and For How Long</title>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 02 · Idempotency Keys</p>
+  <h1>What You Store, and For How Long</h1>
+  <p class="subtitle">Three columns from
+  <a href="0001-the-key-and-the-servers-algorithm.html">Lesson 01</a> were left as names with
+  no contents. Filling them in is where the design decisions actually live — and where the
+  guarantee turns out to be narrower than it first sounds.</p>
+</header>
+
+<h2>First, from memory</h2>
+
+<p>Before reading anything new. One attempt each — this is the spacing, not a test.</p>
+
+<div class="quiz">
+<ol>
+  <li class="q" data-answer="c">
+    <p class="q-text">Why does the server insert the key <em>before</em> doing the work, rather
+    than reading to check whether it exists?</p>
+    <ul class="options">
+      <li><button data-opt="a">Because inserting is cheaper than reading a large table</button></li>
+      <li><button data-opt="b">Because the response body is unknown at read time</button></li>
+      <li><button data-opt="c">Because two concurrent retries both read "not found" first</button></li>
+      <li><button data-opt="d">Because no fingerprint can be compared before the insert</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Both are primary-key operations. Cost is not the
+    argument; correctness under concurrency is.</p></div>
+    <div class="feedback" data-for="b"><p>True, and it is why the response is written in step 3
+    rather than step 1 — but it is not why the claim must be an insert.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. Read-then-write is a race with a window
+    between the two statements. Two retries arriving together both see nothing, both proceed,
+    and you have built the duplicate you were preventing. The unique constraint arbitrates
+    because only one insert can win.</p></div>
+    <div class="feedback" data-for="d"><p>It can — that comparison happens on the conflict path,
+    after the insert has already told you the key exists.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">The key exists and is marked <code>completed</code>. What does the server
+    send back?</p>
+    <ul class="options">
+      <li><button data-opt="a">A <code>409</code>, since that key has already been claimed once</button></li>
+      <li><button data-opt="b">The status code and body stored by the first request</button></li>
+      <li><button data-opt="c">A fresh execution, safe now that the work is proven</button></li>
+      <li><button data-opt="d">A <code>304</code>, pointing the client at what it already created</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p><code>409</code> is the <em>in progress</em> case,
+    where there is nothing stored to send yet. Here there is.</p></div>
+    <div class="feedback" data-for="b"><p>Correct — and this lesson is about what those two
+    things actually contain, because "the stored response" is doing more work than it looks
+    like.</p></div>
+    <div class="feedback" data-for="c"><p>Re-executing is the exact failure the key exists to
+    prevent. Proven work is a reason <em>not</em> to run it again.</p></div>
+    <div class="feedback" data-for="d"><p><code>304</code> is about cache validators on a
+    <code>GET</code>. The client has no copy to revalidate.</p></div>
+  </li>
+</ol>
+</div>
+
+<p><strong>The win for this lesson:</strong> by the end you can say exactly what goes in
+<code>request_hash</code>, <code>response_code</code> and <code>response_body</code>, defend a
+retention window rather than quoting one, and state the limit of the guarantee out loud —
+the part most people who have "used idempotency keys" have never thought about.</p>
+
+<h2>The fingerprint: what exactly do you hash?</h2>
+
+<p>Lesson 01 called <code>hash_payload(payload)</code> and moved on. The draft names the
+concept but deliberately refuses to pick for you:</p>
+
+<blockquote>
+  An idempotency fingerprint MAY be used in conjunction with an idempotency key to determine the
+  uniqueness of a request. Such a fingerprint is generated from request payload data by the
+  resource.
+  <cite><a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">draft-ietf-httpapi-idempotency-key-header-07
+  §2.4</a></cite>
+</blockquote>
+
+<p>Note <em>by the resource</em> — the fingerprint is the one part of this the server derives
+for itself. The client cannot be trusted to say "this is the same request as before"; that
+claim is precisely what is being checked. The draft then lists five approaches, in decreasing
+strictness:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Approach (§2.4)</th><th>What it costs you in practice</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><em>"Checksum of the entire request payload."</em></td>
+      <td>Strictest, and the default choice. But it is a checksum of <strong>bytes</strong>: a
+      client that reorders its JSON keys or changes whitespace between attempts now fails the
+      comparison and gets a <code>422</code> for a request that is semantically identical.</td>
+    </tr>
+    <tr>
+      <td><em>"Checksum of selected element(s) in the request payload."</em></td>
+      <td>Survives cosmetic churn, but you now own a list of which fields matter. Forget one
+      that changes behaviour and two genuinely different requests hash the same — the key
+      silently swallows the second.</td>
+    </tr>
+    <tr>
+      <td><em>"Field value match for each field in the request payload."</em></td>
+      <td>Comparison rather than hashing, so the error can say <em>which</em> field differed.
+      The cost is storing the whole payload instead of 32 bytes.</td>
+    </tr>
+    <tr>
+      <td><em>"Field value match for selected element(s)."</em></td>
+      <td>Same trade as above, with the same list of fields to keep correct.</td>
+    </tr>
+    <tr>
+      <td><em>"Request digest/signature."</em></td>
+      <td>Only available if you already sign requests. Free when you do, absent when you
+      don't.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Brandur Leach's schema resolves it by storing the payload rather than a hash, and — the
+detail worth stealing — by storing <strong>more than the payload</strong>:</p>
+
+<pre><code class="language-sql">-- parameters of the incoming request
+request_method  TEXT  NOT NULL CHECK (char_length(request_method) &lt;= 10),
+request_params  JSONB NOT NULL,
+request_path    TEXT  NOT NULL CHECK (char_length(request_path) &lt;= 100),</code></pre>
+
+<p class="caption">Method and path, not just the body. A key generated per logical operation
+can otherwise be replayed against a <em>different endpoint</em> with an identical body, and a
+body-only fingerprint will not notice. His stated reason for keeping the params at all is
+narrower — <em>"stored mostly so that we can error if the user sends two requests with the same
+idempotency key but with different parameters"</em> — but the columns are the ones to copy.</p>
+
+<div class="callout insight">
+  <span class="label">The fingerprint is a check, not part of the lookup</span>
+  <p>This is the subtle one, and it is worth being able to say precisely. The draft describes a
+  duplicate as <em>"idempotency key and fingerprint has been seen"</em> (§2.6), which reads like
+  the pair is the lookup key. <strong>Implement it that way and the <code>422</code> case
+  disappears.</strong></p>
+  <p>Look up on <code>(caller, key)</code> alone. A reused key with a different payload then
+  <em>misses</em> the fingerprint comparison and is caught — §2.7 requires
+  <code>422</code> for exactly this. Look up on <code>(caller, key, fingerprint)</code> and that
+  same request finds no row, claims a new one, and <strong>executes a second operation</strong>
+  — under a key the client believes protects it.</p>
+  <p>Lesson 01's handler already had this right: the primary key is
+  <code>(user_id, key)</code>, and <code>request_hash</code> is a column it compares
+  <em>after</em> the lookup. That is not an accident, and reading §2.6 literally would have
+  broken it.</p>
+</div>
+
+<h2>The response columns: store the failures too</h2>
+
+<p>The instinct is to cache successes. Stripe caches everything:</p>
+
+<blockquote>
+  Stripe's idempotency works by saving the resulting status code and body of the first request
+  made for any given idempotency key, regardless of whether it succeeds or fails. Subsequent
+  requests with the same key return the same result, including <code>500</code> errors.
+  <cite><a href="https://docs.stripe.com/api/idempotent_requests">Stripe API Reference —
+  Idempotent requests</a></cite>
+</blockquote>
+
+<p>A cached <code>400</code> looks like a bug until you see what caching it prevents. The
+retrying client is retrying <em>because it never saw the first answer</em>. If a rejected
+request is not stored, the retry is a brand-new request — and now the server runs validation,
+authorisation and business logic again, with no memory that it already made a decision about
+this operation. Caching the rejection makes the endpoint a function of the key <em>in the
+failure case too</em>:</p>
+
+<blockquote>
+  For a POST operation using an idempotency key, as long as an API method began execution,
+  Stripe's API servers will cache the results of the request regardless of what they were. A
+  request that returns a 400 sends back the same 400 if followed by a new request with the same
+  idempotency key. Generate a fresh idempotency key when modifying the original request to get
+  a successful result.
+  <cite><a href="https://docs.stripe.com/error-low-level">Stripe — Advanced error
+  handling</a></cite>
+</blockquote>
+
+<p>The last sentence is the client-side consequence, and it follows from the
+<code>422</code> rule rather than being a separate rule: fixing a rejected request means
+changing the payload, which changes the fingerprint, which is a key reuse. <strong>A new
+attempt at a corrected request is a new operation and deserves a new key.</strong></p>
+
+<h3>What is <em>not</em> stored</h3>
+
+<p>Here the guarantee narrows, and this is the paragraph to be able to recite:</p>
+
+<blockquote>
+  We save results only after the execution of an endpoint begins. If incoming parameters fail
+  validation, or the request conflicts with another request that's executing concurrently, we
+  don't save the idempotent result because no API endpoint initiates the execution. You can
+  retry these requests.
+  <cite><a href="https://docs.stripe.com/api/idempotent_requests">Stripe API Reference —
+  Idempotent requests</a></cite>
+</blockquote>
+
+<p>Two things fall out of that. First, everything in front of the idempotency layer is outside
+the promise — <em>"a request that's rate limited with a 429 can produce a different result with
+the same idempotency key because rate limiters run before the API's idempotency layer. The same
+goes for a 401 that omitted an API key, or most 400s that sent invalid parameters."</em></p>
+
+<p>Second — and this refines Lesson 01 — <strong>the <code>409</code> is not stored
+either</strong>. It is emitted by the layer itself before any endpoint runs, which is exactly
+why it is safe for the client to retry a <code>409</code> unchanged, and not safe to retry a
+cached <code>400</code> unchanged. The two look similar on the wire and mean opposite things.</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>What the client got</th><th>Stored?</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>2xx</code> — the operation succeeded</td>
+      <td><strong>Yes.</strong> Replayed forever, or until reaped.</td>
+    </tr>
+    <tr>
+      <td><code>4xx</code> raised by the endpoint (declined card, business rule)</td>
+      <td><strong>Yes.</strong> Execution began. Retry with the same key gets the same refusal.</td>
+    </tr>
+    <tr>
+      <td><code>500</code> from inside the endpoint</td>
+      <td><strong>Yes</strong> — and this is the hard case, below.</td>
+    </tr>
+    <tr>
+      <td><code>400</code>/<code>401</code>/<code>429</code> from in front of the layer</td>
+      <td><strong>No.</strong> No endpoint ran. The same key may answer differently later.</td>
+    </tr>
+    <tr>
+      <td><code>409</code> — a retry overtook the original</td>
+      <td><strong>No.</strong> The layer emitted it. Retrying unchanged is the correct move.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>One more piece of the contract, cheap to add and easy to forget: <strong>tell the client it
+got a replay.</strong> Stripe: <em>"To identify a previously executed response that's being
+replayed from the server, look for the header <code>Idempotent-Replayed: true</code>."</em>
+The body is byte-identical to the original, so without this header the client cannot
+distinguish "my retry did the work" from "my retry was answered from a cache" — which is
+exactly the distinction it went to the trouble of sending a key to establish.</p>
+
+<h2>The <code>500</code> that stays wrong</h2>
+
+<p>Everything so far assumes the stored response is <em>true</em>. For a <code>500</code> it
+may not be, and no amount of care in your handler fixes that.</p>
+
+<blockquote>
+  You should treat the result of a <code>500</code> request as indeterminate.
+  <cite><a href="https://docs.stripe.com/error-low-level">Stripe — Advanced error
+  handling</a></cite>
+</blockquote>
+
+<p>Not <em>failed</em> — <strong>indeterminate</strong>. The word is the whole point. A
+<code>500</code> means the server stopped partway and does not itself know how much landed. And
+because the response is now cached under the key, the client cannot learn any more by
+retrying:</p>
+
+<blockquote>
+  Stripe engineers examine failed requests and try to appropriately reconcile the results of any
+  mutations that result in <code>500</code>s. While the idempotency-cached response to those
+  requests won't change, we'll try to fire webhooks for any new objects created as part of
+  Stripe's reconciliation. … For example, if creating a charge returns a <code>500</code> error
+  but we detect that the information has gone out to a payment network, we'll try to roll it
+  forward. If not, we'll try to roll it back.
+  <cite><a href="https://docs.stripe.com/error-low-level">Stripe — Advanced error
+  handling</a></cite>
+</blockquote>
+
+<div class="callout trap">
+  <span class="label">The cached response can be permanently, knowingly wrong</span>
+  <p>Read that quote again: <em>the idempotency-cached response won't change</em>, but the
+  underlying state might be rolled forward into a real charge. The key promises <em>the same
+  answer every time</em>. It does not promise <em>the right answer</em>, and after a
+  <code>500</code> those two come apart and stay apart.</p>
+  <p>This is not a flaw to design out — it is the honest boundary of what a stored response can
+  do. The repair has to arrive <strong>out of band</strong>, which is why Stripe's advice is to
+  <em>"configure webhook handlers to receive event objects that you never receive in normal API
+  responses."</em> Your integration must be able to hear about a charge it was told did not
+  happen.</p>
+  <p>Saying this in an interview is a strong signal, because it shows you know the mechanism's
+  limit rather than just its happy path.</p>
+</div>
+
+<p>It also settles a question clients ask constantly — <em>should I retry a <code>500</code>
+with a fresh key?</em> Stripe's answer: <em>"The client can retry the request with a new
+idempotency key, but we advise against it because the original key may have produced side
+effects."</em> A new key is a new operation, and a new operation on top of an indeterminate one
+is how you get two charges.</p>
+
+<h2>How long to keep the row</h2>
+
+<p>The specification declines to choose, and says something more useful instead:</p>
+
+<blockquote>
+  The resource MAY require time based idempotency keys to be able to purge or delete a key upon
+  its expiry. The resource SHOULD define such expiration policy and <strong>publish it in the
+  documentation</strong>.
+  <cite><a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">draft-ietf-httpapi-idempotency-key-header-07
+  §2.3</a></cite>
+</blockquote>
+
+<p>Publishing it is the requirement, because the window is half of a contract: it tells a
+client how long its retries remain safe. An unpublished window is a trap with a timer on it.</p>
+
+<p>The two public numbers disagree, and the reasoning matters more than either figure. Stripe
+prunes at 24 hours and is explicit about the consequence: <em>"You can remove keys from the
+system automatically after they're at least 24 hours old. We generate a new request if a key is
+reused after the original is pruned."</em> Past the horizon, a retry silently becomes a fresh
+operation — the protection does not fail loudly, it just stops.</p>
+
+<p>Brandur argues for three times that, on grounds that have nothing to do with networks:</p>
+
+<blockquote>
+  I'd suggest a threshold of about 72 hours so that even if a bug is deployed on Friday that
+  errors a large number of valid requests, an app could still keep a record of them throughout
+  the weekend and onto Monday where a developer would have a chance to commit a fix and have the
+  completer push them through to success.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach — Implementing Stripe-like
+  Idempotency Keys in Postgres</a></cite>
+</blockquote>
+
+<p>Notice what happened to the question. Stripe is sizing for <strong>a client's retry
+window</strong>; Brandur is sizing for <strong>a human's repair window</strong> — the table is
+also the record of what went wrong, and deleting it deletes your ability to fix it. Those are
+two different requirements that happen to be satisfied by the same column, and the larger one
+wins. Neither number is derived from anything; both are judgements, and the defensible answer
+in an interview is the rule rather than the figure: <em>longer than the longest retry window
+any client of mine could plausibly use, and long enough that a Friday incident is still
+repairable on Monday — then published.</em></p>
+
+<p>The reaper itself is unglamorous and deserves one more property than "delete old rows":</p>
+
+<blockquote>
+  An ideal reaper might even notice requests that could not be finished successfully and try to
+  do some cleanup on them. If cleanup is difficult or impossible, it should put them in a list
+  somewhere so that a human can find out what failed.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach — Implementing Stripe-like
+  Idempotency Keys in Postgres</a></cite>
+</blockquote>
+
+<pre><code class="language-python">from datetime import datetime, timedelta, timezone
+from sqlalchemy import delete, select
+
+RETENTION = timedelta(hours=72)          # published in the API docs, or it is not a contract
+
+async def reap(session: AsyncSession) -> None:
+    cutoff = datetime.now(timezone.utc) - RETENTION
+
+    async with session.begin():
+        # Anything still in_progress at the cutoff never finished. Deleting it
+        # quietly is how a stuck charge becomes a thing nobody ever knew about.
+        stranded = await session.scalars(
+            select(IdempotencyKey).where(
+                IdempotencyKey.created_at &lt; cutoff,
+                IdempotencyKey.state == "in_progress",
+            )
+        )
+        for row in stranded:
+            await flag_for_a_human(row)   # the list Brandur asks for
+
+        await session.execute(
+            delete(IdempotencyKey).where(IdempotencyKey.created_at &lt; cutoff)
+        )</code></pre>
+
+<p class="caption">The <code>in_progress</code> pass is the part that earns its keep. A row left
+mid-flight means a request that claimed a key and then died — so the work may be half-done, and
+the client has been getting <code>409</code>s ever since. Deleting it on age alone destroys the
+only evidence. Nothing here has been run; treat it as the shape, not a benchmarked
+implementation.</p>
+
+<h2>A note on what goes <em>in</em> the key</h2>
+
+<p>The key is a string the client picks, which makes it tempting to make it meaningful. Two
+warnings, both from Stripe, and they point in opposite directions.</p>
+
+<p>Don't make it meaningful in a way that leaks: <em>"Avoid using sensitive data (for example,
+email addresses or personal identifiers) as idempotency keys."</em> The key ends up in server
+logs, error reports and support tickets — everywhere a request identifier goes.</p>
+
+<p>But <em>do</em> consider deriving it from something stable. Stripe names two strategies:
+<em>"Use an algorithm that generates a token with enough randomness, like UUID v4"</em>, or
+<em>"Derive the key from a user-attached object, like the ID of a shopping cart. This provides
+a relatively straightforward way to protect against double submissions."</em></p>
+
+<div class="callout insight">
+  <span class="label">Two different problems wearing the same header</span>
+  <p>A random UUID protects against <strong>one client retrying</strong>. A key derived from the
+  cart id protects against <strong>the user pressing Pay twice</strong> — two genuinely separate
+  requests, from two separate page loads, possibly from two devices, that a per-attempt UUID
+  would treat as two legitimate charges.</p>
+  <p>Same mechanism, different unit of "the same operation". Choosing it is a product decision
+  about what a duplicate <em>means</em> to you, not a technical one — and it is the question to
+  ask when someone says "we already use idempotency keys" and double charges are still
+  happening.</p>
+</div>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>Name the five fingerprint strategies and the trade in each; explain why the fingerprint is
+  compared <em>after</em> the lookup rather than folded into it, and what breaks if you fold it
+  in; say which responses are stored and which are raised in front of the layer, including the
+  <code>409</code>; explain why a <code>500</code> is indeterminate and why the cached answer
+  can stay wrong; and defend a retention window on two independent grounds instead of quoting
+  24 hours.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question — guessing until it turns green is recognition, not recall.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">A server looks up idempotency records on
+    <code>(caller, key, fingerprint)</code>. A client reuses a key with a changed payload. What
+    happens?</p>
+    <ul class="options">
+      <li><button data-opt="a">It returns <code>422</code>, exactly as the expired IETF draft prescribes</button></li>
+      <li><button data-opt="b">It returns <code>409</code>, because the key row is still held</button></li>
+      <li><button data-opt="c">It replays the first response and ignores the changed payload</button></li>
+      <li><button data-opt="d">It finds nothing, claims a new row, and re-runs everything</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>It cannot — a <code>422</code> requires <em>finding</em>
+    the original row in order to notice the mismatch, and this lookup excludes it.</p></div>
+    <div class="feedback" data-for="b"><p>A <code>409</code> also requires finding the row.
+    Including the fingerprint in the lookup means no row is found at all.</p></div>
+    <div class="feedback" data-for="c"><p>Replaying would at least be safe. The problem is that
+    nothing is found to replay.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and this is the quiet disaster. The changed
+    payload produces a different fingerprint, so the composite lookup misses, the insert
+    succeeds, and a <strong>second operation executes</strong> under a key the client believes
+    is protecting it. Look up on <code>(caller, key)</code>; compare the fingerprint
+    afterwards.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">Why is it safe to retry a <code>409</code> unchanged, but not a cached
+    <code>400</code>?</p>
+    <ul class="options">
+      <li><button data-opt="a">The <code>409</code> was raised before any endpoint code executed</button></li>
+      <li><button data-opt="b">The <code>409</code> carries a header telling clients to retry</button></li>
+      <li><button data-opt="c">A conflict is transient; a validation error is permanent</button></li>
+      <li><button data-opt="d">The <code>400</code> is never stored, so cannot be replayed</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct. Stripe: <em>"We save results only after the
+    execution of an endpoint begins."</em> The <code>409</code> comes from the idempotency layer
+    itself, so nothing was stored and nothing was done — the original is simply still running.
+    A cached <code>400</code> came <em>from</em> the endpoint, so retrying unchanged just
+    replays the same refusal forever.</p></div>
+    <div class="feedback" data-for="b"><p><code>Stripe-Should-Retry</code> exists, but it
+    reports the decision rather than causing it. The reason is where the error was
+    raised.</p></div>
+    <div class="feedback" data-for="c"><p>Close in spirit and wrong in mechanism — and it fails
+    on the details: a rate-limit <code>429</code> is transient too, yet it is unstored for the
+    same reason the <code>409</code> is.</p></div>
+    <div class="feedback" data-for="d"><p>Backwards. A <code>400</code> raised by the endpoint
+    <em>is</em> stored, which is precisely why retrying it unchanged is pointless.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">Stripe reconciles a request that returned <code>500</code> and the charge
+    ends up going through. What does the retrying client see?</p>
+    <ul class="options">
+      <li><button data-opt="a">The updated result, since the stored response is rewritten</button></li>
+      <li><button data-opt="b">A <code>409</code> until reconciliation finishes, then the real result</button></li>
+      <li><button data-opt="c">Nothing at all, because reconciled keys are simply dropped</button></li>
+      <li><button data-opt="d">The cached <code>500</code>, with the truth arriving by webhook</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Stated explicitly the other way: <em>"the
+    idempotency-cached response to those requests won't change."</em></p></div>
+    <div class="feedback" data-for="b"><p>The key is not re-locked by reconciliation — it is
+    already finished, as far as the idempotency layer is concerned.</p></div>
+    <div class="feedback" data-for="c"><p>Dropping the key would turn the next retry into a
+    second charge, which is the one outcome reconciliation exists to avoid.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and it is the most important limit of the
+    whole mechanism. The stored response is frozen while reality moves on, so the correction has
+    to arrive out of band — <em>"we'll try to fire webhooks for any new objects created as part
+    of Stripe's reconciliation."</em> Same answer every time is not the same as the right
+    answer.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">Your retention is 24 hours. A client retries with the same key 30 hours
+    after the original. What has happened?</p>
+    <ul class="options">
+      <li><button data-opt="a">The retry executed as an entirely new request, no error</button></li>
+      <li><button data-opt="b">The retry is rejected with <code>422</code>, the key long expired</button></li>
+      <li><button data-opt="c">The retry replayed a response from the archived key record</button></li>
+      <li><button data-opt="d">The retry was refused because the stored fingerprint was gone</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct, and the silence is the danger. Stripe:
+    <em>"We generate a new request if a key is reused after the original is pruned."</em> The
+    row is gone, so the claim succeeds, so the work runs. Expiry does not fail loudly — it just
+    stops protecting you, which is why the window must exceed any retry schedule your clients
+    plausibly use, and must be published.</p></div>
+    <div class="feedback" data-for="b"><p>There is no row left to compare against, so there is
+    nothing to declare a mismatch with.</p></div>
+    <div class="feedback" data-for="c"><p>Pruning deletes; there is no archive behind it. A
+    permanent archive is explicitly what these rows are not for.</p></div>
+    <div class="feedback" data-for="d"><p>A missing fingerprint is indistinguishable from a
+    first-time request — which is exactly how the server treats it.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">Users double-click Pay and get charged twice, even though every request
+    carries a UUIDv4 idempotency key. What is the most likely cause?</p>
+    <ul class="options">
+      <li><button data-opt="a">The retention window expired in between the two clicks arriving</button></li>
+      <li><button data-opt="b">The fingerprint comparison matches on far too few payload fields</button></li>
+      <li><button data-opt="c">Each click generated its own key, making them two operations</button></li>
+      <li><button data-opt="d">The claim was a read-then-write, so both requests raced through</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Two clicks are milliseconds apart. No plausible window
+    expires in between.</p></div>
+    <div class="feedback" data-for="b"><p>Too few fields would make distinct requests collide —
+    causing missed charges, not extra ones.</p></div>
+    <div class="feedback" data-for="c"><p>Correct, and it is the failure the mechanism cannot
+    see. The key must be minted <em>once per logical operation</em> — generate it per attempt
+    and two clicks are two honest, distinct operations. Stripe's other strategy is the fix:
+    <em>"Derive the key from a user-attached object, like the ID of a shopping cart. This
+    provides a relatively straightforward way to protect against double submissions."</em></p></div>
+    <div class="feedback" data-for="d"><p>A genuine race, and it would produce this symptom —
+    but only for requests sharing a key, which these two do not.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it out loud</h2>
+
+<div class="recall">
+  <p class="prompt">60 seconds, no notes. The prompt is a follow-up an interviewer reaches for
+  after you have described the algorithm: <em>"so what exactly do you store against the key, and
+  how long do you keep it?"</em> Cover the fingerprint and why it is not part of the lookup,
+  which responses are stored and which are not, the <code>500</code> problem, and how you would
+  pick a retention window.</p>
+  <button class="reveal">Reveal model answer</button>
+  <div class="answer">
+    <p>"Three things: a fingerprint of the request, and the status code and body of the
+    response.</p>
+    <p>The fingerprint is derived by the server from the request — usually a checksum of the
+    payload, plus the method and path, because the same key against a different endpoint with
+    the same body should not match. The important detail is that it is <em>not</em> part of the
+    lookup key. You look up on (caller, key) and compare the fingerprint afterwards. If you fold
+    it into the lookup, a reused key with a changed payload finds nothing, claims a fresh row
+    and executes a second operation — the exact thing you were preventing.</p>
+    <p>For the response, you store it whether it succeeded or failed. A cached 400 sounds wrong
+    but it is right: the client never saw the first answer, so without it the retry is a whole
+    new request. The exception is anything raised in front of the idempotency layer — rate
+    limits, auth, parameter validation, and the 409 for a concurrent retry. Nothing executed, so
+    nothing is stored, which is why a 409 is safe to retry unchanged and a cached 400 is not.
+    I'd also set <code>Idempotent-Replayed</code> on replays so the client can tell.</p>
+    <p>The hard case is a 500. You cache it, but you should treat it as indeterminate rather
+    than failed — the server stopped partway and doesn't know how much landed. And once it is
+    cached it never changes, so if the underlying state later gets reconciled forward into a
+    real charge, the cached response is permanently wrong. That correction has to reach the
+    client out of band, by webhook. Same answer every time isn't the same as the right
+    answer.</p>
+    <p>For retention: it has to be longer than the longest retry window any client plausibly
+    uses, because past expiry a retry silently becomes a new request — no error, it just stops
+    protecting you. Stripe prunes at 24 hours. Brandur argues about 72, for a different reason:
+    the table is also your record of what broke, so a Friday-night bug should still be repairable
+    on Monday. That second requirement is the bigger one, so I'd size to it. And publish the
+    window — the draft says so, and it is half the client's contract. The reaper should also
+    flag rows still in progress at the cutoff rather than just deleting them, because those are
+    requests that died mid-flight."</p>
+    <p><em>Score the parts you dropped. The three most costly omissions are the fingerprint not
+    being in the lookup, the <code>409</code> being unstored, and "indeterminate" rather than
+    "failed".</em></p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<h2>Read this next</h2>
+
+<p><strong>Primary source:</strong>
+<a href="https://docs.stripe.com/error-low-level">Stripe — Advanced error handling</a>, the
+sections on content errors and server errors. It is the only vendor document that treats the
+awkward cases head-on, and the <code>500</code>-reconciliation paragraph is the most valuable
+half-page in this topic.</p>
+
+<p>Then the corresponding parts of
+<a href="https://brandur.org/idempotency-keys">Brandur Leach's Postgres write-up</a> — "The
+idempotency key relation" for the schema and "The reaper" for retention. Skip the atomic-phase
+machinery on this pass; it is the subject of a later lesson.</p>
+
+<h2>Coming next</h2>
+
+<p><strong><a href="0003-the-key-across-a-trust-boundary.html">Lesson 03 — the key across a trust
+boundary</a>.</strong> Scoping, the composite lookup key, and AWS's Regional/Zonal model as the
+worked contrast. Then <a href="0004-foreign-state-mutations.html">Lesson 04 — foreign state
+mutations</a>, which is what this lesson deliberately stepped around: everything here assumed the
+work inside the transaction was a database write. When it is a call to <em>another</em> API that
+cannot be rolled back, the single transaction stops being enough, and the handler has to be cut
+into phases that each commit on their own.</p>
+
+<p class="ask-teacher">Push back. Good things to throw at me now: "if I store the whole request
+payload, isn't that a data-retention problem in itself?", "what do I do when the response body
+is 2MB?", "why not just return <code>425 Too Early</code> instead of <code>409</code>?",
+"doesn't caching a <code>500</code> make outages worse?", or "how is this different from an HTTP
+cache?" The last one is worth arguing about properly.</p>
+
+<p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
+  <a href="0001-the-key-and-the-servers-algorithm.html">← Lesson 01</a>
+  <a href="0003-the-key-across-a-trust-boundary.html">Lesson 03 →</a>
+  <a href="../reference/idempotent-post-handler.html">Reference card</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/MISSION.md">Mission</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../../../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

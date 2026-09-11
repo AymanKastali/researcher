@@ -2,24 +2,20 @@
 
 ## Teaching preferences
 
-- **Dark theme, always.** Stated 2026-09-10 as a project-wide rule.
-  `assets/lesson.css` is dark-only — no `prefers-color-scheme` switch, no light
-  palette. The sole exception is the `@media print` block, which flips to
-  ink-on-white so reference sheets stay printable; flag this if it ever needs
-  to change.
-- **Mobile responsive, always.** Stated 2026-09-10. Every lesson must be
-  readable on a phone. Two things to remember when authoring: put the viewport
-  meta tag in `<head>`, and give two-column text tables `class="stacked"`.
-  Breakpoints live in the RESPONSIVE section of `assets/lesson.css`
-  (≤1100px sidenotes rejoin the flow, ≤640px phone, ≤380px small phone).
-- **Palette is verified, not chosen by eye.** Ground is off-black (#16171b) to
-  limit halation; body text sits at 12.6:1 rather than the available 21:1,
-  because maximum contrast is the uncomfortable end. Accents are lightened
-  Okabe–Ito colour-universal hues. Three semantic colours with fixed meanings
-  — amber = signal, green = affirmed, orange = cost — so the code is learned
-  once. Colour is never the sole carrier of meaning: quiz results also get ✓/✗
-  glyphs. **If you change a colour, re-run the contrast check** and confirm
-  body text stays in the 10–15:1 band, text ≥4.5:1, clickable borders ≥3:1.
+**Everything about how a page looks now lives in `docs/agents/design-system.md`**
+— dark theme, mobile responsiveness, the verified palette, the highlight.js
+setup, and the boilerplate. It was moved there on 2026-09-11 when `assets/` was
+hoisted to the repo root, because these rules were never topic-specific and
+keeping two copies meant fixing everything twice. Read it before authoring.
+
+**The teaching contract is `docs/agents/teaching-standard.md`** — this topic is
+a `mattpocock-skills:teach` workspace, and that file records what the skill
+requires of every lesson, what the quiz rules are, and how to check them
+(`uv run python docs/agents/check-lessons.py`). Added 2026-09-11 at Ayman's
+instruction that everything here adhere to the skill.
+
+What is left here is about *this topic's* teaching, not the styling:
+
 - **Code examples are Python**, per the standing repo convention. SQL, DDL, and
   config stay in their own languages. Verbatim excerpts quoted from a real
   source keep the source's language.
@@ -29,33 +25,18 @@
   Ground claims in primary sources. If something genuinely cannot be settled
   any other way, ask first, run the smallest possible thing, keep the
   transcript in `evidence/`, and delete the harness.
-- **Code blocks use highlight.js with Ayman's own editor colours.** Settled
-  2026-09-10 after two wrong turns: a hand-rolled tokeniser was rejected ("do
-  not use tricks"), then hand-written `<span>` tagging was rejected in favour
-  of the standard library. Write plain, unmarked code inside
-  `<pre><code class="language-python">`; add `assets/hljs-dark-2026.css` to
-  `<head>` and, at the end of `<body>`, `assets/highlight.min.js` followed by
-  `<script>hljs.highlightAll();</script>`.
-    - The library is **vendored into `assets/`, not loaded from a CDN**. The
-      lessons are opened from disk and must work offline.
-    - Colours are VS Code's **Dark 2026** (the 1.135 default; no
-      `workbench.colorTheme` is set, so the product default applies), lifted
-      from `theme-defaults/themes/2026-dark.json`. Confirmed with Ayman
-      2026-09-10 over the classic Dark Modern palette.
-    - **Code tokens only.** The page keeps its own verified palette, and the
-      code block keeps `--code-bg`. Do not let the editor theme leak outward.
-    - Anything hand-marked inside a code block is destroyed by
-      `highlightAll()`, which rewrites the block from its text. Point at a line
-      from the `.caption` beneath it instead.
 - Goal is *recall under questioning*, not recognition. Lessons use one-attempt
   quizzes and free-recall prompts rather than re-reading. Do not soften this
   into review sheets.
 
 ## Workspace conventions
 
-- Lessons: `lessons/NNNN-dash-case.html`, linking `../assets/lesson.css` and
-  `../assets/quiz.js`.
-- Reusable components live in `assets/`. Reuse before authoring anything new.
+- Lessons: `lessons/NNNN-dash-case.html`, linking `../../../assets/lesson.css`
+  and `../../../assets/quiz.js` — the shared assets at the **repo root**, not a
+  topic-local copy. There is no `topics/*/assets/` any more.
+- Reusable components live in the root `assets/`. Reuse before authoring
+  anything new, and put anything a second page could use there rather than
+  inline in a lesson.
 - Markdown wraps at 80 columns (markdownlint MD013 is on in the editor). Long
   URLs go in reference-style link definitions at the bottom of the file.
 

@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 01 · The Dual-Write Problem</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -190,9 +190,9 @@ domain-event mechanism so it cannot be skipped.</p>
     publishes. What is now true?</p>
     <ul class="options">
       <li><button data-opt="a">The order exists and nothing downstream will ever know</button></li>
-      <li><button data-opt="b">The order rolled back, so downstream stays consistent</button></li>
+      <li><button data-opt="b">The order was rolled back, so downstream stays consistent</button></li>
       <li><button data-opt="c">The broker holds it and delivers when we restart</button></li>
-      <li><button data-opt="d">Postgres replays the publish during crash recovery</button></li>
+      <li><button data-opt="d">Postgres replays the publish during its own crash recovery</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Yes — and the cruelty is the silence. There is no
     error, no retry, no artefact anywhere recording that a message was owed.</p></div>
@@ -208,7 +208,7 @@ domain-event mechanism so it cannot be skipped.</p>
     <p class="q-text">Why doesn't publishing <em>first</em> and committing second fix it?</p>
     <ul class="options">
       <li><button data-opt="a">Publishing is slower, so the failure window gets wider</button></li>
-      <li><button data-opt="b">A crash after publish announces an order that never exists</button></li>
+      <li><button data-opt="b">Crashing after publish announces an order that never exists</button></li>
       <li><button data-opt="c">Brokers reject messages whose rows are not yet visible</button></li>
       <li><button data-opt="d">The broker acknowledges before Postgres has flushed its WAL</button></li>
     </ul>
@@ -226,9 +226,9 @@ domain-event mechanism so it cannot be skipped.</p>
     <p class="q-text">What does inserting into the outbox table actually change?</p>
     <ul class="options">
       <li><button data-opt="a">It enrols the broker in the database's own transaction</button></li>
-      <li><button data-opt="b">It shrinks the gap between writes to microseconds</button></li>
-      <li><button data-opt="c">It collapses two writes into one write and one commit</button></li>
-      <li><button data-opt="d">It lets the publish be retried, since the broker stores it</button></li>
+      <li><button data-opt="b">It shrinks the gap between the writes to microseconds</button></li>
+      <li><button data-opt="c">It collapses two writes into a single atomic commit</button></li>
+      <li><button data-opt="d">It makes the publish retryable from the broker's copy</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>No — that <em>is</em> 2PC, and avoiding it is the
     point. The broker is not a participant in anything here.</p></div>
@@ -244,9 +244,9 @@ domain-event mechanism so it cannot be skipped.</p>
     <p class="q-text">Which delivery guarantee does the finished pattern give you?</p>
     <ul class="options">
       <li><button data-opt="a">Exactly-once, since the outbox row is inserted only once</button></li>
-      <li><button data-opt="b">At-most-once, since a relay crash can drop a row silently</button></li>
+      <li><button data-opt="b">At-most-once, since a relay crash silently drops a row</button></li>
       <li><button data-opt="c">At-least-once, since a relay can publish and then die</button></li>
-      <li><button data-opt="d">Exactly-once, provided exactly one relay instance runs</button></li>
+      <li><button data-opt="d">Exactly-once, as long as only one relay instance runs</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>The <em>insert</em> happens once; the
     <em>publish</em> need not. That distinction is the whole answer.</p></div>
@@ -301,7 +301,8 @@ Distributed Transactions</em></a> for why the whole field walked away from 2PC.<
 
 <h2>Coming next</h2>
 
-<p><strong>Lesson 02 — the message relay.</strong> The outbox table DDL, and the query that
+<p><strong><a href="0002-the-message-relay.html">Lesson 02 — the message relay</a>.</strong> The
+outbox table DDL, and the query that
 lets several relay workers drain it concurrently without publishing the same row twice:
 <code>SELECT … FOR UPDATE SKIP LOCKED</code>. That is the piece you flagged as new, and it
 is the most common follow-up question after "so how does the relay work?"</p>
@@ -312,6 +313,7 @@ write path slow?", "how is this different from just using a Postgres-backed queu
 "what stops the outbox table growing forever?"</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0002-the-message-relay.html">Lesson 02 →</a>
   <a href="../reference/glossary.html">Glossary</a>
   <a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/MISSION.md">Mission</a>
@@ -322,7 +324,7 @@ write path slow?", "how is this different from just using a Postgres-backed queu
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

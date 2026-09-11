@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 03 · At-Least-Once and the Idempotent Consumer</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -439,20 +439,20 @@ calling a partner API. <code>ROLLBACK</code> does not un-send an email.</p>
 <div class="quiz">
 <ol>
 
-  <li class="q" data-answer="b">
+  <li class="q" data-answer="a">
     <p class="q-text">Your consumer inserts the message id into the inbox and commits, then
     does the business work and commits again. What is the failure mode?</p>
     <ul class="options">
-      <li><button data-opt="a">Duplicate work occurs whenever the second commit fails</button></li>
-      <li><button data-opt="b">The message is lost if the process dies between commits</button></li>
+      <li><button data-opt="a">The message is lost if the process dies between commits</button></li>
+      <li><button data-opt="b">The work is duplicated whenever the second commit later fails</button></li>
       <li><button data-opt="c">Other consumers block on the inbox row until both finish</button></li>
-      <li><button data-opt="d">Nothing breaks; two commits beat one long transaction</button></li>
+      <li><button data-opt="d">Nothing breaks at all; two commits beat one long transaction</button></li>
     </ul>
-    <div class="feedback" data-for="a"><p>The second commit failing is the <em>symptom</em>,
-    but the result is not duplicated work — it is work that never happens at all.</p></div>
-    <div class="feedback" data-for="b"><p>Correct, and this is the dangerous one. The id says
+    <div class="feedback" data-for="a"><p>Correct, and this is the dangerous one. The id says
     "processed", so redelivery is dropped, and no error is ever raised. Silent loss beats
     duplicate work as the thing to fear.</p></div>
+    <div class="feedback" data-for="b"><p>The second commit failing is the <em>symptom</em>,
+    but the result is not duplicated work — it is work that never happens at all.</p></div>
     <div class="feedback" data-for="c"><p>No lock is held across the two transactions — the
     first one committed and released everything.</p></div>
     <div class="feedback" data-for="d"><p>The opposite. Splitting them recreates the dual-write
@@ -463,10 +463,10 @@ calling a partner API. <code>ROLLBACK</code> does not un-send an email.</p>
     <p class="q-text">Your relay has publisher confirms on, receives an ack for every message,
     and marks every row published. Nothing ever arrives. Why?</p>
     <ul class="options">
-      <li><button data-opt="a">Consumers auto-acked on delivery, so the queue drained</button></li>
+      <li><button data-opt="a">Consumers auto-acked on delivery, so the queue just drained</button></li>
       <li><button data-opt="b">Confirms are batched, so acks referred to older messages</button></li>
-      <li><button data-opt="c">The messages were unroutable: discarded, but confirmed</button></li>
-      <li><button data-opt="d">The queue was not durable, so a restart discarded them</button></li>
+      <li><button data-opt="c">Messages were unroutable, so they were discarded but confirmed</button></li>
+      <li><button data-opt="d">The queue was not durable, so restarting discarded them</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>No consumer is involved — the messages never reached
     a queue for anyone to receive. Auto-ack loses messages, but only ones that arrived.</p></div>
@@ -505,8 +505,8 @@ calling a partner API. <code>ROLLBACK</code> does not un-send an email.</p>
     is the consequence?</p>
     <ul class="options">
       <li><button data-opt="a">The broker redelivers a message that was already handled</button></li>
-      <li><button data-opt="b">The inbox insert conflicts and the handler raises an error</button></li>
-      <li><button data-opt="c">Work is duplicated, since the ack leaves the inbox row</button></li>
+      <li><button data-opt="b">The inbox insert conflicts and the handler errors out</button></li>
+      <li><button data-opt="c">Work is duplicated, because the inbox row already exists</button></li>
       <li><button data-opt="d">A failed commit loses the message; nothing redelivers it</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>That is what acking <em>late</em> risks — and it is
@@ -524,10 +524,10 @@ calling a partner API. <code>ROLLBACK</code> does not un-send an email.</p>
     <p class="q-text">Why is the inbox keyed on <code>(consumer_name, message_id)</code> rather
     than on <code>message_id</code> alone?</p>
     <ul class="options">
-      <li><button data-opt="a">Because uuid values collide too often to key on alone</button></li>
+      <li><button data-opt="a">Because uuid values collide too often to key alone</button></li>
       <li><button data-opt="b">Several consumers see one message and each dedups itself</button></li>
       <li><button data-opt="c">It keeps the index partial, holding only unprocessed rows</button></li>
-      <li><button data-opt="d">It lets the broker route each message to the right group</button></li>
+      <li><button data-opt="d">It lets the broker route each message to consumers</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Version-4 uuid collisions are not a practical
     concern. The reason is about who is asking, not about uniqueness.</p></div>
@@ -620,6 +620,7 @@ one per worker?", or "what does <code>message.process()</code> in aio-pika actua
 when?"</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0002-the-message-relay.html">← Lesson 02</a>
   <a href="0004-polling-or-tailing-the-log.html">Lesson 04 →</a>
   <a href="../reference/glossary.html">Glossary</a>
@@ -631,7 +632,7 @@ when?"</p>
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

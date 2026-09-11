@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 05 · Ordering, and How Much You Need</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -513,10 +513,10 @@ of these reach back to earlier lessons on purpose; spaced retrieval is the point
     <p class="q-text">A stakeholder says "the events must arrive in order". What is the first
     thing you say?</p>
     <ul class="options">
-      <li><button data-opt="a">That RabbitMQ queues already provide FIFO ordering</button></li>
-      <li><button data-opt="b">That a partition key on the exchange will fix it</button></li>
-      <li><button data-opt="c">Which events must be ordered against which others?</button></li>
-      <li><button data-opt="d">That ordering needs CDC rather than a polling relay</button></li>
+      <li><button data-opt="a">That RabbitMQ queues already give you strict FIFO ordering</button></li>
+      <li><button data-opt="b">That an exchange partition key will fix it entirely</button></li>
+      <li><button data-opt="c">Which events must be ordered against which other events?</button></li>
+      <li><button data-opt="d">That ordering requires CDC instead of a polling relay</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>A queue is FIFO, but that guarantee dies at the
     first requeue or second consumer — and it says nothing about how the two events reached
@@ -536,7 +536,7 @@ of these reach back to earlier lessons on purpose; spaced retrieval is the point
     <p class="q-text">Why is per-aggregate ordering cheap when global ordering is not?</p>
     <ul class="options">
       <li><button data-opt="a">Aggregates are small, so their events are rare</button></li>
-      <li><button data-opt="b">Writes to one aggregate already serialise on its row</button></li>
+      <li><button data-opt="b">One aggregate's writes already serialise on its row</button></li>
       <li><button data-opt="c">Postgres assigns ids per aggregate rather than globally</button></li>
       <li><button data-opt="d">Brokers guarantee ordering within a single routing key</button></li>
     </ul>
@@ -578,8 +578,8 @@ of these reach back to earlier lessons on purpose; spaced retrieval is the point
     <p class="q-text">You have one queue per shard with single active consumer enabled. What
     can still reorder your per-aggregate stream?</p>
     <ul class="options">
-      <li><button data-opt="a">Handling several deliveries concurrently in the consumer</button></li>
-      <li><button data-opt="b">Setting a prefetch above one on the consuming channel</button></li>
+      <li><button data-opt="a">Handling several deliveries at once inside one consumer</button></li>
+      <li><button data-opt="b">Setting prefetch above one on the consuming channel</button></li>
       <li><button data-opt="c">A second consumer registering against the same queue</button></li>
       <li><button data-opt="d">Publishing from two relay workers into the exchange</button></li>
     </ul>
@@ -601,7 +601,7 @@ of these reach back to earlier lessons on purpose; spaced retrieval is the point
     <ul class="options">
       <li><button data-opt="a">Requeue it, since a later replay may need it</button></li>
       <li><button data-opt="b">Acknowledge it, because it is handled and not lost</button></li>
-      <li><button data-opt="c">Reject it to the dead-letter exchange for inspection</button></li>
+      <li><button data-opt="c">Reject it so it lands on the dead-letter exchange</button></li>
       <li><button data-opt="d">Leave it unacked so the delivery count records it</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Requeueing guarantees an infinite loop: it will be
@@ -619,10 +619,10 @@ of these reach back to earlier lessons on purpose; spaced retrieval is the point
     <p class="q-text"><em>Reaching back to Lesson 02.</em> After sharding, why keep
     <code>FOR UPDATE SKIP LOCKED</code> in the claim query at all?</p>
     <ul class="options">
-      <li><button data-opt="a">It is what makes the partial index usable by the planner</button></li>
+      <li><button data-opt="a">It is what lets the planner use the partial index</button></li>
       <li><button data-opt="b">Without it the shard filter would not be applied first</button></li>
       <li><button data-opt="c">Two copies of one worker overlap during a rolling deploy</button></li>
-      <li><button data-opt="d">It is what keeps each shard's rows in ascending id order</button></li>
+      <li><button data-opt="d">It is what keeps each shard's rows in sorted order</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>The partial index is chosen because of the
     <code>WHERE published_at IS NULL</code> predicate. Locking has nothing to do with
@@ -709,6 +709,7 @@ writes?", "is there a way to get per-aggregate order without giving up consumer 
 entirely?", or "show me the version gate failing for a delta event."</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0004-polling-or-tailing-the-log.html">← Lesson 04</a>
   <a href="0006-operating-it.html">Lesson 06 →</a>
   <a href="../reference/glossary.html">Glossary</a>
@@ -720,7 +721,7 @@ entirely?", or "show me the version gate failing for a delta event."</p>
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

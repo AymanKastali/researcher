@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 04 · Foreign State Mutations</title>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 04 · Idempotency Keys</p>
+  <h1>Foreign State Mutations</h1>
+  <p class="subtitle">Every lesson so far assumed the work inside the key's transaction was a
+  database write, so a failure could be rolled back. The moment that work is a call to somebody
+  else's API, <code>ROLLBACK</code> stops being an answer — and the handler has to be cut into
+  pieces that each commit on their own.</p>
+</header>
+
+<h2>First, from memory</h2>
+
+<p>Two questions, both from earlier lessons. Answer before you check: retrieving a thing you half
+remember is what makes it stick, and rereading it is not.</p>
+
+<div class="quiz">
+<ol>
+  <li class="q" data-answer="d">
+    <p class="q-text">Idempotency, Lesson 03. Why must the scope half of the lookup key never
+    arrive in the request?</p>
+    <ul class="options">
+      <li><button data-opt="a">Because headers are not reliably preserved across all the proxies</button></li>
+      <li><button data-opt="b">Because the fingerprint already covers all the client ever sends</button></li>
+      <li><button data-opt="c">Because the value would change between a request and retry</button></li>
+      <li><button data-opt="d">Because anything the client can send, an attacker can send</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Proxies are not the threat. Even a perfectly preserved
+    header is chosen by the caller, and that is the whole problem.</p></div>
+    <div class="feedback" data-for="b"><p>The fingerprint is compared <em>after</em> the lookup, so
+    it cannot protect the lookup. That was Lesson 02's trap.</p></div>
+    <div class="feedback" data-for="c"><p>A retry sends the same values by design. Stability is not
+    the issue; forgeability is.</p></div>
+    <div class="feedback" data-for="d"><p>Correct. The draft's phrase is <em>"known only to the
+    resource"</em> — a test of provenance, not of the column's type. A scope the caller supplies is
+    just another field they fill in.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">Idempotency, Lesson 01. The key row and the business write commit in one
+    transaction. What exactly is that argument resting on?</p>
+    <ul class="options">
+      <li><button data-opt="a">The key row and the effect commit into the same database</button></li>
+      <li><button data-opt="b">The client guarantees each key is sent on exactly one request</button></li>
+      <li><button data-opt="c">The handler stores the response just before it commits the work</button></li>
+      <li><button data-opt="d">The key column is unique, so a repeat insert always fails</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct — and hold on to it, because this lesson is
+    about the moment that argument collapses. It only works while the effect is a row in the same
+    database as the key row.</p></div>
+    <div class="feedback" data-for="b"><p>No client offers that. A key arriving twice is the
+    entire reason the mechanism exists.</p></div>
+    <div class="feedback" data-for="c"><p>Backwards, and dangerous. The response is stored
+    <em>inside</em> the transaction that does the work, not in front of it.</p></div>
+    <div class="feedback" data-for="d"><p>The unique constraint is the mechanism, not the argument.
+    A rejected insert only helps if the effect is rolled back with it.</p></div>
+  </li>
+</ol>
+</div>
+
+<p><strong>The win for this lesson:</strong> by the end you can take any handler that calls an
+external service and cut it into phases at the right places, name what each retry re-enters, and
+say precisely what happens when the far side does <em>not</em> support idempotency keys — which is
+the question that separates people who have read about this from people who have shipped it.</p>
+
+<h2>Where the single transaction stops working</h2>
+
+<p>Lesson 01's handler had a shape you could hold in your head: claim the key, do the work, store
+the response, commit. It was safe because every step was a write to one database, so a crash
+anywhere meant the whole thing vanished and the retry started clean.</p>
+
+<p>Brandur Leach — who built this at Stripe — gives the thing that breaks it a name:</p>
+
+<blockquote>
+  To shore up our backend, it's key to identify where we're making <strong>foreign state
+  mutations</strong>; that is, calling out and manipulating data on another system. This might be
+  creating a charge on Stripe, adding a DNS record, or sending an email.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach — Implementing Stripe-like
+  Idempotency Keys in Postgres</a></cite>
+</blockquote>
+
+<p>And then the sentence the whole lesson hangs off:</p>
+
+<blockquote>
+  unlike a local set of operations where we can leverage an ACID store to roll back a result that
+  we didn't like, once we make our first foreign state mutation, we're committed one way or
+  another … We've pushed data into a system beyond our own boundaries and we shouldn't lose track
+  of it.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach — Implementing Stripe-like
+  Idempotency Keys in Postgres</a></cite>
+</blockquote>
+
+<p>The blunt version, worth keeping in your head for the rest of this lesson:
+<strong><code>ROLLBACK</code> does not un-send an email.</strong></p>
+
+<div class="callout trap">
+  <span class="label">Your own infrastructure is foreign too</span>
+  <p>The instinct is to read "foreign" as "third party" and conclude this lesson is about payment
+  providers. It is not:</p>
+  <blockquote>
+    It's tempting to treat emitting records to Kafka as part of atomic operations because they
+    have such a high success rate that they feel like they are. They're not, and should be treated
+    like any other fallible foreign state mutation.
+    <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+  </blockquote>
+  <p>This has a name — the <strong>dual-write problem</strong>: one logical operation changing two
+  systems, with no transaction spanning both, so any crash in the gap leaves them disagreeing. A
+  broker you own, a cache, a search index, another one of your own services behind HTTP — all
+  foreign. The test is not who operates it. The test is whether your transaction can roll it
+  back.</p>
+</div>
+
+<h2>The tempting fix, and the two ways it fails</h2>
+
+<p>The obvious move is to keep the one-transaction shape and put the API call inside it. Almost
+everyone tries this first, and it is worth being able to say exactly why it is wrong, because
+"it just is" does not survive follow-up.</p>
+
+<pre><code class="language-python"># WRONG. Both failure modes below are worse than the problem being solved.
+
+with db.transaction():
+    key_row = claim(idempotency_key, principal.account_id)
+    ride = Ride.create(user_id=principal.account_id)
+    charge = stripe.charges.create(amount=2000, currency="usd")   # <-- foreign, inside the tx
+    key_row.set_response(201, {"ride_id": ride.id})</code></pre>
+
+<p><strong>Failure one: the rollback lies.</strong> Suppose the charge succeeds and the commit
+then fails — a deadlock, a connection drop, the process being killed. Postgres dutifully rolls
+back the ride and the key row. The charge does not roll back. You have taken the customer's money
+and kept no record that you did, and because the key row vanished too, the retry is indistinguishable
+from a first attempt and charges them again.</p>
+
+<p><strong>Failure two: the transaction is held open across a network call.</strong> The row lock
+taken when you claimed the key is now held for as long as the third party takes to answer. A
+provider having a slow afternoon becomes your database running out of connections. Brandur states
+the rule as a positive instruction:</p>
+
+<blockquote>
+  Atomic phases should be safely committed <strong>before</strong> initiating any foreign state
+  mutation. If the call fails, our local state will still have a record of it happening that we
+  can use to retry the operation.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach — Implementing Stripe-like
+  Idempotency Keys in Postgres</a></cite>
+</blockquote>
+
+<p class="caption">The contention argument is mine, not Brandur's — he gives the correctness
+reason above and does not discuss lock duration. It follows from Lesson 01's
+<code>SELECT … FOR UPDATE</code> claim step, and like everything in this topic it is unmeasured.</p>
+
+<h2>Cut the request into phases</h2>
+
+<p>If one transaction cannot span the call, use several, and make the boundaries deliberate. Two
+definitions carry the design:</p>
+
+<blockquote>
+  An <strong>atomic phase</strong> is a set of local state mutations that occur in transactions
+  between foreign state mutations. We say that they're atomic because we can use an ACID-compliant
+  database like Postgres to guarantee that either all of them will occur, or none will.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<blockquote>
+  A <strong>recovery point</strong> is a name of a check point that we get to after having
+  successfully executed any atomic phase or foreign state mutation. Its purpose is to allow a
+  request that's being retried to jump back to the point in the lifecycle just before the last
+  attempt failed.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<p>So a request is no longer one transaction. It is a chain of them, with the foreign calls in the
+gaps, and a marker on the key row saying how far it got. Where to cut is not a judgement call —
+there are three rules, and they are mechanical:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Rule</th><th>What it means in practice</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><em>"Upserting the idempotency key gets its own atomic phase."</em></td>
+      <td>Claiming the key commits on its own, before any work at all. If everything after it
+      dies, the claim survives and the retry has something to resume from.</td>
+    </tr>
+    <tr>
+      <td><em>"Every foreign state mutation gets its own atomic phase."</em></td>
+      <td>Each external call is bracketed: commit, call, then commit the result. Two calls never
+      share a phase, because after the first one succeeds you can no longer undo it.</td>
+    </tr>
+    <tr>
+      <td>Everything else groups into the phases between them.</td>
+      <td><em>"Even if there are 100 operations against an ACID database between two foreign state
+      mutations, they can all safely belong to the same phase."</em> Local work is free — the
+      database makes it atomic for you.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The key row grows one column to hold the marker, and it is a plain string:</p>
+
+<pre><code class="language-sql">recovery_point TEXT NOT NULL
+    CHECK (char_length(recovery_point) &lt;= 50),</code></pre>
+
+<p class="caption">From Brandur's <code>idempotency_keys</code> schema — the same table Lesson 02
+filled in, which already carried <code>response_code</code>, <code>response_body</code> and
+<code>locked_at</code>. Every request starts at <code>started</code> and ends at
+<code>finished</code>.</p>
+
+<h2>The handler becomes a state machine</h2>
+
+<p>Once phases have names, the handler stops being a straight line and becomes a loop over them.
+Brandur's states form <em>"a directed acyclic graph (DAG)"</em> — it moves one direction only and
+never cycles back.</p>
+
+<pre><code class="language-python">def handle(key_row, principal):
+    while True:
+        if key_row.recovery_point == "started":
+            with db.transaction():                              # tx2 — local writes only
+                Ride.create(idempotency_key_id=key_row.id, user_id=principal.account_id)
+                key_row.set_recovery_point("ride_created")
+
+        elif key_row.recovery_point == "ride_created":
+            ride = Ride.find(idempotency_key_id=key_row.id)     # reload: a retry enters HERE
+            charge = stripe.charges.create(                     # foreign — outside any transaction
+                amount=2000, currency="usd",
+                idempotency_key=f"{key_row.id}-charge",         # our key, stable across retries
+            )
+            with db.transaction():                              # tx3 — record what already happened
+                ride.update(charge_id=charge.id)
+                key_row.set_recovery_point("charge_created")
+
+        elif key_row.recovery_point == "charge_created":
+            ride = Ride.find(idempotency_key_id=key_row.id)
+            with db.transaction():                              # tx4 — receipt staged, not sent
+                StagedJob.insert(job_name="send_receipt", job_args={"ride_id": ride.id})
+                key_row.set_response(201, {"ride_id": ride.id})
+                key_row.set_recovery_point("finished")
+
+        elif key_row.recovery_point == "finished":
+            break
+
+    return Response(key_row.response_code, key_row.response_body)</code></pre>
+
+<p class="caption">Shape, not a benchmarked implementation — nothing in this topic has been run.
+Brandur's original is Ruby and wraps each phase in a <code>SERIALIZABLE</code> transaction; this is
+the same structure in this course's language. Note the reloads: a retry re-enters at its recovery
+point, not at the top, so no local variable from an earlier phase exists any more. Carrying
+<code>ride</code> down from the first branch would work on a first attempt and crash on every
+resume.</p>
+
+<div class="callout insight">
+  <span class="label">The replay from Lesson 01 is just one more state</span>
+  <p>Look at what happens when a completed key arrives: the loop is entered, the
+  <code>finished</code> branch breaks immediately, and the stored response is returned. Brandur
+  describes it exactly that way — <em>"An idempotency key that was already finished will enter the
+  loop, break immediately, and send back whatever response was stored onto it."</em></p>
+  <p>So the duplicate-detection you learned in Lesson 01 was never a special case bolted on the
+  front. It is the terminal state of a machine that was always there; you just could not see it
+  while every request finished in one transaction. A half-finished request and a finished one are
+  handled by the same code — one resumes, one returns.</p>
+</div>
+
+<h2>Notice which key is on the outbound call</h2>
+
+<p>The line worth stopping on in that handler is
+<code>idempotency_key=f"{key_row.id}-charge"</code>. You are now on the other side of the
+mechanism this whole course has been teaching: a <em>client</em> sending a key to somebody else's
+server. Everything Lesson 01 said about callers applies to you.</p>
+
+<p>It has to be derived from something stable — the key row's own id — rather than generated
+fresh, because a value generated at call time would be different on the retry and would buy you
+nothing. That is what makes this specific failure survivable:</p>
+
+<blockquote>
+  A server process dies while waiting for a response from Stripe: Luckily, the call to Stripe was
+  also made with its own idempotency key. The client retries and a new call to Stripe is invoked
+  with the same key. Stripe's own idempotency guarantees ensure that we haven't double-charged our
+  user.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<p>This is the most uncomfortable moment in the design and it is worth sitting with. The atomic
+phase tells you the call <em>may</em> have happened. It cannot tell you whether it did. The only
+reason the retry is safe is that the far side deduplicates it for you — which means your
+correctness is now a property of somebody else's API, not of your database.</p>
+
+<h2>Do not make the call at all, if you can avoid it</h2>
+
+<p>Before engineering around a foreign call, check whether it needs to be in the request:</p>
+
+<blockquote>
+  In-band foreign state mutations make a request slower and more difficult to reason about, so
+  they should be avoided when possible. In many cases it's possible to defer this type of work to
+  after the request is complete by sending it to a background job queue.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<p>The charge cannot be deferred — you need to know whether it worked before you answer the
+caller. The receipt email absolutely can. And look at what deferring it does in the handler above:
+the email never becomes a foreign call at all. It becomes a row.</p>
+
+<pre><code class="language-sql">CREATE TABLE staged_jobs (
+    id       BIGSERIAL PRIMARY KEY,
+    job_name TEXT  NOT NULL,
+    job_args JSONB NOT NULL
+);</code></pre>
+
+<div class="callout win">
+  <span class="label">This table has a name</span>
+  <p>Brandur's justification for it: <em>"because we're using a transactionally-staged job drain,
+  we get a guarantee that the operation commits along with the rest of the transaction."</em> A
+  separate process — he calls it <em>the enqueuer</em> — moves rows out to the real queue after
+  the transaction commits.</p>
+  <p>That shape is the <strong>transactional outbox</strong>: a table written in the same
+  transaction as the business state, drained to its real destination by a separate process once
+  that transaction has committed. The work is recorded locally before it is ever attempted
+  remotely, so a crash in between loses nothing — the row is still there to retry from. Different
+  write-ups call the drainer an enqueuer, a relay, or a dispatcher; it is one pattern.</p>
+  <p>Hence the instruction: <em>"Work should always be offloaded to background queues wherever
+  possible."</em> Every foreign call you turn into a staged row is one fewer phase that can strand
+  a request halfway.</p>
+</div>
+
+<h2>Someone has to finish what the client abandons</h2>
+
+<p>The phase machine resumes a request when the client retries. It has no answer for a client that
+simply stops — and clients stop all the time: the user closed the tab, the mobile app was killed,
+the calling service was redeployed mid-flight. That request is now sitting at
+<code>charge_created</code>, money taken, no receipt, no response ever delivered.</p>
+
+<blockquote>
+  A stretch goal is to implement a <strong>completer</strong>. Its only job is to find requests
+  that look like they never finished to satisfaction and which it looks like clients have dropped,
+  and push through to completion.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<p>Lesson 02 already gave you a reaper that deletes expired keys. The completer is its opposite
+number and they must not be confused — one ends requests, the other abandons them. Note what
+Brandur says the completer needs: <em>"a specialized internal authentication path that allows it
+to retry anyone's request."</em> Read that next to Lesson 03 and it should make you slightly
+nervous. It is a process that deliberately steps around the scope you spent a whole lesson
+building, which means it is exactly the sort of component that needs to be small, audited, and
+incapable of returning a response body to anyone.</p>
+
+<p class="caption">That last observation is mine. Brandur raises the internal auth path without
+comment, and no source examined discusses its risk.</p>
+
+<h2>When the far side has no idempotency key</h2>
+
+<p>Everything above assumed the external API is either naturally idempotent or accepts a key. When
+it does neither, the pattern reaches its limit, and being honest about that limit is worth more
+than a clever workaround.</p>
+
+<blockquote>
+  If we try to make a non-idempotent foreign state mutation and we see a failure, we may have to
+  persist this operation as permanently errored. In many cases we won't know whether it's safe to
+  retry or not, and we'll have to take the conservative route and fail the operation.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<div class="callout trap">
+  <span class="label">"Indeterminate" flips meaning depending on which side you are standing on</span>
+  <p>Lesson 01 taught Stripe's rule to <em>clients</em>: a <code>500</code> or a timeout is
+  indeterminate, so retry it with the same key. Now read Brandur's rule to <em>callers</em> of a
+  non-idempotent API: <em>"Indeterminate errors like a connection reset or timeout will have to be
+  marked as failed."</em></p>
+  <p>Same evidence, opposite instruction. The advice never depended on the error — it depended on
+  whether the far side can absorb a duplicate. With an idempotency key, indeterminate means
+  <em>retry</em>. Without one, indeterminate means <em>stop, and get a human</em>, because a retry
+  is a coin-flip between a lost operation and a doubled one.</p>
+  <p>The only exception Brandur allows is an explicit signal: an error that <em>"tell us explicitly
+  that it's okay to retry."</em> Which is precisely what Stripe's <code>Stripe-Should-Retry</code>
+  header from Lesson 02 is for. Ambiguity is not permission.</p>
+  <p class="caption">Both quotes are sourced; putting them side by side and drawing the inversion
+  is this lesson's argument, not a claim either source makes.</p>
+</div>
+
+<p>Which yields the one-line conclusion, and Brandur puts an exclamation mark on it: <em>"This is
+why you should implement idempotency and/or idempotency keys on all your services!"</em> Every
+service that accepts a key removes a permanently-errored state from somebody else's system. That
+is the real reason to build what this course has been describing — not your own retries, but
+everyone downstream of you.</p>
+
+<h2>One prerequisite, stated plainly</h2>
+
+<blockquote>
+  It's worth mentioning that none of this is possible on a non-ACID store like MongoDB. Without
+  transactional semantics a database can't ever guarantee that any two operations commit atomically
+  — every operation against your database becomes equivalent to a foreign state mutation because
+  the notion of an atomic phase is impossible.
+  <cite><a href="https://brandur.org/idempotency-keys">Brandur Leach</a></cite>
+</blockquote>
+
+<p class="caption">Written in 2017. MongoDB added multi-document transactions in 4.0 (2018), so
+the specific example has aged; the structural claim has not. If two writes cannot commit together,
+there is no atomic phase, and every step is a foreign state mutation. Worth saying out loud if an
+interviewer names a store — the reasoning is what is being tested, not the trivia.</p>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>Define a foreign state mutation and explain why the test is rollback-ability rather than
+  ownership; say what goes wrong when an API call is placed inside the transaction, in both the
+  correctness and the contention sense; cut a handler into atomic phases using the three rules and
+  name the recovery points between them; explain why a resumed phase must reload rather than carry
+  state; recognise the duplicate-replay you learned first as the terminal state of that machine;
+  put a derived idempotency key on your own outbound calls and say why it must be stable;
+  distinguish the completer from the reaper; and state what changes when the far side has no key —
+  including why "indeterminate" reverses meaning.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question. Guessing until it turns green is recognition, not recall.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">A charge call sits inside the handler's transaction. The charge succeeds,
+    then the commit fails. What is the state of the world?</p>
+    <ul class="options">
+      <li><button data-opt="a">Money was taken, and no local record survives the rollback</button></li>
+      <li><button data-opt="b">Nothing happened, because the transaction rolled it all back safely</button></li>
+      <li><button data-opt="c">The charge is pending until the database confirms the transaction</button></li>
+      <li><button data-opt="d">The key row survives as evidence, and the retry resumes</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct, and the second half is the sharp part. The key
+    row was created in the same transaction, so it vanished too — which means the retry looks like
+    a brand-new request and charges the customer a second time. <em>"Once we make our first
+    foreign state mutation, we're committed one way or another."</em></p></div>
+    <div class="feedback" data-for="b"><p>The rollback only reaches your database. Stripe has no
+    idea your transaction existed, and it is not going to un-charge anyone.</p></div>
+    <div class="feedback" data-for="c"><p>The external service is not a participant in your
+    transaction. That would be two-phase commit — a different mechanism, with its own availability
+    cost, and not what any source here describes.</p></div>
+    <div class="feedback" data-for="d"><p>It would survive if it had been committed in an earlier
+    phase — which is exactly the fix. Inside this one transaction it is rolled back with
+    everything else.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">A request dies after the charge succeeds but before the result is written
+    down. The client retries. What makes that retry safe?</p>
+    <ul class="options">
+      <li><button data-opt="a">The phase rolled back, so no charge was created on Stripe's side</button></li>
+      <li><button data-opt="b">The recovery point proves the charge never got as far as Stripe</button></li>
+      <li><button data-opt="c">The handler checks with Stripe first to see whether a charge exists</button></li>
+      <li><button data-opt="d">The outbound call carries a derived key, so Stripe folds the retry</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Nothing about a foreign call rolls back. That is the
+    definition of the problem.</p></div>
+    <div class="feedback" data-for="b"><p>It proves the opposite — a recovery point tells you how
+    far you got, and it cannot tell you what happened inside the gap. That uncertainty is exactly
+    what the outbound key is for.</p></div>
+    <div class="feedback" data-for="c"><p>Some APIs let you, but the pattern does not rely on it,
+    and a search has its own race. The mechanism here is simpler.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and notice where the safety actually lives:
+    <em>"the call to Stripe was also made with its own idempotency key … Stripe's own idempotency
+    guarantees ensure that we haven't double-charged our user."</em> Your correctness is a property
+    of their API. The key must be derived from something stable, or the retry sends a different
+    one and the guarantee evaporates.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">A handler makes one API call, and around it does forty separate database
+    writes. How many atomic phases?</p>
+    <ul class="options">
+      <li><button data-opt="a">Four — the upsert, the writes before, the call, the writes after</button></li>
+      <li><button data-opt="b">Forty-one, because each of the writes needs a checkpoint of its own</button></li>
+      <li><button data-opt="c">One, since the database will make all forty-one of them atomic anyway</button></li>
+      <li><button data-opt="d">Two — everything local in the first, and the foreign call second</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct. The rules are mechanical: the key upsert is its
+    own phase, the foreign call is its own phase, and everything else groups into the phases
+    between them. <em>"Even if there are 100 operations against an ACID database between two
+    foreign state mutations, they can all safely belong to the same phase."</em></p></div>
+    <div class="feedback" data-for="b"><p>Local writes are free — the database already makes them
+    atomic together. Splitting them buys nothing and costs you transactions.</p></div>
+    <div class="feedback" data-for="c"><p>It would, if not for the call in the middle. One
+    transaction cannot span it, which is the whole reason phases exist.</p></div>
+    <div class="feedback" data-for="d"><p>Close, but it strands the local work. Writes that happen
+    <em>after</em> the call cannot share a phase with writes before it — the call is between
+    them.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">You call a partner API that has no idempotency key. The connection times out
+    and you learn nothing. What is the correct move?</p>
+    <ul class="options">
+      <li><button data-opt="a">Retry it, because a timeout is indeterminate and so retries are safe</button></li>
+      <li><button data-opt="b">Retry it twice more, then fail the request if it times out</button></li>
+      <li><button data-opt="c">Mark it failed, since a retry might duplicate an operation that ran</button></li>
+      <li><button data-opt="d">Roll the phase back, which undoes the attempt and clears the state</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>That is Lesson 01's advice to a client of an API that
+    <em>accepts</em> a key. Strip the key away and the same reasoning inverts.</p></div>
+    <div class="feedback" data-for="b"><p>Repeating an unsafe action fewer times is not a fix. If
+    one retry can duplicate the operation, so can three.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. <em>"Indeterminate errors like a connection
+    reset or timeout will have to be marked as failed."</em> Without a key the far side cannot
+    absorb a duplicate, so a retry is a coin-flip between losing the operation and doubling it. The
+    only exception is an error that explicitly says retrying is safe — ambiguity is not
+    permission.</p></div>
+    <div class="feedback" data-for="d"><p>There is nothing to roll back. The attempt left your
+    database entirely, which is what makes it a foreign state mutation.</p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Staging the receipt email as a <code>staged_jobs</code> row instead of
+    sending it in-band. What has that actually bought?</p>
+    <ul class="options">
+      <li><button data-opt="a">The email is delivered faster, since a worker sends it in parallel</button></li>
+      <li><button data-opt="b">The send commits inside the transaction, so it is no longer foreign</button></li>
+      <li><button data-opt="c">Failed sends retry forever, so the delivery is guaranteed to happen once</button></li>
+      <li><button data-opt="d">The mail provider is simply removed from the request's own critical path</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Probably slower to arrive, in fact. Latency was never the
+    argument.</p></div>
+    <div class="feedback" data-for="b"><p>Correct — that is the whole trick. <em>"Because we're
+    using a transactionally-staged job drain, we get a guarantee that the operation commits along
+    with the rest of the transaction."</em> Writing a row is local, so it belongs in the phase; a
+    separate enqueuer drains it afterwards. That is the transactional outbox.</p></div>
+    <div class="feedback" data-for="c"><p>Nothing guarantees delivery once. The drain is
+    at-least-once — it can crash between sending and marking the row sent — so whatever consumes
+    the job has to tolerate seeing it twice.</p></div>
+    <div class="feedback" data-for="d"><p>True, and a real benefit — but it is the consequence, not
+    the mechanism. Moving work off the critical path without a transactional handoff would still
+    lose it on a crash.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it out loud</h2>
+
+<div class="recall">
+  <p class="prompt">60 seconds, no notes: <em>"your endpoint has an idempotency key and it needs to
+  charge a card. Walk me through it."</em> Cover why the call cannot be in the transaction, where
+  the phases cut, what a retry re-enters, which key goes on the outbound call, and what changes if
+  the far side has no key.</p>
+  <button class="reveal">Reveal model answer</button>
+  <div class="answer">
+    <p>"The charge is a foreign state mutation — once it lands I can't roll it back, and the test
+    isn't whether it's a third party, it's whether my transaction can undo it. Kafka and my own
+    services count.</p>
+    <p>So the call can't go inside the transaction. If the charge succeeds and the commit then
+    fails, I've taken the money and rolled back the record — including the key row, so the retry
+    looks brand new and charges them twice. It also holds a row lock across a network call, which
+    turns their slow afternoon into my connection pool.</p>
+    <p>Instead I cut the request into atomic phases. Claiming the key is its own phase, every
+    foreign call is its own phase, and all the local work in between groups together — local writes
+    are free because the database already makes them atomic. Each phase commits a recovery point on
+    the key row, so the handler is a loop over states: started, ride created, charge created,
+    finished. A retry re-enters at its recovery point rather than at the top, which means a phase
+    has to reload what it needs — nothing carries over from an earlier phase.</p>
+    <p>The nice part is that the replay from Lesson 01 is just the terminal state. A finished key
+    enters the loop, breaks immediately, and returns the stored response.</p>
+    <p>On the outbound charge I send my own idempotency key, derived from the key row's id so it's
+    stable across retries. That's the only reason resuming is safe — the recovery point tells me
+    the call may have happened, never whether it did, so the far side has to collapse the
+    duplicate. My correctness is a property of their API.</p>
+    <p>Anything that can be deferred should be. The receipt email goes into a staged jobs table
+    inside the phase and an enqueuer drains it after commit — a transactional outbox — so the send
+    stops being a foreign call and becomes a local row.</p>
+    <p>And if the partner has no idempotency key, the advice inverts. A timeout is still
+    indeterminate, but now indeterminate means mark it failed and get a human, because a retry is a
+    coin-flip between losing the operation and doubling it. I'd only retry on an error that
+    explicitly says it's safe to."</p>
+    <p><em>Score what you dropped. The three most costly omissions are "commit before you call
+    out", the derived key on the outbound call, and the inversion at the end.</em></p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<h2>Read this next</h2>
+
+<p><strong>Primary source:</strong>
+<a href="https://brandur.org/idempotency-keys">Brandur Leach — Implementing Stripe-like Idempotency
+Keys in Postgres</a>. The most detailed public account of this implementation, by someone who built
+it at Stripe. Read "Foreign state mutations" through "Designing atomic phases", then jump to
+"Murphy in action" — a list of failures walked one at a time, and the best rehearsal for an
+interview in the whole topic. Its caveats stand: a 2017 blog post, Ruby, and unmeasured.</p>
+
+<h2>That is the course</h2>
+
+<p>Four lessons, and the mechanism is complete: the key and the algorithm, what you store and for
+how long, the scope that decides whose request is whose, and the phases that survive a call you
+cannot take back. The <a href="../reference/idempotent-post-handler.html">reference card</a> is the
+page to come back to — the lessons are not.</p>
+
+<p>What is <em>not</em> covered, and is worth knowing you skipped: nothing here has been run, so
+every claim is cited rather than measured; no source settles what your key guarantees across two
+regions with separate databases; and the completer, the enqueuer and the reaper are all described
+as shapes rather than built. If you want any of those closed, that is a new piece of work — ask.</p>
+
+<p class="ask-teacher">Push back. The best things to throw at me now: "the completer can retry
+anyone's request — isn't that the exact hole Lesson 03 closed?", "if my correctness depends on
+Stripe deduplicating, what is my key actually buying me?", "why not just make the charge call
+first and write the key afterwards?", or "you said holding the lock is a contention problem — prove
+it." That last one I cannot, and I will say so.</p>
+
+<p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
+  <a href="0003-the-key-across-a-trust-boundary.html">← Lesson 03</a>
+  <a href="../reference/idempotent-post-handler.html">Reference card</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/MISSION.md">Mission</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../../../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

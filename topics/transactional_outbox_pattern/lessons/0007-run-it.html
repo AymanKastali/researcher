@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 07 · Run It</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -342,14 +342,14 @@ it:</p>
 <div class="quiz">
 <ol>
 
-  <li class="q" data-answer="c">
+  <li class="q" data-answer="d">
     <p class="q-text">The relay is killed after the broker confirms the message and before the
     <code>UPDATE</code> commits. What is true a second later?</p>
     <ul class="options">
       <li><button data-opt="a">The row is published and the consumer never saw it</button></li>
       <li><button data-opt="b">The row is published and the broker discarded the copy</button></li>
-      <li><button data-opt="c">The row is unpublished and the consumer already ran it</button></li>
-      <li><button data-opt="d">The row is unpublished and the broker still holds it</button></li>
+      <li><button data-opt="c">The row is unpublished and the broker still holds it</button></li>
+      <li><button data-opt="d">The row is unpublished and the consumer already ran it</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Backwards on both halves. The
     <code>UPDATE</code> died with the transaction, and the consumer had already done the work
@@ -357,11 +357,11 @@ it:</p>
     <div class="feedback" data-for="b"><p>A confirmed message is the broker's responsibility
     from that moment — that is what the confirm means. It was delivered, not
     discarded.</p></div>
-    <div class="feedback" data-for="c"><p>Correct, and measured: <code>still_unpublished =
+    <div class="feedback" data-for="c"><p>Half right — the row is unpublished — but the
+    message was already delivered and acked before the kill landed.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and measured: <code>still_unpublished =
     t</code> alongside one inbox row and one shipment. The two stores disagree, which is
     exactly why the restart produces a duplicate.</p></div>
-    <div class="feedback" data-for="d"><p>Half right — the row is unpublished — but the
-    message was already delivered and acked before the kill landed.</p></div>
   </li>
 
   <li class="q" data-answer="b">
@@ -369,9 +369,9 @@ it:</p>
     <code>redelivered</code> flag say?</p>
     <ul class="options">
       <li><button data-opt="a">True, since the outbox row was published for a second time</button></li>
-      <li><button data-opt="b">False, since it is a fresh publish the broker has not seen</button></li>
-      <li><button data-opt="c">True, since the message id matches one already acked before</button></li>
-      <li><button data-opt="d">False, since the first copy was acknowledged by the consumer</button></li>
+      <li><button data-opt="b">False, since it is a fresh publish the broker never saw</button></li>
+      <li><button data-opt="c">True, since the message id matches one that was already acked</button></li>
+      <li><button data-opt="d">False, since the first copy was acked by the consumer already</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>The relay published twice, but the broker has no
     memory tying the two together. <code>redelivered</code> is not an application-level
@@ -394,7 +394,7 @@ it:</p>
       <li><button data-opt="a">The one with no outbox — its intent was never recorded</button></li>
       <li><button data-opt="b">The one with an outbox — its relay transaction rolled back</button></li>
       <li><button data-opt="c">The one published first — its confirm arrived after the kill</button></li>
-      <li><button data-opt="d">The one with no inbox row — its consumer never committed it</button></li>
+      <li><button data-opt="d">The one with no inbox row — its consumer never committed</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Correct. The order committed, the publish never
     happened, and nothing anywhere records that a message was owed. There is nothing to retry,
@@ -412,8 +412,8 @@ it:</p>
     <p class="q-text">Two unsharded relays drained 500 rows and the broker logged 500
     confirms. What does that demonstrate?</p>
     <ul class="options">
-      <li><button data-opt="a">Both ordering and exclusivity hold with two relay workers</button></li>
-      <li><button data-opt="b">The batch limit of 100 rows split the work evenly in halves</button></li>
+      <li><button data-opt="a">Both ordering and exclusivity hold with the two relay workers</button></li>
+      <li><button data-opt="b">The 100-row batch limit split the work evenly in halves</button></li>
       <li><button data-opt="c">Publisher confirms are what stopped a row being sent twice</button></li>
       <li><button data-opt="d">Exclusivity holds; the run says nothing at all about order</button></li>
     </ul>
@@ -434,10 +434,10 @@ it:</p>
     <p class="q-text"><em>Reaching back to Lesson 04.</em> Measured p50 was half the poll
     interval and p95 was the whole interval. Why that shape?</p>
     <ul class="options">
-      <li><button data-opt="a">Batching means half of every batch waits a full cycle</button></li>
+      <li><button data-opt="a">Batching means that half of every batch waits a full cycle</button></li>
       <li><button data-opt="b">A commit lands at a random point inside the poll cycle</button></li>
       <li><button data-opt="c">The confirm round trip adds about half a cycle per message</button></li>
-      <li><button data-opt="d">Postgres holds the claim lock for roughly half the interval</button></li>
+      <li><button data-opt="d">Postgres holds its claim lock for roughly half of an interval</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Batching affects throughput, not this shape. The
     distribution comes from arrival time, and a batch of one shows the same
@@ -459,7 +459,7 @@ it:</p>
       <li><button data-opt="a">An early ack would let the prefetch window refill too soon</button></li>
       <li><button data-opt="b">An early ack loses the delivery count the quorum queue keeps</button></li>
       <li><button data-opt="c">An early ack then a crash drops work nobody will redeliver</button></li>
-      <li><button data-opt="d">An early ack breaks the ordering single active consumer buys</button></li>
+      <li><button data-opt="d">An early ack breaks the ordering a single active consumer buys</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Prefetch bounds in-flight deliveries. Refilling
     sooner is a throughput effect, and it costs you no correctness.</p></div>
@@ -546,6 +546,7 @@ transaction at all — what breaks if I move it out?", "show me the same relay w
 change to run sharded?", or "how do I test the crash window in CI rather than by hand?"</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0006-operating-it.html">← Lesson 06</a>
   <a href="../reference/glossary.html">Glossary</a>
   <a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/MISSION.md">Mission</a>
@@ -556,7 +557,7 @@ change to run sharded?", or "how do I test the crash window in CI rather than by
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

@@ -1,5 +1,10 @@
 # Broker left unpinned, so Lesson 03 teaches all three comparatively
 
+**Status:** superseded by
+[0003-broker-pinned-to-rabbitmq.md](0003-broker-pinned-to-rabbitmq.md) on
+2026-09-10, when Ayman pinned the broker. Kept because the comparative insight
+below is still the reason Lesson 03 reads the way it does.
+
 Lesson 02 ended by asking Ayman to name his broker — RabbitMQ, SQS or NATS —
 because the dedup mechanics differ. He asked for the next lesson without
 answering. Rather than block, Lesson 03 (2026-09-10) closed the RESOURCES gap

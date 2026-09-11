@@ -1,5 +1,11 @@
 # Ordering is per-aggregate, and the aggregate row lock is why
 
+**Status:** active, with one correction. The decision below stands, but its
+claim that single active consumer completes the guarantee was measured false and
+is corrected in
+[0008-two-guarantees-that-were-not-guarantees.md](0008-two-guarantees-that-were-not-guarantees.md).
+Read both.
+
 Decided 2026-09-10 in Lesson 05. The mission names ordering as a production
 failure mode Ayman must be able to argue, and three earlier lessons had deferred
 to it. The lesson had to end in a specified design, not a list of options.

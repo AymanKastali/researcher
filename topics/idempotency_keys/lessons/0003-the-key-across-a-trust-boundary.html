@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 03 · The Key Across a Trust Boundary</title>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
+</head>
+<body>
+<article class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 03 · Idempotency Keys</p>
+  <h1>The Key Across a Trust Boundary</h1>
+  <p class="subtitle">The key is a string <em>the client chooses</em>, and
+  <a href="0002-what-you-store-and-for-how-long.html">Lesson 02</a> filled a table with response
+  bodies addressed by it. One column decides whether that table is a cache or a disclosure — and
+  the same column decides what "the same request" even means.</p>
+</header>
+
+<h2>First, from memory</h2>
+
+<p>Two from last lesson, before anything new. One attempt each.</p>
+
+<div class="quiz">
+<ol>
+  <li class="q" data-answer="a">
+    <p class="q-text">Why is a <code>400</code> raised <em>by the endpoint</em> stored against
+    the key, when caching a rejection sounds like a bug?</p>
+    <ul class="options">
+      <li><button data-opt="a">Because the retrying client has never seen the first answer</button></li>
+      <li><button data-opt="b">Because the client must be stopped from retrying bad payloads</button></li>
+      <li><button data-opt="c">Because validation is costly and repeating it wastes real capacity</button></li>
+      <li><button data-opt="d">Because a rejection proves that the fingerprint matched the original</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct. The retry exists because the first response was
+    lost. If the rejection is not stored, the retry is an entirely new request and the server
+    re-runs the whole operation with no memory of the decision it already made. Storing it makes
+    the endpoint a function of the key in the failure case too.</p></div>
+    <div class="feedback" data-for="b"><p>It does have that effect, but stopping the client is
+    not the reason — the client is retrying precisely because it does not know anything yet.</p></div>
+    <div class="feedback" data-for="c"><p>Cost is never the argument in this topic. The answers
+    turn on what the client can and cannot know.</p></div>
+    <div class="feedback" data-for="d"><p>A matching fingerprint is what gets you onto the replay
+    path; it is not a reason to have stored anything.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">Your window is 24 hours and a client retries with the same key 30 hours
+    later. What does it get?</p>
+    <ul class="options">
+      <li><button data-opt="a">An error, because the key has passed its own published expiry</button></li>
+      <li><button data-opt="b">The stored response, read back out of the pruned key archive</button></li>
+      <li><button data-opt="c">A conflict, because the expired row is still holding the key</button></li>
+      <li><button data-opt="d">A second execution, with no error and no sign anything wrong</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>There is no row left to compare against, so there is
+    nothing that could raise an error.</p></div>
+    <div class="feedback" data-for="b"><p>Pruning deletes. There is no archive behind it, and
+    these rows are explicitly not a permanent record.</p></div>
+    <div class="feedback" data-for="c"><p>The row is gone, so nothing is held. A conflict needs a
+    live claim.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and the silence is the whole danger. Expiry
+    does not fail loudly — it just stops protecting you. Hold on to that, because in a moment the
+    window turns out to be part of the key's <em>scope</em>, not a separate housekeeping
+    setting.</p></div>
+  </li>
+</ol>
+</div>
+
+<p><strong>The win for this lesson:</strong> by the end you can answer "what is your idempotency
+key scoped to?" with a column, a reason, and a threat — and you can explain why the same field
+put in the scope rather than the fingerprint changes the API's behaviour rather than its
+security.</p>
+
+<h2>What you actually built last lesson</h2>
+
+<p>Line the two facts up next to each other, because separately they are unremarkable and
+together they are a problem.</p>
+
+<ul>
+  <li>The table stores <strong>the full response body</strong> of every request — Lesson 02.</li>
+  <li>The row is addressed by <strong>a string the client picked</strong> — Lesson 01.</li>
+</ul>
+
+<p>So you have built a cache of real, per-customer payloads, and you have handed the address bar
+to the caller. The draft's security section names the consequence directly:</p>
+
+<blockquote>
+  When an idempotency implementation allows low entropy keys, attackers MAY determine other keys
+  and use them to fetch existing idempotent cache entries, belonging to other clients.
+  <cite><a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">draft-ietf-httpapi-idempotency-key-header-07
+  §5</a></cite>
+</blockquote>
+
+<p>Make it concrete. A client generates readable keys — <code>order-1001</code>,
+<code>order-1002</code> — which is a reasonable-looking choice and satisfies "unique". An
+attacker with any account on your API sends a <code>POST</code> with
+<code>Idempotency-Key: order-1002</code>. The key is found, it is marked <code>completed</code>,
+so the server does the thing you designed it to do: it replays the stored status code and body.
+Which belongs to somebody else.</p>
+
+<div class="callout trap">
+  <span class="label">The replay path never reaches your authorisation code</span>
+  <p>This is worse than an ordinary leaky query, and the reason is structural. Walk Lesson 01's
+  handler again: on a duplicate, the server returns <code>Response(existing.response_code,
+  existing.response_body)</code> and <strong>returns before the endpoint runs at all</strong>.
+  Every ownership check you wrote — <em>does this caller own this order?</em> — lives inside the
+  endpoint. On the replay path none of it executes. It cannot: the whole point of a replay is to
+  skip the work.</p>
+  <p>So the idempotency layer is the one place in your API where a request can be answered with
+  data your handler never computed for this caller. It has to carry its own access control,
+  because it sits in front of everybody else's.</p>
+  <p class="caption">The leak is the draft's claim. <em>Why</em> it evades authorisation is
+  argued here from the mechanism, not quoted — no source examined spells that step out.</p>
+</div>
+
+<h2>The fix is one column, and where its value comes from matters</h2>
+
+<p>The draft's recommendation is three bullets long. This is the third, and it is the one worth
+memorising:</p>
+
+<blockquote>
+  On the resource, implement a unique composite key as the idempotent cache lookup key. For
+  example, a composite key MAY be implemented by combining the idempotency key sent by the client
+  with other client specific attributes <strong>known only to the resource</strong>.
+  <cite><a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">draft-ietf-httpapi-idempotency-key-header-07
+  §5</a></cite>
+</blockquote>
+
+<p><em>Known only to the resource</em> is the load-bearing phrase, and it is a statement about
+provenance rather than about the column. A scope value that arrives in the request is not a
+scope at all — it is another field the attacker fills in.</p>
+
+<pre><code class="language-python"># Where the scope value comes from is the entire security property.
+
+scope = request.headers["X-Tenant-Id"]     # WRONG — forgeable. Name any tenant, read their replay.
+
+scope = request.headers["Authorization"]   # WRONG — too narrow. Rotate the credential and every
+                                           #         in-flight retry misses and re-executes.
+
+scope = principal.account_id               # RIGHT — derived server-side from the authenticated
+                                           #         caller, on the same boundary as the data.</code></pre>
+
+<p class="caption">The first line is the draft's threat restated as code. The second is not from
+any source examined — it is the consequence of choosing a credential rather than an identity, and
+it is worth arguing about rather than accepting. The third is the shape Brandur Leach's schema
+takes.</p>
+
+<p>That schema makes the scope a real constraint rather than a convention:</p>
+
+<pre><code class="language-sql">CREATE UNIQUE INDEX idempotency_keys_user_id_idempotency_key
+    ON idempotency_keys (user_id, idempotency_key);</code></pre>
+
+<p class="caption">His reason is stated the positive way round, which is the more useful way to
+remember it: <em>"We've made idempotency_key unique, but across (user_id, idempotency_key) so
+that it's possible to have the same idempotency key for different requests as long as it's across
+different user accounts."</em> Scope is not only a wall between tenants; it is what stops one
+tenant's choice of key from constraining everyone else's. He also hangs a foreign key off it
+— <code>REFERENCES users(id) ON DELETE RESTRICT</code> — so the scope is enforced by the
+database.</p>
+
+<p>Lesson 01's table already had <code>user_id</code> in the primary key, so nothing here changes
+the code. What changes is that you can now say why it is there, and the harder question is which
+identity belongs in it. No source examined settles that. The rule that survives scrutiny: the
+scope should be <strong>the boundary the data itself is drawn on</strong> — the thing that
+determines who is allowed to see this response — and not the credential that happened to
+authenticate the call, because credentials rotate and retries outlive them.</p>
+
+<h2>Scope is not only a security decision</h2>
+
+<p>Here is the turn, and it is the part most people have never considered. AWS uses the same
+mechanism under a different name — a <code>ClientToken</code> parameter rather than a header —
+and documents its scope as a <em>feature</em>, with named modes. The first is called
+<strong>Regional</strong>:</p>
+
+<blockquote>
+  Requests are idempotent in each Region. However, you can use the same request, including the
+  same client token, in a different Region.
+  <cite><a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">Amazon
+  EC2 — Ensuring idempotency in API requests</a></cite>
+</blockquote>
+
+<p>Read that as a user and it sounds like a bug report. The same token, the same parameters, two
+instances launched — spelled out in their own example: <em>"if you send an idempotent request to
+launch an instance in the <code>us-east-1</code> Region, and then use the same client token in a
+request in the <code>eu-west-1</code> Region, we launch instances in each of those Regions."</em>
+The mechanism did not fail. It was scoped to a Region, and two Regions are two scopes.</p>
+
+<p>Now put that beside the mismatch rule from the same page, with the exception italicised:</p>
+
+<blockquote>
+  If you retry a successful request using the same client token, but one or more of the parameters
+  are different, <em>other than the Region or Availability Zone</em>, the retry fails with an
+  <code>IdempotentParameterMismatch</code> error.
+  <cite><a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">Amazon
+  EC2 — Ensuring idempotency in API requests</a></cite>
+</blockquote>
+
+<p>Region and Availability Zone are parameters of the request that are deliberately
+<strong>excluded from the comparison</strong> — because they are in the scope instead. That one
+sentence is the whole design decision, written down.</p>
+
+<div class="callout insight">
+  <span class="label">Every field is scope, fingerprint, or ignored — and you choose</span>
+  <p>Lesson 02 established the fingerprint: the thing you compare after the lookup to catch a
+  reused key. Scope is the thing you look up <em>with</em>. Each field of an incoming request
+  falls into one of three buckets, and the same field in the same API can legitimately go in
+  either of the first two:</p>
+  <p><strong>Region in the fingerprint</strong> → the same token in two Regions is a key reuse,
+  and the second call errors. <strong>Region in the scope</strong> → the same token in two Regions
+  is two separate operations, and both succeed. AWS chose the second. Neither is wrong; they
+  answer different questions, and the question is <em>what counts as the same request?</em></p>
+  <p>That is why "what is your key scoped to?" is a sharper interview question than "do you use
+  idempotency keys?" — the first one has a design behind it.</p>
+</div>
+
+<table class="stacked">
+  <thead>
+    <tr><th>Part of a <code>RunInstances</code> call</th><th>Bucket, and what moving it would do</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>ClientToken</code></td>
+      <td>The key itself. Nothing to decide.</td>
+    </tr>
+    <tr>
+      <td>Region / Availability Zone</td>
+      <td><strong>Scope.</strong> Move them into the fingerprint and a client that retries into a
+      different Zone gets <code>IdempotentParameterMismatch</code> instead of an instance.</td>
+    </tr>
+    <tr>
+      <td><code>ImageId</code>, <code>InstanceType</code>, <code>KeyName</code></td>
+      <td><strong>Fingerprint.</strong> Move them into the scope and two genuinely different
+      launches under one token would both execute — the duplicate you were preventing.</td>
+    </tr>
+    <tr>
+      <td>Anything in neither bucket</td>
+      <td><strong>Ignored</strong> — which is a decision too. A field you compare on neither side
+      is one a client can change between attempts without you ever noticing.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Scope also has a cost, and AWS prices it in the open. A wider scope deduplicates across more
+of your system and therefore depends on more of it:</p>
+
+<blockquote>
+  If one of the Availability Zones in the requested Region is not available, <code>RunInstances</code>
+  requests that use regional idempotency could fail. … we recommend that you use zonal idempotency
+  when launching instances.
+  <cite><a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">Amazon
+  EC2 — Ensuring idempotency in API requests</a></cite>
+</blockquote>
+
+<p>Narrower scope, more availability, weaker deduplication. That trade is the honest answer to
+"why not just scope everything globally?" — a global scope is a global dependency.</p>
+
+<h2>The scope has a time axis too</h2>
+
+<p>Stripe states the client's obligation in a single sentence, and it is worth reading twice
+because two different dimensions are hiding in it:</p>
+
+<blockquote>
+  If you decide to send idempotency keys manually, make sure the tokens being used are
+  sufficiently unique to unambiguously identify a single operation <strong>within your
+  account</strong> over the <strong>last 24 hours</strong>, at a minimum.
+  <cite><a href="https://docs.stripe.com/error-low-level">Stripe — Advanced error
+  handling</a></cite>
+</blockquote>
+
+<p>Uniqueness is not required absolutely. It is required <em>within a scope</em> (the account)
+and <em>within a window</em> (the retention period from Lesson 02). Those are the two axes of the
+same lookup, and the retention window you chose last lesson turns out not to be housekeeping at
+all — it is the temporal half of the scope. Shorten it and you are not just freeing disk, you are
+narrowing the region in which a key means anything.</p>
+
+<h2>Validate the key before you look it up</h2>
+
+<p>The draft's other two bullets are about the key as a string arriving from outside, and the
+first failure they name is not a leak:</p>
+
+<blockquote>
+  When the resources does not validate the idempotency key in the client request and performs a
+  idempotent cache lookup, there can be security attacks (primarily in the form of injection),
+  compromising the server.
+  <cite><a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">draft-ietf-httpapi-idempotency-key-header-07
+  §5</a></cite>
+</blockquote>
+
+<p class="caption">Quoted verbatim, grammar included. The draft is an expired Internet-Draft and
+reads like one in places.</p>
+
+<p>The remedy is two more bullets — <em>"Establish a fixed format for the idempotency key and
+publish the key's specification"</em> and <em>"Always validate the key as per its published
+specification before processing any request"</em> — and the moment you go looking, you find that
+every vendor already did exactly this. The limits that look like trivia are the published
+specification the draft is asking for:</p>
+
+<table class="stacked">
+  <thead>
+    <tr><th>API</th><th>Its published key specification</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Stripe</strong></td>
+      <td><em>"Idempotency keys are up to 255 characters long."</em> Generous, because the key is
+      a header on an authenticated request.</td>
+    </tr>
+    <tr>
+      <td><strong>AWS EC2</strong></td>
+      <td><em>"A client token is a unique, case-sensitive string of up to 64 ASCII
+      characters."</em> Character set as well as length.</td>
+    </tr>
+    <tr>
+      <td><strong>Google</strong></td>
+      <td>Two lines of a comment on the <code>request_id</code> field:
+      <em>"Restricted to 36 ASCII characters"</em> and <em>"A random UUID is recommended"</em>.
+      36 is the length of a hyphenated UUID — here the format <em>is</em> the validation.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Entropy gets recommended by everyone and justified two different ways, which is worth keeping
+straight. Stripe frames it as an accident: <em>"we suggest using V4 UUIDs, or another random
+string with enough entropy to avoid collisions."</em> The draft frames it as an adversary —
+low-entropy keys let an attacker <em>"determine other keys"</em>. Google's rationale is the
+accident again: <em>"standardizing on a universally unique identifier drastically reduces the
+chance for collisions when done correctly."</em></p>
+
+<p>Same advice, two problems, and they are solved by different columns. <strong>Scope defends you
+against other people; entropy defends you against yourself.</strong> Once the lookup is
+<code>(account, key)</code>, no amount of guessing reaches another tenant's rows — but two
+requests from the <em>same</em> account that collide on a short key still merge into one, and the
+second operation silently never happens. That failure is invisible, because from the outside it
+looks exactly like idempotency working.</p>
+
+<h2>What the boundary actually promises</h2>
+
+<p>One last thing crosses this boundary, and it is the promise itself. Lessons 01 and 02 have
+been saying <em>replay the stored response</em>, and Stripe means that literally — byte-identical
+body, plus <code>Idempotent-Replayed: true</code> so the client can tell. Google's guidance
+explicitly permits something else:</p>
+
+<blockquote>
+  In some unusual situations, it may not be possible to return an identical success response. For
+  example, a duplicate request to create a resource may arrive after the resource has not only
+  been created, but subsequently updated; because the service has no other need to retain the
+  historical data, it is no longer feasible to return an identical success response.
+  <cite><a href="https://google.aip.dev/155">Google AIP-155 — Request identification</a></cite>
+</blockquote>
+
+<blockquote>
+  In this situation, the method may return the current state of the resource instead. In other
+  words, it is permissible to substitute the historical success response with a similar response
+  that reflects more current data.
+  <cite><a href="https://google.aip.dev/155">Google AIP-155 — Request identification</a></cite>
+</blockquote>
+
+<div class="callout trap">
+  <span class="label">"Replay the stored response" is one contract, not the only one</span>
+  <p>There are two promises in circulation and they are not interchangeable. <strong>Byte-identical
+  replay</strong> (Stripe) says: the second call returns exactly what the first one did, whatever
+  has happened since. <strong>Idempotent effect</strong> (Google) says: the second call performs
+  no further action, but the body you get back may reflect the world as it is now.</p>
+  <p>A client that diffs a replayed response against its original is correct on one of those APIs
+  and broken on the other. And note that AWS lands in the same place as Google without ever
+  framing it as a contract — <em>"the result might contain updated information, such as the
+  current creation status."</em></p>
+  <p>So the question to ask of any API, including your own: <em>on a duplicate, do you promise the
+  old bytes or the current truth?</em> Answering "the stored response" without noticing there was
+  a choice is the tell that you have implemented one and read about the other.</p>
+</div>
+
+<div class="callout win">
+  <span class="label">What you can now do</span>
+  <p>Explain why a client-chosen key addressing a response cache is an access-control problem, and
+  why the replay path cannot rely on your handler's ownership checks; state the composite-lookup
+  rule and insist that the scope value be derived server-side; sort any request field into scope,
+  fingerprint or ignored, and say what moving it between the first two does to the API's
+  behaviour; price a wider scope against availability; name the two axes of uniqueness Stripe
+  requires; and distinguish the two replay contracts that vendors quietly disagree about.</p>
+</div>
+
+<h2>Check yourself</h2>
+
+<p>One attempt per question. Guessing until it turns green is recognition, not recall.</p>
+
+<div class="quiz">
+<ol>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">Keys are looked up on the bare client string. An attacker with a valid
+    account guesses <code>order-1002</code> and <code>POST</code>s it. What comes back?</p>
+    <ul class="options">
+      <li><button data-opt="a">A <code>422</code>, because the payload fingerprint will not match here</button></li>
+      <li><button data-opt="b">Another customer's stored response, with no endpoint run at all</button></li>
+      <li><button data-opt="c">A <code>403</code>, because the ownership check inside the handler fails</button></li>
+      <li><button data-opt="d">A fresh execution, because the attacker's scope has no row</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Only if the attacker changes the payload — and an
+    attacker who wants to read the stored body has no reason to. Sending anything that hashes the
+    same puts them straight on the replay path.</p></div>
+    <div class="feedback" data-for="b"><p>Correct, and the second clause is the part to say out
+    loud. A replay returns <em>before</em> the endpoint executes, so every ownership check you
+    wrote is inside code that never runs. The draft's own words: attackers <em>"use them to fetch
+    existing idempotent cache entries, belonging to other clients."</em></p></div>
+    <div class="feedback" data-for="c"><p>That check lives in the endpoint. The replay path
+    returns the stored response without reaching it — which is exactly why this layer needs its
+    own scope.</p></div>
+    <div class="feedback" data-for="d"><p>That is the behaviour <em>after</em> you add a scope
+    column. The premise here is a lookup on the bare string, where there is no such thing as the
+    attacker's own scope.</p></div>
+  </li>
+
+  <li class="q" data-answer="c">
+    <p class="q-text">Which value is acceptable as the scope half of the composite lookup key?</p>
+    <ul class="options">
+      <li><button data-opt="a">A tenant id the client supplies in a request header</button></li>
+      <li><button data-opt="b">A hash of the key itself, spreading rows across tables</button></li>
+      <li><button data-opt="c">An account id the server takes from the verified caller</button></li>
+      <li><button data-opt="d">A random namespace the server issues the client at sign-up</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Anything the client sends, the attacker also sends. The
+    draft is precise about this: the attributes must be <em>"known only to the resource."</em></p></div>
+    <div class="feedback" data-for="b"><p>Deriving the scope from the key gives every caller the
+    same namespace, which is the situation you started in — plus a false sense of
+    partitioning.</p></div>
+    <div class="feedback" data-for="c"><p>Correct. The test is provenance, not the column's type:
+    the value must be established server-side by authentication, so a caller cannot choose whose
+    cache it reads. Brandur's schema is this exactly — a unique index on
+    <code>(user_id, idempotency_key)</code> with a foreign key to <code>users</code>.</p></div>
+    <div class="feedback" data-for="d"><p>Closer, but it still travels in the request, so it is a
+    secret shared with the client — a bearer token doing a scope's job. Derive it from the
+    credential you already verified instead.</p></div>
+  </li>
+
+  <li class="q" data-answer="a">
+    <p class="q-text">The same AWS <code>ClientToken</code>, identical parameters, sent to
+    <code>us-east-1</code> and then <code>eu-west-1</code>. Two instances launch. Why is that not
+    a bug?</p>
+    <ul class="options">
+      <li><button data-opt="a">Region is part of the scope, so those became two independent lookups</button></li>
+      <li><button data-opt="b">Regions run their own caches, and these have not yet replicated over</button></li>
+      <li><button data-opt="c">Tokens only deduplicate calls that happen to arrive in one short window</button></li>
+      <li><button data-opt="d">Launching twice is allowed if the second call targets other new hardware</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Correct, and it is a design decision rather than a
+    limitation — documented as a feature: <em>"you can use the same request, including the same
+    client token, in a different Region."</em> The proof that Region is scope and not fingerprint
+    is the mismatch rule's own exception: parameters differing <em>"other than the Region or
+    Availability Zone"</em> raise <code>IdempotentParameterMismatch</code>.</p></div>
+    <div class="feedback" data-for="b"><p>A plausible-sounding implementation detail, and it gets
+    the causation backwards. AWS documents this as intended behaviour, not as replication
+    lag.</p></div>
+    <div class="feedback" data-for="c"><p>There is a window, but it is not what separates these
+    two calls. Send them a second apart and you still get two instances.</p></div>
+    <div class="feedback" data-for="d"><p>Nothing in the mechanism knows or cares about
+    hardware.</p></div>
+  </li>
+
+  <li class="q" data-answer="d">
+    <p class="q-text">Your lookup is <code>(account_id, key)</code>. A client uses short
+    sequential keys and two of its <em>own</em> distinct operations collide on one. What is the
+    consequence?</p>
+    <ul class="options">
+      <li><button data-opt="a">Nothing — the scope column already prevents these keys from colliding</button></li>
+      <li><button data-opt="b">Another tenant's response leaks out, which is what the entropy prevents</button></li>
+      <li><button data-opt="c">Both operations run, since their two fingerprints differ from one another</button></li>
+      <li><button data-opt="d">That second write silently never happens, or is refused as duplicate</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>Scope separates <em>accounts</em>. Inside one account
+    the key still has to be unique on its own, which is the client's job.</p></div>
+    <div class="feedback" data-for="b"><p>Scope closed that route. This collision is entirely
+    within one tenant.</p></div>
+    <div class="feedback" data-for="c"><p>Differing fingerprints do not cause a second execution —
+    they cause a <code>422</code>. Folding the fingerprint into the lookup is what would run the
+    work twice, and that was last lesson's trap.</p></div>
+    <div class="feedback" data-for="d"><p>Correct, and it is the failure nobody sees. Depending on
+    the payloads, the second operation either replays the first one's response or is rejected as a
+    reuse — and from outside, the replay is indistinguishable from idempotency working perfectly.
+    <strong>Scope defends you against other people; entropy defends you against yourself.</strong>
+    Hence <em>"another random string with enough entropy to avoid collisions."</em></p></div>
+  </li>
+
+  <li class="q" data-answer="b">
+    <p class="q-text">A duplicate request arrives and the API returns the resource's
+    <em>current</em> state rather than the original response body. Broken?</p>
+    <ul class="options">
+      <li><button data-opt="a">Yes — a replay must be byte-identical or the key guarantees nothing</button></li>
+      <li><button data-opt="b">No — that is a different replay contract, and Google permits it</button></li>
+      <li><button data-opt="c">Yes — the stored response was overwritten, so the row is corrupted</button></li>
+      <li><button data-opt="d">No — but only while the original response is inside its window</button></li>
+    </ul>
+    <div class="feedback" data-for="a"><p>That is Stripe's contract, and it is a choice rather
+    than a law. The guarantee that matters is that no second operation occurred.</p></div>
+    <div class="feedback" data-for="b"><p>Correct. AIP-155: <em>"it is permissible to substitute
+    the historical success response with a similar response that reflects more current data."</em>
+    Two promises exist — byte-identical replay, and idempotent effect with a current body — and a
+    client that diffs the replay against its original is correct on one and broken on the other.
+    Know which one your API makes.</p></div>
+    <div class="feedback" data-for="c"><p>Nothing was corrupted. The service chose not to retain
+    historical data it has no other use for.</p></div>
+    <div class="feedback" data-for="d"><p>Retention governs how long the key is honoured at all,
+    not which body a replay is allowed to contain.</p></div>
+  </li>
+
+</ol>
+</div>
+
+<h2>Say it out loud</h2>
+
+<div class="recall">
+  <p class="prompt">60 seconds, no notes. The prompt is the one that follows any confident
+  description of the algorithm: <em>"how would you scope idempotency keys in a multi-tenant
+  API?"</em> Cover what goes in the lookup and where that value comes from, the attack it
+  prevents, why the replay path needs its own access control, and the fact that scope also decides
+  what counts as the same request.</p>
+  <button class="reveal">Reveal model answer</button>
+  <div class="answer">
+    <p>"The lookup key is composite — the caller's account id plus the client's key — and the
+    account id is derived server-side from whatever authenticated the request. It must never come
+    out of the request itself, because anything the client sends, an attacker also sends.</p>
+    <p>The attack it prevents is a read, not a write. The table holds full response bodies
+    addressed by a string the client chose, so with low-entropy keys someone can guess another
+    tenant's key and get their response replayed back. And that path is nastier than a normal
+    leaky query, because the replay returns before the endpoint runs — so every ownership check I
+    wrote is inside code that never executes. The idempotency layer sits in front of my
+    authorisation, so it has to carry its own.</p>
+    <p>Scope and entropy solve different halves. Scope stops other people reaching my rows.
+    Entropy stops one account colliding with itself, where the second operation just silently
+    doesn't happen and looks exactly like idempotency working. So I'd require UUIDv4, publish the
+    format, and validate it before I use it in a lookup.</p>
+    <p>The part people miss is that scope isn't only security — it decides what 'the same request'
+    means. AWS scopes client tokens per Region, so the same token in two Regions launches two
+    instances on purpose, and Region is excluded from the parameter comparison because it's in the
+    scope rather than the fingerprint. Every field is scope, fingerprint, or ignored, and moving
+    one between the first two changes behaviour, not just safety. Wider scope also means a wider
+    dependency — AWS actually recommends the narrower zonal scope because a regional one can fail
+    if a single Zone is down.</p>
+    <p>And there's a time axis: Stripe asks for keys unique within your account over at least 24
+    hours, so the retention window is the temporal half of the scope, not housekeeping."</p>
+    <p><em>Score what you dropped. The three most costly omissions are "derived server-side",
+    "the replay returns before the endpoint runs", and scope-versus-fingerprint deciding
+    behaviour.</em></p>
+  </div>
+</div>
+
+<footer class="lesson-footer">
+
+<h2>Read this next</h2>
+
+<p><strong>Primary source:</strong>
+<a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">Amazon EC2 —
+Ensuring idempotency in API requests</a>. It is short, and it is the only vendor document that
+treats scope as a published product decision with named modes rather than an implementation
+detail. Read the "Types of idempotency" and "RunInstances idempotency" sections closely.</p>
+
+<p>Then <a href="https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.txt">§5
+of the draft</a> — one page, and the only normative-sounding text anywhere on the security of
+this mechanism. Remember what it is: expired, <code>SHOULD</code>-heavy, and internally
+inconsistent at §2.6 (see <a href="0002-what-you-store-and-for-how-long.html">Lesson 02</a>).</p>
+
+<h2>Coming next</h2>
+
+<p><strong><a href="0004-foreign-state-mutations.html">Lesson 04 — foreign state
+mutations</a>.</strong> Everything in this course so far has assumed the work inside the key's
+transaction is a database write. When it is a call to <em>another</em> API — a card network, an
+email provider, a partner — that cannot be rolled back, one transaction stops being enough, and
+Brandur's atomic-phase model is the answer. It is also the lesson where the failures stop being
+about your own database and start being about somebody else's.</p>
+
+<p class="ask-teacher">Push back. Good things to throw at me now: "if the scope is the account,
+what happens when a user is moved between accounts?", "my API is behind a gateway that terminates
+auth — can the gateway do the idempotency layer too?", "two of my regions have separate databases
+and share no key table, so what does my key actually guarantee?" (no source here settles that one,
+and I will say so), or "isn't this just row-level security, and shouldn't the database enforce
+it?" The last one is the best argument available.</p>
+
+<p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
+  <a href="0002-what-you-store-and-for-how-long.html">← Lesson 02</a>
+  <a href="0004-foreign-state-mutations.html">Lesson 04 →</a>
+  <a href="../reference/idempotent-post-handler.html">Reference card</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/MISSION.md">Mission</a>
+  <a href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/RESOURCES.md">Resources</a>
+</p>
+
+</footer>
+
+</article>
+
+<script src="../../../assets/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>

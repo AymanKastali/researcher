@@ -4,102 +4,169 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Researcher · Contents</title>
-<link rel="stylesheet" href="topics/transactional_outbox_pattern/assets/lesson.css">
+<link rel="stylesheet" href="assets/lesson.css">
 </head>
 <body>
-<article class="page">
+<article class="page index">
 
 <header class="masthead">
   <p class="eyebrow">Researcher</p>
-  <h1>Transactional Outbox</h1>
-  <p class="subtitle">Seven lessons taking the pattern from the dual-write problem to
-  operating it in production, built for recall under questioning rather than
-  recognition.</p>
+  <h1>Contents</h1>
+  <p class="subtitle">Courses built for recall under questioning rather than recognition. Every
+  claim is either cited to a primary source or backed by a captured transcript — and where
+  something is unverified, the lesson says so.</p>
+  <ul class="index-stats">
+    <li><strong>2</strong> topics</li>
+    <li><strong>11</strong> lessons</li>
+    <li><strong>2</strong> reference sheets</li>
+    <li><strong>1</strong> evidence log</li>
+  </ul>
 </header>
 
-<p>Read them in order the first time — each one ends by deferring something the next
-picks up. After that, the <a href="topics/transactional_outbox_pattern/reference/glossary.html">glossary</a>
-is the page to come back to.</p>
+<section class="course">
+  <div class="course-head">
+    <h2>Transactional Outbox</h2>
+    <p class="course-meta"><span>7 lessons</span><span>1 reference</span><span>run and
+    measured</span></p>
+  </div>
 
-<h2>Lessons</h2>
+  <p class="course-blurb">Taking the pattern from the dual-write problem to operating it in
+  production. Read them in order the first time — each one ends by deferring something the next
+  picks up. After that, the glossary is the page to come back to.</p>
 
-<ul class="contents">
-  <li><a href="topics/transactional_outbox_pattern/lessons/0001-the-dual-write-problem.html">
-    <span class="n">Lesson 01</span>
-    <span class="t">The Dual-Write Problem</span>
-    <span class="d">Why there is no safe order in which to do two writes, and what the
-    outbox actually buys you.</span></a></li>
+  <ol class="deck">
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0001-the-dual-write-problem.html">
+      <span class="card-n">Lesson 01</span>
+      <span class="card-t">The Dual-Write Problem</span>
+      <span class="card-d">Why there is no safe order in which to do two writes, and what the
+      outbox actually buys you.</span></a></li>
 
-  <li><a href="topics/transactional_outbox_pattern/lessons/0002-the-message-relay.html">
-    <span class="n">Lesson 02</span>
-    <span class="t">The Message Relay</span>
-    <span class="d">The table, the claim query, and the one design decision the whole
-    relay turns on.</span></a></li>
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0002-the-message-relay.html">
+      <span class="card-n">Lesson 02</span>
+      <span class="card-t">The Message Relay</span>
+      <span class="card-d">The table, the claim query, and the one design decision the whole
+      relay turns on.</span></a></li>
 
-  <li><a href="topics/transactional_outbox_pattern/lessons/0003-at-least-once-and-the-idempotent-consumer.html">
-    <span class="n">Lesson 03</span>
-    <span class="t">At-Least-Once and the Idempotent Consumer</span>
-    <span class="d">Where every duplicate comes from, and the one transaction boundary
-    that makes them harmless.</span></a></li>
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0003-at-least-once-and-the-idempotent-consumer.html">
+      <span class="card-n">Lesson 03</span>
+      <span class="card-t">At-Least-Once and the Idempotent Consumer</span>
+      <span class="card-d">Where every duplicate comes from, and the one transaction boundary
+      that makes them harmless.</span></a></li>
 
-  <li><a href="topics/transactional_outbox_pattern/lessons/0004-polling-or-tailing-the-log.html">
-    <span class="n">Lesson 04</span>
-    <span class="t">Polling or Tailing the Log</span>
-    <span class="d">What change data capture buys you, what it does not, and why the bill
-    arrives on your primary database.</span></a></li>
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0004-polling-or-tailing-the-log.html">
+      <span class="card-n">Lesson 04</span>
+      <span class="card-t">Polling or Tailing the Log</span>
+      <span class="card-d">What change data capture buys you, what it does not, and why the bill
+      arrives on your primary database.</span></a></li>
 
-  <li><a href="topics/transactional_outbox_pattern/lessons/0005-ordering-and-how-much-you-need.html">
-    <span class="n">Lesson 05</span>
-    <span class="t">Ordering, and How Much You Need</span>
-    <span class="d">Refuse the requirement you were handed, then buy the smaller one
-    cheaply. Carries a measured correction: single active consumer is not enough.</span></a></li>
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0005-ordering-and-how-much-you-need.html">
+      <span class="card-n">Lesson 05</span>
+      <span class="card-t">Ordering, and How Much You Need</span>
+      <span class="card-d">Refuse the requirement you were handed, then buy the smaller one
+      cheaply. Carries a measured correction: single active consumer is not enough.</span></a></li>
 
-  <li><a href="topics/transactional_outbox_pattern/lessons/0006-operating-it.html">
-    <span class="n">Lesson 06</span>
-    <span class="t">Operating It</span>
-    <span class="d">Monitoring, poison messages and retention — the first two in direct
-    conflict with the ordering you just bought.</span></a></li>
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0006-operating-it.html">
+      <span class="card-n">Lesson 06</span>
+      <span class="card-t">Operating It</span>
+      <span class="card-d">Monitoring, poison messages and retention — the first two in direct
+      conflict with the ordering you just bought.</span></a></li>
 
-  <li><a href="topics/transactional_outbox_pattern/lessons/0007-run-it.html">
-    <span class="n">Lesson 07</span>
-    <span class="t">Run It</span>
-    <span class="d">Postgres and RabbitMQ in Docker, the relay killed with
-    <code>SIGKILL</code> in the exact millisecond that matters.</span></a></li>
-</ul>
+    <li><a class="card" href="topics/transactional_outbox_pattern/lessons/0007-run-it.html">
+      <span class="card-n">Lesson 07</span>
+      <span class="card-t">Run It</span>
+      <span class="card-d">Postgres and RabbitMQ in Docker, the relay killed with
+      <code>SIGKILL</code> in the exact millisecond that matters.</span></a></li>
 
-<h2>Reference</h2>
+    <li><a class="card card-ref" href="topics/transactional_outbox_pattern/reference/glossary.html">
+      <span class="card-n">Reference</span>
+      <span class="card-t">Glossary</span>
+      <span class="card-d">The vocabulary an interviewer will use. Precision here is most of the
+      signal.</span></a></li>
+  </ol>
+</section>
 
-<ul class="contents">
-  <li><a href="topics/transactional_outbox_pattern/reference/glossary.html">
-    <span class="n">Reference</span>
-    <span class="t">Glossary</span>
-    <span class="d">The vocabulary an interviewer will use. Precision here is most of the
-    signal.</span></a></li>
+<section class="course">
+  <div class="course-head">
+    <h2>Idempotency Keys</h2>
+    <p class="course-meta"><span>4 lessons</span><span>1 reference</span><span>cited, never
+    run</span></p>
+  </div>
 
-  <li><a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/RESOURCES.md">
-    <span class="n">Sources</span>
-    <span class="t">Resources</span>
-    <span class="d">Every citation in the lessons, with what each source is good for and
-    where it stops being trustworthy.</span></a></li>
+  <p class="course-blurb">What a server must do when a caller retries a <code>POST</code> it never
+  got an answer to. Four lessons from the one failure the network cannot resolve, through what you
+  store and who a key belongs to, to the handler that has to survive a call it cannot take
+  back.</p>
 
-  <li><a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/evidence/README.md">
-    <span class="n">Evidence</span>
-    <span class="t">Run transcripts</span>
-    <span class="d">The captured output behind every measured number in Lessons 05 and
-    06, and an honest list of what was never run.</span></a></li>
+  <ol class="deck">
+    <li><a class="card" href="topics/idempotency_keys/lessons/0001-the-key-and-the-servers-algorithm.html">
+      <span class="card-n">Lesson 01</span>
+      <span class="card-t">The Key and the Server's Algorithm</span>
+      <span class="card-d">One failure the network cannot resolve, one string that resolves it, and
+      the four steps a server runs when the same string arrives twice.</span></a></li>
 
-  <li><a href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/MISSION.md">
-    <span class="n">Why</span>
-    <span class="t">Mission</span>
-    <span class="d">What this course is for, and what is deliberately out of
-    scope.</span></a></li>
-</ul>
+    <li><a class="card" href="topics/idempotency_keys/lessons/0002-what-you-store-and-for-how-long.html">
+      <span class="card-n">Lesson 02</span>
+      <span class="card-t">What You Store, and For How Long</span>
+      <span class="card-d">The fingerprint, which failures get cached and which don't, and the
+      <code>500</code> whose stored answer stays wrong on purpose.</span></a></li>
+
+    <li><a class="card" href="topics/idempotency_keys/lessons/0003-the-key-across-a-trust-boundary.html">
+      <span class="card-n">Lesson 03</span>
+      <span class="card-t">The Key Across a Trust Boundary</span>
+      <span class="card-d">Scoping the key — an access-control problem your handler never sees, and
+      the decision that quietly defines what "the same request" means.</span></a></li>
+
+    <li><a class="card" href="topics/idempotency_keys/lessons/0004-foreign-state-mutations.html">
+      <span class="card-n">Lesson 04</span>
+      <span class="card-t">Foreign State Mutations</span>
+      <span class="card-d">When the work inside the transaction is a call you cannot take back:
+      atomic phases, recovery points, and the handler as a state machine.</span></a></li>
+
+    <li><a class="card card-ref" href="topics/idempotency_keys/reference/idempotent-post-handler.html">
+      <span class="card-n">Reference</span>
+      <span class="card-t">The Idempotent POST Handler</span>
+      <span class="card-d">The algorithm, the decision table and the vocabulary on one printable
+      page.</span></a></li>
+  </ol>
+</section>
+
+<section class="course">
+  <div class="course-head">
+    <h2>Behind the lessons</h2>
+    <p class="course-meta"><span>on github</span><span>sources, transcripts and
+    scope</span></p>
+  </div>
+
+  <ul class="deck deck-sm">
+    <li><a class="card card-out" href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/RESOURCES.md">
+      <span class="card-n">Sources</span>
+      <span class="card-t">Outbox resources</span>
+      <span class="card-d">Every citation in the outbox lessons, with what each source is good for
+      and where it stops being trustworthy.</span></a></li>
+
+    <li><a class="card card-out" href="https://github.com/AymanKastali/researcher/blob/main/topics/idempotency_keys/RESOURCES.md">
+      <span class="card-n">Sources</span>
+      <span class="card-t">Idempotency resources</span>
+      <span class="card-d">RFC 9110, the expired IETF draft, and three vendors — annotated with the
+      gaps none of them fill.</span></a></li>
+
+    <li><a class="card card-out" href="https://github.com/AymanKastali/researcher/blob/main/topics/transactional_outbox_pattern/evidence/README.md">
+      <span class="card-n">Evidence</span>
+      <span class="card-t">Run transcripts</span>
+      <span class="card-d">The captured output behind every measured number in Outbox Lessons 05
+      and 06, and an honest list of what was never run.</span></a></li>
+
+    <li><a class="card card-out" href="https://github.com/AymanKastali/researcher/tree/main/topics">
+      <span class="card-n">Why</span>
+      <span class="card-t">Missions</span>
+      <span class="card-d">One <code>MISSION.md</code> per topic: what that course is for, and what
+      it deliberately leaves out.</span></a></li>
+  </ul>
+</section>
 
 <footer class="lesson-footer">
-  <p class="ask-teacher">The lessons are the source of truth here. Every claim in them is
-  either cited to a primary source or backed by a transcript in
-  <code>evidence/</code> — and where something is still unverified, the lesson says
-  so.</p>
+  <p class="ask-teacher">The lessons are the source of truth here. Ask the teacher anything that
+  is unclear — that is what the agent in this workspace is for.</p>
 </footer>
 
 </article>

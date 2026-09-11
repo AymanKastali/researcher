@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 02 · The Message Relay</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -448,8 +448,8 @@ as experience:</p>
     <ul class="options">
       <li><button data-opt="a">Both get the same batch and publish everything twice</button></li>
       <li><button data-opt="b">The second worker errors out on the lock conflict</button></li>
-      <li><button data-opt="c">It is correct, but the second worker waits its turn</button></li>
-      <li><button data-opt="d">Postgres splits the rows between them automatically</button></li>
+      <li><button data-opt="c">It is correct, but the second worker simply waits</button></li>
+      <li><button data-opt="d">Postgres divides the rows between them, one batch each</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>That is the <em>no-locking</em> failure.
     <code>FOR UPDATE</code> does prevent it — at the cost of throughput.</p></div>
@@ -467,9 +467,9 @@ as experience:</p>
     gives an inconsistent view of the data?</p>
     <ul class="options">
       <li><button data-opt="a">The outbox is append-only, so the view cannot drift</button></li>
-      <li><button data-opt="b">A worker needs some rows nobody holds, not a full view</button></li>
-      <li><button data-opt="c">The transaction is short, so inconsistency cannot bite</button></li>
-      <li><button data-opt="d">The partial index makes the skipped rows invisible</button></li>
+      <li><button data-opt="b">A worker needs unlocked rows, not a consistent view</button></li>
+      <li><button data-opt="c">The transaction is short, so the inconsistency cannot bite</button></li>
+      <li><button data-opt="d">The partial index hides the skipped rows from workers</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>It is not append-only — <code>published_at</code>
     gets updated. And the inconsistency comes from skipping, not from writes.</p></div>
@@ -487,7 +487,7 @@ as experience:</p>
     transaction. What is the main cost?</p>
     <ul class="options">
       <li><button data-opt="a">An open transaction spans a network call, holding locks</button></li>
-      <li><button data-opt="b">Duplicates become possible, and otherwise would not be</button></li>
+      <li><button data-opt="b">Duplicates become possible here, and otherwise would not be</button></li>
       <li><button data-opt="c">Other workers block on locked rows and stop progressing</button></li>
       <li><button data-opt="d">The publish is rolled back if the transaction aborts</button></li>
     </ul>
@@ -506,10 +506,10 @@ as experience:</p>
     <p class="q-text">Why not replace <code>published_at</code> with a stored high-water mark
     (<code>WHERE id &gt; last_seen_id</code>)?</p>
     <ul class="options">
-      <li><button data-opt="a">Sequence gaps from aborted transactions leave id holes</button></li>
-      <li><button data-opt="b">A bigint cursor eventually overflows and wraps to zero</button></li>
+      <li><button data-opt="a">Aborted transactions leave gaps, so the id sequence has holes</button></li>
+      <li><button data-opt="b">A bigint cursor will eventually overflow and wrap to zero</button></li>
       <li><button data-opt="c">You would lose the ability to retry any failed publish</button></li>
-      <li><button data-opt="d">Ids are assigned at insert, so a slow commit lands late</button></li>
+      <li><button data-opt="d">Ids are assigned at insert, so slow commits land late</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Gaps are real, but harmless on their own — skipping
     an id that never existed costs nothing. The lethal part is ordering.</p></div>
@@ -606,6 +606,7 @@ skip polling?", "what happens if the relay falls behind?", or "is a Postgres tab
 worse queue than the queue I already have?"</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0001-the-dual-write-problem.html">← Lesson 01</a>
   <a href="0003-at-least-once-and-the-idempotent-consumer.html">Lesson 03 →</a>
   <a href="../reference/glossary.html">Glossary</a>
@@ -617,7 +618,7 @@ worse queue than the queue I already have?"</p>
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 04 · Polling or Tailing the Log</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -374,7 +374,7 @@ requirement hardens from per-aggregate to global.</p>
       <li><button data-opt="a">CDC and polling are two names for one mechanism</button></li>
       <li><button data-opt="b">The outbox table is optional once you tail logs</button></li>
       <li><button data-opt="c">CDC replaces the relay loop, not the outbox table</button></li>
-      <li><button data-opt="d">Either approach can be adopted without a broker</button></li>
+      <li><button data-opt="d">Either approach can be adopted without using a broker</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>They are different mechanisms with different
     guarantees — that is the whole lesson. What they share is the problem they solve.</p></div>
@@ -393,9 +393,9 @@ requirement hardens from per-aggregate to global.</p>
     cannot?</p>
     <ul class="options">
       <li><button data-opt="a">Only one reader exists, so nothing runs concurrently</button></li>
-      <li><button data-opt="b">Postgres decodes concurrent transactions in commit order</button></li>
+      <li><button data-opt="b">The decoder emits transactions in true commit order</button></li>
       <li><button data-opt="c">Sequence values are allocated when a transaction commits</button></li>
-      <li><button data-opt="d">A relay sorts on timestamps, whose resolution is coarse</button></li>
+      <li><button data-opt="d">A relay sorts on timestamps of coarse resolution</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>A single reader fixes contention, not ordering. Run
     one polling relay with one worker and it still sorts by a column that does not encode
@@ -418,7 +418,7 @@ requirement hardens from per-aggregate to global.</p>
       <li><button data-opt="a">The prefetch limit, as the connector paces delivery</button></li>
       <li><button data-opt="b">The commit-then-ack rule, as the slot tracks progress</button></li>
       <li><button data-opt="c">The consumer_name column, as one connector reads it</button></li>
-      <li><button data-opt="d">None of it — log tailing is still at-least-once</button></li>
+      <li><button data-opt="d">None of it: log tailing is still at-least-once</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Prefetch is a broker-to-consumer setting. Nothing on
     the publishing side of the broker affects how many unacked deliveries a channel
@@ -439,8 +439,8 @@ requirement hardens from per-aggregate to global.</p>
     <ul class="options">
       <li><button data-opt="a">The primary's disk fills, since the slot retains WAL</button></li>
       <li><button data-opt="b">The outbox bloats, since no rows are marked published</button></li>
-      <li><button data-opt="c">The consumer's inbox grows, since replays are buffered</button></li>
-      <li><button data-opt="d">Nothing until restart, when the backlog floods through</button></li>
+      <li><button data-opt="c">The consumer's inbox grows, since the replays are buffered</button></li>
+      <li><button data-opt="d">Nothing until the restart, when the backlog floods through</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Correct, and it is why this decision belongs to
     whoever owns the primary. Slots know nothing about their consumer and hold resources
@@ -455,26 +455,26 @@ requirement hardens from per-aggregate to global.</p>
     happens after you survive the outage. The disk does not wait that long.</p></div>
   </li>
 
-  <li class="q" data-answer="c">
+  <li class="q" data-answer="d">
     <p class="q-text">A quiet captured database shares a server with a busy one, and WAL keeps
     growing. What is going on?</p>
     <ul class="options">
       <li><button data-opt="a">The busy database holds a slot that never advances</button></li>
-      <li><button data-opt="b">Decoding retains WAL for every uncaptured table too</button></li>
-      <li><button data-opt="c">The quiet slot never advances, so shared WAL is held</button></li>
-      <li><button data-opt="d">Postgres cannot recycle WAL while wal_level is logical</button></li>
+      <li><button data-opt="b">Decoding retains WAL for every uncaptured table as well</button></li>
+      <li><button data-opt="c">Postgres cannot recycle WAL while the wal_level is logical</button></li>
+      <li><button data-opt="d">The quiet slot never advances, so shared WAL accumulates</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Close, but backwards. The busy database is
     generating the WAL; it is the quiet one's slot that fails to confirm a position and pins
     it.</p></div>
     <div class="feedback" data-for="b"><p>Retention is driven by slot position, not by which
     tables are captured. The mechanism is the unconfirmed LSN.</p></div>
-    <div class="feedback" data-for="c"><p>Correct. Slots are per-database, the WAL is shared,
+    <div class="feedback" data-for="c"><p><code>logical</code> increases WAL volume, but
+    recycling still happens normally once every slot has confirmed past a segment.</p></div>
+    <div class="feedback" data-for="d"><p>Correct. Slots are per-database, the WAL is shared,
     and a database with no changes gives the connector nothing to acknowledge. Fix it with
     <code>heartbeat.interval.ms</code> and a heartbeat table so there is always something to
     confirm.</p></div>
-    <div class="feedback" data-for="d"><p><code>logical</code> increases WAL volume, but
-    recycling still happens normally once every slot has confirmed past a segment.</p></div>
   </li>
 
 </ol>
@@ -558,6 +558,7 @@ invalidated slot — can I recover it?", or "if CDC removes the relay, what moni
 pipeline?" And the one worth arguing about: "you picked polling — talk me out of it."</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0003-at-least-once-and-the-idempotent-consumer.html">← Lesson 03</a>
   <a href="0005-ordering-and-how-much-you-need.html">Lesson 05 →</a>
   <a href="../reference/glossary.html">Glossary</a>
@@ -569,7 +570,7 @@ pipeline?" And the one worth arguing about: "you picked polling — talk me out 
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>

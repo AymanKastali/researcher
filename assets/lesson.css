@@ -465,50 +465,144 @@ td.term-col { width: 34%; }
 .nav-links a { margin-right: 1.5rem; }
 
 /* --- Contents index ------------------------------------------------------
-   Used by the repo-root index.html — the page you reach by bookmarking the
-   site on a phone. Big tap targets, because that is what it is for: the whole
-   row is the link, not just the title. 44px is the minimum comfortable touch
-   target (WCAG 2.2 SC 2.5.8 asks for 24px; Apple and Google both say 44).
+   Used only by the repo-root index.html — the page you reach by bookmarking
+   the site. A contents page is navigation, not prose, so it opts out of the
+   reading measure and lays the lessons out as a scannable deck instead of one
+   long flat list. Prose inside it is put back on the measure by hand.
+
+   Big tap targets: the whole card is the link, never just the title. 44px is
+   the minimum comfortable touch target (WCAG 2.2 SC 2.5.8 asks for 24px;
+   Apple and Google both say 44).
    ------------------------------------------------------------------------- */
 
-.contents {
+.index > * { max-width: 100%; }
+.index .masthead > *,
+.index .lesson-footer > * { max-width: var(--measure); }
+
+/* Counts under the title: what the site contains, before any scrolling. */
+.index-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
   list-style: none;
+  margin: 1.4rem 0 0;
   padding: 0;
-  margin: 1.5rem 0 0;
-  border-top: 1px solid var(--rule);
-}
-.contents li { border-bottom: 1px solid var(--rule); }
-
-.contents a {
-  display: block;
-  min-height: 44px;
-  padding: 0.85rem 0.2rem;
-  background: none;
-  text-decoration: none;
-  color: var(--ink);
-}
-.contents a:hover,
-.contents a:focus-visible { background: var(--panel); }
-
-.contents .n {
   font-family: var(--mono);
   font-size: 0.72rem;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--ink-faint);
-  display: block;
-  margin-bottom: 0.2rem;
 }
-.contents .t {
-  display: block;
+.index-stats strong {
+  color: var(--ink);
   font-weight: 600;
-  color: var(--accent);
-  margin-bottom: 0.15rem;
+  margin-right: 0.35rem;
 }
-.contents .d {
-  display: block;
-  font-size: 0.9rem;
+
+/* --- A course block ------------------------------------------------------ */
+
+.course { margin-top: 3.5rem; }
+
+.course-head {
+  border-left: 2px solid var(--accent);
+  padding-left: 1.15rem;
+  margin-bottom: 1.4rem;
+}
+.course-head h2 { margin: 0; }
+
+.course-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0.45rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.course-meta span + span::before {
+  content: "·";
+  color: var(--rule);
+  margin: 0 0.6rem;
+}
+
+.course-blurb {
+  max-width: var(--measure);
+  margin: 0.85rem 0 0;
   color: var(--ink-soft);
-  line-height: 1.45;
+  font-size: 0.97rem;
+}
+
+/* --- The deck of cards --------------------------------------------------- */
+
+.deck {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(21rem, 100%), 1fr));
+  gap: 0.7rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* Secondary links (sources, transcripts) are smaller and pack tighter. */
+.deck-sm { grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr)); }
+
+.card {
+  display: block;
+  height: 100%;
+  min-height: 44px;
+  padding: 1rem 1.15rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  text-decoration: none;
+  color: var(--ink);
+  transition: border-color 130ms ease, transform 130ms ease;
+}
+.card:hover,
+.card:focus-visible {
+  border-color: var(--edge);
+  transform: translateY(-2px);
+}
+.card:hover .card-n,
+.card:focus-visible .card-n { color: var(--ink-soft); }
+.card:hover .card-t,
+.card:focus-visible .card-t { text-decoration: underline; }
+
+.card-n {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-family: var(--mono);
+  font-size: 0.69rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.card-t {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--accent);
+}
+.card-d {
+  display: block;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.deck-sm .card-t { font-size: 0.95rem; }
+.deck-sm .card-d { font-size: 0.83rem; }
+
+/* A reference sheet is not lesson N+1 — dashed, so the eye sorts it out
+   before reading the label. */
+.card-ref { border-style: dashed; }
+
+/* Leaves the site. The arrow carries it as well as the label does. */
+.card-out .card-t::after {
+  content: " ↗";
+  font-size: 0.85em;
+  color: var(--ink-faint);
 }
 
 /* --- RESPONSIVE ----------------------------------------------------------
@@ -617,6 +711,15 @@ td.term-col { width: 34%; }
     display: inline-block;
     margin: 0 1.2rem 0.6rem 0;
   }
+
+  /* Contents index: the deck is already one column here (the grid's
+     min() floor), so this is only rhythm. */
+  .index-stats { gap: 0.35rem 1.1rem; margin-top: 1.1rem; }
+  .course { margin-top: 2.6rem; }
+  .course-head { padding-left: 0.95rem; margin-bottom: 1.1rem; }
+  .course-blurb { font-size: 0.94rem; }
+  .card { padding: 0.9rem 1rem 1rem; }
+  .card:hover, .card:focus-visible { transform: none; }
 }
 
 /* --- ≤380px — small phone ------------------------------------------------ */
@@ -658,4 +761,16 @@ td.term-col { width: 34%; }
   h2, h3 { break-after: avoid; }
   pre, table, .callout, .recall { break-inside: avoid; }
   a { background: none; text-decoration: underline; }
+
+  /* The contents deck prints as a list; a grid of filled cards is a waste
+     of paper and the hover affordance means nothing here. */
+  .deck { display: block; }
+  .card {
+    border: none;
+    border-bottom: 0.5pt solid var(--rule);
+    border-radius: 0;
+    padding: 0.4rem 0;
+    break-inside: avoid;
+  }
+  .course-head { border-left: 1.5pt solid var(--rule); }
 }

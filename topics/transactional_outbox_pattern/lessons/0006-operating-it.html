@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lesson 06 · Operating It</title>
-<link rel="stylesheet" href="../assets/lesson.css">
-<link rel="stylesheet" href="../assets/hljs-dark-2026.css">
-<script src="../assets/quiz.js"></script>
+<link rel="stylesheet" href="../../../assets/lesson.css">
+<link rel="stylesheet" href="../../../assets/hljs-dark-2026.css">
+<script src="../../../assets/quiz.js"></script>
 </head>
 <body>
 <article class="page">
@@ -529,20 +529,20 @@ tables are logs and one is state. Logs age out. State does not.</p>
 <div class="quiz">
 <ol>
 
-  <li class="q" data-answer="b">
+  <li class="q" data-answer="a">
     <p class="q-text">Which single metric tells you whether the relay is healthy?</p>
     <ul class="options">
-      <li><button data-opt="a">The count of unpublished rows sitting in the outbox</button></li>
-      <li><button data-opt="b">The age of the oldest unpublished row in the outbox</button></li>
+      <li><button data-opt="a">The age of the very oldest unpublished outbox row</button></li>
+      <li><button data-opt="b">The count of unpublished rows sitting in the outbox</button></li>
       <li><button data-opt="c">The rate of rows the relay publishes each second</button></li>
-      <li><button data-opt="d">The count of unacknowledged deliveries in the queue</button></li>
+      <li><button data-opt="d">The count of unacknowledged deliveries sitting in the queue</button></li>
     </ul>
-    <div class="feedback" data-for="a"><p>Count cannot separate busy from stuck. Forty
-    thousand rows draining fast is healthy; one row stuck for nine minutes is an outage, and
-    count ranks them the wrong way round.</p></div>
-    <div class="feedback" data-for="b"><p>Correct. It is the relay's end-to-end latency as one
+    <div class="feedback" data-for="a"><p>Correct. It is the relay's end-to-end latency as one
     number, bounded in a healthy system by one poll interval plus one publish — and it is the
     number a downstream team actually cares about.</p></div>
+    <div class="feedback" data-for="b"><p>Count cannot separate busy from stuck. Forty
+    thousand rows draining fast is healthy; one row stuck for nine minutes is an outage, and
+    count ranks them the wrong way round.</p></div>
     <div class="feedback" data-for="c"><p>Throughput describes the relay, not the promise. A
     high publish rate is perfectly compatible with one aggregate stalled since Tuesday.</p></div>
     <div class="feedback" data-for="d"><p>Worth watching, but it is the consumer's health. A
@@ -556,7 +556,7 @@ tables are logs and one is state. Logs age out. State does not.</p>
       <li><button data-opt="a">SKIP LOCKED lets the rows behind it past the failure</button></li>
       <li><button data-opt="b">It drains apart from that row, whose age keeps rising</button></li>
       <li><button data-opt="c">Nothing in the shard is published again, ever, at all</button></li>
-      <li><button data-opt="d">The broker's delivery limit removes it after 20 tries</button></li>
+      <li><button data-opt="d">The broker's delivery limit removes it after only 20 tries</button></li>
     </ul>
     <div class="feedback" data-for="a"><p><code>SKIP LOCKED</code> skips rows another
     transaction is holding <em>at that instant</em>. Between attempts nobody holds this row,
@@ -576,9 +576,9 @@ tables are logs and one is state. Logs age out. State does not.</p>
     wrong way to get past a poison row?</p>
     <ul class="options">
       <li><button data-opt="a">The planner stops using the partial index on that table</button></li>
-      <li><button data-opt="b">Attempts rises on lease expiry, so it counts the wrong thing</button></li>
-      <li><button data-opt="c">Rows over the limit are never seen by the retention job</button></li>
-      <li><button data-opt="d">Later events of that aggregate overtake the skipped one</button></li>
+      <li><button data-opt="b">Attempts rises on lease expiry, so it counts wrong things</button></li>
+      <li><button data-opt="c">Rows over the limit stay invisible to the retention job</button></li>
+      <li><button data-opt="d">Later events of that aggregate will overtake the skipped one</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>The index is still chosen — the predicate that
     selects it is <code>published_at IS NULL</code>, and an extra filter on a cheap column
@@ -598,7 +598,7 @@ tables are logs and one is state. Logs age out. State does not.</p>
     the retry loop?</p>
     <ul class="options">
       <li><button data-opt="a">The quorum queue delivery limit, which defaults to 20</button></li>
-      <li><button data-opt="b">The consumer's prefetch, once it holds enough unacked</button></li>
+      <li><button data-opt="b">The consumer's prefetch limit, once it holds enough unacked</button></li>
       <li><button data-opt="c">The publisher confirm timing out and dropping the copy</button></li>
       <li><button data-opt="d">The inbox row, which records it as already processed</button></li>
     </ul>
@@ -623,9 +623,9 @@ tables are logs and one is state. Logs age out. State does not.</p>
     <p class="q-text"><em>Reaching back to Lesson 02.</em> The outbox holds 18,000 live rows
     in 106 MB and no alert has fired. Why not?</p>
     <ul class="options">
-      <li><button data-opt="a">Autovacuum reports bloat only past its own scale factor</button></li>
+      <li><button data-opt="a">Autovacuum reports the bloat only past its own scale factor</button></li>
       <li><button data-opt="b">The partial index keeps query cost on the backlog only</button></li>
-      <li><button data-opt="c">Dead tuples are excluded from the reported table size</button></li>
+      <li><button data-opt="c">Dead tuples are excluded from the reported total table size</button></li>
       <li><button data-opt="d">The relay reads the index alone and never the heap</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Autovacuum's thresholds decide when it runs, not
@@ -644,9 +644,9 @@ tables are logs and one is state. Logs age out. State does not.</p>
     <p class="q-text"><em>Reaching back to Lesson 05.</em> Which of your three tables must
     <em>not</em> be pruned on a time window?</p>
     <ul class="options">
-      <li><button data-opt="a">The outbox, since unpublished rows may still be claimed</button></li>
+      <li><button data-opt="a">The outbox, since its unpublished rows may still be claimed</button></li>
       <li><button data-opt="b">The inbox, since a redelivery can arrive after any delay</button></li>
-      <li><button data-opt="c">The cursor, since dropping it un-gates the stale events</button></li>
+      <li><button data-opt="c">The cursor, since dropping it un-gates all the stale events</button></li>
       <li><button data-opt="d">All three grow with traffic and all three need pruning</button></li>
     </ul>
     <div class="feedback" data-for="a"><p>Retention filters on <code>published_at</code>, so
@@ -739,6 +739,7 @@ queue look like?", "how would I size the retention window from the delivery limi
 me through partitioning an outbox that is already in production."</p>
 
 <p class="nav-links">
+  <a href="../../../index.html">← Contents</a>
   <a href="0005-ordering-and-how-much-you-need.html">← Lesson 05</a>
   <a href="0007-run-it.html">Lesson 07 →</a>
   <a href="../reference/glossary.html">Glossary</a>
@@ -750,7 +751,7 @@ me through partitioning an outbox that is already in production."</p>
 
 </article>
 
-<script src="../assets/highlight.min.js"></script>
+<script src="../../../assets/highlight.min.js"></script>
 <script>hljs.highlightAll();</script>
 </body>
 </html>
