@@ -103,15 +103,23 @@ contains code or a quiz — `highlight-theme.css`, `highlight.min.js` with a
   shipping it. Code blocks (`.code`), tables (`.table-wrap`) and wide figures
   (`.figure-body`) each scroll inside their own container; the page body never
   scrolls sideways.
-- **Compose from the classes in `assets/lesson.css`**: `.page`,
-  `.lesson-header` / `.lesson-number` / `.lesson-mission`, `.lead`,
-  `.small-print`, `a.citation`, `.excerpt`, `.definition` / `.term` /
-  `.attribution`, `.code` / `.code-meta` / `.code-language` /
-  `.code-illustrative`, `.aside.note` / `.aside.warning` / `.aside.insight`,
-  `figure` / `.figure-body`, `.table-wrap`, `.quiz` / `.quiz-question` /
-  `.quiz-answers` / `.quiz-answer` / `.quiz-explanation`, `.index-list` /
-  `.index-number` / `.index-title` / `.index-summary`, `.empty-state`, and
-  `.lesson-footer` / `.primary-source` / `.ask-teacher` / `.lesson-nav`.
+- **Compose from the classes in `assets/lesson.css`**:
+  - Shell and type: `.page`, `.lead`, `.small-print`, `a.citation`
+  - Lesson masthead: `.lesson-header` / `.lesson-number` / `.lesson-mission`
+  - Any other page's masthead: `.page-header` / `.page-eyebrow` / `.page-blurb`
+    — the `.lesson-*` names are for lessons only
+  - Sourcing: `.excerpt` with a `figcaption`; `.definition` / `.term` /
+    `.attribution`
+  - Code: `.code` / `.code-meta` / `.code-language` / `.code-illustrative`
+  - Asides: `.aside.note` / `.aside.warning` / `.aside.insight`
+  - Figures and tables: `figure` / `.figure-body`, `.table-wrap` (add
+    `wrapped` when cells hold sentences rather than labels)
+  - Quizzes: `.quiz` / `.quiz-question` / `.quiz-answers` / `.quiz-answer` /
+    `.quiz-explanation`
+  - Indexes: `.index-list` / `.index-number` / `.index-title` /
+    `.index-summary`, `.empty-state`
+  - Lesson footer: `.lesson-footer` / `.primary-source` / `.ask-teacher` /
+    `.lesson-nav`
 - New styling that a second lesson could reuse goes in `assets/lesson.css`, never
   inline in a lesson. A widget only one topic needs goes in that topic's own
   `assets/`.

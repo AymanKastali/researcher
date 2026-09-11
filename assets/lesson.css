@@ -64,8 +64,12 @@ body {
   font-family: var(--serif);
   font-size: 1.0625rem;
   line-height: 1.7;
-  /* Never let a stray wide child stretch the body. */
-  overflow-x: hidden;
+  /* Long URLs and identifiers break rather than push the column wider.
+   * Deliberately not `overflow-x: hidden` on the body: hiding overflow would
+   * make a page that does overflow look fine while the content is unreachable.
+   * Anything that can be wider than the column gets its own scroll container
+   * instead, so overflow is visible at authoring time. */
+  overflow-wrap: break-word;
 }
 
 /* ------------------------------------------------------------- page shell */
@@ -161,13 +165,18 @@ a:focus-visible {
 
 /* ---------------------------------------------------- lesson header/footer */
 
-.lesson-header {
+/* `.page-header` is the same masthead for a page that is not a lesson — a
+ * topic's contents page, or the front door. The `.lesson-*` names are for
+ * lessons only, so a page never claims to be something it is not. */
+.lesson-header,
+.page-header {
   margin-bottom: calc(var(--rhythm) * 1.5);
   padding-bottom: var(--rhythm);
   border-bottom: 1px solid var(--border);
 }
 
-.lesson-number {
+.lesson-number,
+.page-eyebrow {
   display: block;
   margin-bottom: 0.5rem;
   color: var(--ink-quiet);
@@ -177,12 +186,15 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
-.lesson-header h1 {
+.lesson-header h1,
+.page-header h1 {
   margin-bottom: 0.75rem;
 }
 
-/* The one-line tie back to the topic's mission. Every lesson carries one. */
-.lesson-mission {
+/* The one-line tie back to the topic's mission. Every lesson carries one.
+ * `.page-blurb` is the same treatment for a non-lesson page's one-liner. */
+.lesson-mission,
+.page-blurb {
   margin: 0;
   padding-left: 0.9rem;
   border-left: 2px solid var(--accent);
@@ -300,13 +312,10 @@ a.external::after {
   margin-bottom: 0;
 }
 
-.excerpt blockquote p::before {
-  content: "\201C";
-}
-
-.excerpt blockquote p::after {
-  content: "\201D";
-}
+/* No generated quote marks: the author writes the quotation exactly as the
+ * source has it, and the rule and ground here mark it as quoted. Inserted
+ * marks would double up on a quote that already has them, and would sit
+ * wrongly on every paragraph of a multi-paragraph excerpt. */
 
 .excerpt figcaption,
 .excerpt .attribution {
@@ -529,8 +538,15 @@ td {
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
-  /* Keep columns readable rather than letting one wrap to nothing. */
+  /* Comparison tables read better scrolled than crushed into two-word columns,
+   * so cells do not wrap by default. */
   white-space: nowrap;
+}
+
+/* Opt out when cells hold sentences rather than labels: `.table-wrap wrapped`. */
+.table-wrap.wrapped td {
+  min-width: 11rem;
+  white-space: normal;
 }
 
 th {
