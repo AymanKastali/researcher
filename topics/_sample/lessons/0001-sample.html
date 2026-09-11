@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sample lesson — the component vocabulary</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0001</span>
+        <h1>Every component, on one screen</h1>
+        <p class="lesson-mission">
+          Scaffolding: this page exercises the shared stylesheet at the depth a
+          real lesson sits at, so the first real lesson is not also the
+          stylesheet's first test. It is deleted once verified.
+        </p>
+      </header>
+
+      <p class="lead">
+        A lead paragraph, for the one-sentence framing that opens a lesson and
+        tells the learner what they will be able to do by the end of it.
+      </p>
+
+      <p>
+        Body text is set in a system serif at a generous line height on a
+        measure-constrained column, so a long explanation is comfortable to read
+        rather than merely legible. Inline code such as <code>outbox_id</code>
+        sits in the mono stack, and a
+        <a class="citation" href="https://www.postgresql.org/docs/current/transaction-iso.html">citation link</a>
+        is marked so a reader can tell an outbound source from in-topic
+        navigation before clicking.
+      </p>
+
+      <h2>Grounding a claim in a source</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The Read Committed isolation level is the default in PostgreSQL. When
+            a transaction uses this isolation level, a SELECT query sees only
+            data committed before the query began.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 17 documentation,
+          <a class="citation" href="https://www.postgresql.org/docs/current/transaction-iso.html">13.2.1. Read Committed Isolation Level</a>
+        </figcaption>
+      </figure>
+
+      <div class="definition">
+        <span class="term">isolation level</span>
+        <p>
+          The degree to which the operations of one transaction are made
+          invisible to concurrent transactions.
+        </p>
+        <span class="attribution">
+          Definition quoted from a textbook or specification, with the edition
+          and page recorded here.
+        </span>
+      </div>
+
+      <h3>A third-level heading</h3>
+
+      <p>
+        Headings step down in size but stay on the same rhythm, so a lesson with
+        three levels of structure still reads as one column of prose.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Illustrative — written for this lesson</span>
+        </div>
+        <pre><code class="language-python">from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class OutboxRecord:
+    """One pending message, written in the same transaction as the state change it describes."""
+
+    aggregate_id: str
+    payload: dict[str, str]
+    published: bool = False
+
+    def mark_published(self) -> "OutboxRecord":
+        return OutboxRecord(self.aggregate_id, self.payload, published=True)
+</code></pre>
+      </div>
+
+      <p>
+        That block is deliberately wider than the column: it must scroll inside
+        its own box, leaving the page body still.
+      </p>
+
+      <aside class="aside note">
+        <span class="label">Note</span>
+        <p>A note, for context a learner can take or leave.</p>
+      </aside>
+
+      <aside class="aside warning">
+        <span class="label">Warning</span>
+        <p>A warning, for the mistake this lesson exists to prevent.</p>
+      </aside>
+
+      <aside class="aside insight">
+        <span class="label">Key insight</span>
+        <p>The one sentence worth carrying out of the lesson.</p>
+      </aside>
+
+      <figure>
+        <div class="figure-body">
+          <svg width="560" height="90" viewBox="0 0 560 90" role="img" aria-label="Three boxes joined left to right by arrows">
+            <rect x="1" y="25" width="150" height="40" fill="none" stroke="#3c3c3c" />
+            <text x="76" y="50" fill="#d4d4d4" font-family="monospace" font-size="13" text-anchor="middle">write state</text>
+            <line x1="151" y1="45" x2="205" y2="45" stroke="#4ec9b0" />
+            <rect x="205" y="25" width="150" height="40" fill="none" stroke="#3c3c3c" />
+            <text x="280" y="50" fill="#d4d4d4" font-family="monospace" font-size="13" text-anchor="middle">write outbox</text>
+            <line x1="355" y1="45" x2="409" y2="45" stroke="#4ec9b0" />
+            <rect x="409" y="25" width="150" height="40" fill="none" stroke="#3c3c3c" />
+            <text x="484" y="50" fill="#d4d4d4" font-family="monospace" font-size="13" text-anchor="middle">publish later</text>
+          </svg>
+        </div>
+        <figcaption>
+          A figure wider than the measure, scrolling inside its own container.
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap">
+        <table>
+          <caption>A table wide enough to need its own scroll container.</caption>
+          <thead>
+            <tr>
+              <th>Isolation level</th>
+              <th>Dirty read</th>
+              <th>Non-repeatable read</th>
+              <th>Phantom read</th>
+              <th>Serialization anomaly</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Read uncommitted</td>
+              <td>Allowed by the standard</td>
+              <td>Possible</td>
+              <td>Possible</td>
+              <td>Possible</td>
+            </tr>
+            <tr>
+              <td>Read committed</td>
+              <td>Not possible</td>
+              <td>Possible</td>
+              <td>Possible</td>
+              <td>Possible</td>
+            </tr>
+            <tr>
+              <td>Repeatable read</td>
+              <td>Not possible</td>
+              <td>Not possible</td>
+              <td>Not possible</td>
+              <td>Possible</td>
+            </tr>
+            <tr>
+              <td>Serializable</td>
+              <td>Not possible</td>
+              <td>Not possible</td>
+              <td>Not possible</td>
+              <td>Not possible</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Retrieval practice</h2>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which isolation level is PostgreSQL's default for a new transaction?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Read uncommitted level</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Read committed level</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Repeatable read level</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Fully serializable level</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Every answer is four words wide, so the shape of an option tells the
+          learner nothing about whether it is the right one.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A second quiz on the same page, to prove the two run independently.
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>They work independently</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">They share one state</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Answering one quiz must leave the other untouched.
+        </p>
+      </div>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read this next</span>
+          <p>
+            The highest-quality source found on the topic, named in full, with
+            the edition or version:
+            <a class="citation" href="https://www.postgresql.org/docs/current/transaction-iso.html">PostgreSQL 17 documentation, Chapter 13: Concurrency Control</a>.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Anything unclear? Ask your teacher — that is what the agent is for.
+          A half-understood lesson is worth less than a question asked.
+        </p>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <span class="small-print">This is the first lesson in the topic.</span>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0001-sample.html">Placeholder, within this topic only</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+    <script src="../../../assets/quiz.js"></script>
+  </body>
+</html>

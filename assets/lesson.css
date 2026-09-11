@@ -1,0 +1,745 @@
+/* lesson.css — the shared presentation layer for every page in this repo.
+ *
+ * Dark only. There is no light palette, no prefers-color-scheme block, and no
+ * print stylesheet: the screen is the only rendering this repo supports.
+ *
+ * Mobile first. The base rules are the phone layout; the single media query
+ * near the end only relaxes spacing on wider viewports. Anything that can be
+ * wider than the column scrolls inside its own container, so the page body
+ * never scrolls sideways at any width.
+ */
+
+/* ---------------------------------------------------------------- palette */
+
+:root {
+  /* Surfaces, darkest to lightest. */
+  --bg: #1f1f1f;
+  --bg-sunken: #181818;
+  --bg-raised: #252526;
+  --border: #2b2b2b;
+  --border-strong: #3c3c3c;
+
+  /* Ink. */
+  --ink: #d4d4d4;
+  --ink-strong: #f0f0f0;
+  --ink-quiet: #9d9d9d;
+
+  /* Accents, taken from the editor palette so the pages and the editor agree. */
+  --link: #4daafc;
+  --link-visited: #b180d7;
+  --accent: #4ec9b0;
+  --warn: #ce9178;
+  --good: #6a9955;
+  --bad: #f14c4c;
+
+  /* Type. Nothing is fetched over the network. */
+  --serif: Charter, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Times New Roman", serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas,
+    "DejaVu Sans Mono", monospace;
+
+  /* Rhythm. */
+  --measure: 34rem;
+  --gutter: 1.25rem;
+  --rhythm: 1.6rem;
+}
+
+/* ------------------------------------------------------------------ reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* Keeps a phone from inflating text in landscape. */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 1.0625rem;
+  line-height: 1.7;
+  /* Never let a stray wide child stretch the body. */
+  overflow-x: hidden;
+}
+
+/* ------------------------------------------------------------- page shell */
+
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 2rem var(--gutter) 5rem;
+}
+
+/* ------------------------------------------------------------- type scale */
+
+h1,
+h2,
+h3 {
+  color: var(--ink-strong);
+  font-weight: 600;
+  line-height: 1.25;
+  /* Long technical words break rather than overflow on a narrow screen. */
+  overflow-wrap: break-word;
+}
+
+h1 {
+  font-size: 1.875rem;
+  margin: 0 0 var(--rhythm);
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 1.375rem;
+  margin: calc(var(--rhythm) * 1.75) 0 0.6rem;
+}
+
+h3 {
+  font-size: 1.125rem;
+  margin: calc(var(--rhythm) * 1.25) 0 0.4rem;
+}
+
+p {
+  margin: 0 0 var(--rhythm);
+}
+
+.lead {
+  font-size: 1.1875rem;
+  color: var(--ink-strong);
+  line-height: 1.6;
+}
+
+.small-print {
+  font-size: 0.9375rem;
+  color: var(--ink-quiet);
+  line-height: 1.6;
+}
+
+ul,
+ol {
+  margin: 0 0 var(--rhythm);
+  padding-left: 1.35rem;
+}
+
+li {
+  margin-bottom: 0.4rem;
+}
+
+strong {
+  color: var(--ink-strong);
+  font-weight: 600;
+}
+
+hr {
+  height: 1px;
+  margin: calc(var(--rhythm) * 2) 0;
+  border: 0;
+  background: var(--border);
+}
+
+/* ------------------------------------------------------------------ links */
+
+a {
+  color: var(--link);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+}
+
+a:visited {
+  color: var(--link-visited);
+}
+
+a:hover,
+a:focus-visible {
+  color: var(--ink-strong);
+}
+
+/* ---------------------------------------------------- lesson header/footer */
+
+.lesson-header {
+  margin-bottom: calc(var(--rhythm) * 1.5);
+  padding-bottom: var(--rhythm);
+  border-bottom: 1px solid var(--border);
+}
+
+.lesson-number {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--ink-quiet);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lesson-header h1 {
+  margin-bottom: 0.75rem;
+}
+
+/* The one-line tie back to the topic's mission. Every lesson carries one. */
+.lesson-mission {
+  margin: 0;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--accent);
+  color: var(--ink-quiet);
+  font-size: 0.9375rem;
+  font-style: italic;
+  line-height: 1.55;
+}
+
+.lesson-footer {
+  margin-top: calc(var(--rhythm) * 2.5);
+  padding-top: var(--rhythm);
+  border-top: 1px solid var(--border);
+}
+
+.lesson-footer h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+/* The primary source the lesson sends the learner to read or watch. */
+.primary-source {
+  margin-bottom: var(--rhythm);
+  padding: 1rem 1.1rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.primary-source h2,
+.primary-source .label {
+  display: block;
+  margin: 0 0 0.4rem;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.primary-source p:last-child {
+  margin-bottom: 0;
+}
+
+/* "Your teacher is one message away" reminder. */
+.ask-teacher {
+  margin-bottom: var(--rhythm);
+  color: var(--ink-quiet);
+  font-size: 0.9375rem;
+}
+
+/* Previous/next — within the same topic only, never across topics. */
+.lesson-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.9375rem;
+}
+
+.lesson-nav li {
+  margin: 0;
+}
+
+.lesson-nav .direction {
+  display: block;
+  color: var(--ink-quiet);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ------------------------------------------------------- citation links */
+
+/* For links that leave the lesson for a source. Marked so a reader can tell
+ * an outbound citation from in-topic navigation before clicking. */
+a.citation,
+a.external {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+a.citation::after,
+a.external::after {
+  content: " ↗";
+  text-decoration: none;
+}
+
+/* ------------------------------------------------------ quoted excerpt */
+
+/* The mechanism by which a lesson grounds a claim: the source's own words,
+ * visibly not the lesson's voice, with attribution and a link. */
+.excerpt {
+  margin: 0 0 var(--rhythm);
+  padding: 1rem 1.1rem;
+  background: var(--bg-sunken);
+  border-left: 3px solid var(--accent);
+}
+
+.excerpt blockquote {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
+
+.excerpt blockquote p {
+  margin: 0 0 0.75rem;
+}
+
+.excerpt blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.excerpt blockquote p::before {
+  content: "\201C";
+}
+
+.excerpt blockquote p::after {
+  content: "\201D";
+}
+
+.excerpt figcaption,
+.excerpt .attribution {
+  margin-top: 0.75rem;
+  color: var(--ink-quiet);
+  font-size: 0.875rem;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.excerpt figcaption::before {
+  content: "— ";
+}
+
+/* --------------------------------------------------------- definitions */
+
+/* A canonical definition, quoted from a textbook or specification rather than
+ * paraphrased. Attribution is not optional on one of these. */
+.definition {
+  margin: 0 0 var(--rhythm);
+  padding: 1rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
+.definition .term {
+  display: block;
+  margin-bottom: 0.4rem;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.definition p {
+  margin: 0 0 0.6rem;
+}
+
+.definition .attribution {
+  display: block;
+  color: var(--ink-quiet);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------- code */
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* Inline code. */
+:not(pre) > code {
+  padding: 0.1em 0.35em;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--ink-strong);
+  overflow-wrap: break-word;
+}
+
+/* A code block and its labels travel together. */
+.code {
+  margin: 0 0 var(--rhythm);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.code-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: baseline;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.code-language {
+  color: var(--ink-quiet);
+}
+
+/* "This code was written for the lesson" — never mistakable for a quotation
+ * from a real source. */
+.code-illustrative {
+  color: var(--warn);
+}
+
+/* The scrolling container: a long line scrolls here, not in the page body. */
+.code pre {
+  margin: 0;
+  padding: 0.85rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  /* An unhighlighted block still has to read well. */
+  color: var(--ink);
+  -webkit-overflow-scrolling: touch;
+}
+
+.code pre code {
+  display: block;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* -------------------------------------------------------------- asides */
+
+.aside {
+  margin: 0 0 var(--rhythm);
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border-strong);
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: var(--bg-raised);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.aside > :last-child {
+  margin-bottom: 0;
+}
+
+.aside .label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.aside.note {
+  border-left-color: var(--link);
+}
+
+.aside.note .label {
+  color: var(--link);
+}
+
+.aside.warning {
+  border-left-color: var(--warn);
+}
+
+.aside.warning .label {
+  color: var(--warn);
+}
+
+.aside.insight {
+  border-left-color: var(--accent);
+}
+
+.aside.insight .label {
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------- figures */
+
+figure {
+  margin: 0 0 var(--rhythm);
+}
+
+/* A figure wider than the column scrolls inside itself. */
+figure .figure-body {
+  overflow-x: auto;
+  padding: 0.85rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  -webkit-overflow-scrolling: touch;
+}
+
+figure img,
+figure svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+figure figcaption {
+  margin-top: 0.6rem;
+  color: var(--ink-quiet);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* -------------------------------------------------------------- tables */
+
+/* Tables always sit in one of these, so a wide table scrolls on its own. */
+.table-wrap {
+  margin: 0 0 var(--rhythm);
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  -webkit-overflow-scrolling: touch;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+caption {
+  padding: 0.6rem 0.75rem;
+  color: var(--ink-quiet);
+  font-size: 0.875rem;
+  text-align: left;
+}
+
+th,
+td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  /* Keep columns readable rather than letting one wrap to nothing. */
+  white-space: nowrap;
+}
+
+th {
+  background: var(--bg-sunken);
+  color: var(--ink-strong);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- quiz */
+
+.quiz {
+  margin: 0 0 var(--rhythm);
+  padding: 1rem 1.1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
+.quiz .label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--ink-quiet);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.quiz-question {
+  margin: 0 0 0.9rem;
+  color: var(--ink-strong);
+}
+
+.quiz-answers {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quiz-answers li {
+  margin: 0 0 0.5rem;
+}
+
+/* Every answer box is the full width of the quiz, whatever the answer says:
+ * the layout can never hint at which one is right. */
+.quiz-answer {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 1rem;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quiz-answer:hover:not([disabled]),
+.quiz-answer:focus-visible {
+  border-color: var(--link);
+  color: var(--ink-strong);
+}
+
+.quiz-answer[disabled] {
+  cursor: default;
+  opacity: 0.75;
+}
+
+/* Answered states. The marker is a fixed-width glyph in a mono font, so
+ * marking an answer cannot change its box. */
+.quiz-answer::after {
+  content: "";
+  display: inline-block;
+  width: 1.25em;
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.quiz-answer.is-correct {
+  border-color: var(--good);
+  color: var(--ink-strong);
+  opacity: 1;
+}
+
+.quiz-answer.is-correct::after {
+  content: "✓";
+  color: var(--good);
+}
+
+.quiz-answer.is-incorrect {
+  border-color: var(--bad);
+  opacity: 1;
+}
+
+.quiz-answer.is-incorrect::after {
+  content: "✗";
+  color: var(--bad);
+}
+
+.quiz-feedback {
+  margin: 0.75rem 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.quiz-feedback.is-correct {
+  color: var(--good);
+}
+
+.quiz-feedback.is-incorrect {
+  color: var(--warn);
+}
+
+.quiz-explanation {
+  margin: 0.6rem 0 0;
+  color: var(--ink-quiet);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+/* The explanation is only hidden once the widget can reveal it again. With
+ * JavaScript off, .quiz-explanation is simply part of the page. */
+.quiz.is-enhanced .quiz-explanation[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------- indexes */
+
+/* Used by a topic's contents page and by the root front door. */
+.index-list {
+  margin: 0 0 var(--rhythm);
+  padding: 0;
+  list-style: none;
+}
+
+.index-list > li {
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.index-list > li:first-child {
+  border-top: 1px solid var(--border);
+}
+
+.index-list .index-number {
+  display: block;
+  color: var(--ink-quiet);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+}
+
+.index-list .index-title {
+  font-size: 1.0625rem;
+}
+
+.index-list .index-summary {
+  margin: 0.25rem 0 0;
+  color: var(--ink-quiet);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+/* Shown when there is nothing to list yet. Honest, not a placeholder. */
+.empty-state {
+  padding: 1.25rem 1.1rem;
+  background: var(--bg-sunken);
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  color: var(--ink-quiet);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.empty-state > :last-child {
+  margin-bottom: 0;
+}
+
+/* ------------------------------------------------- wider viewports only */
+
+@media (min-width: 40rem) {
+  :root {
+    --gutter: 2rem;
+    --measure: 38rem;
+  }
+
+  body {
+    font-size: 1.125rem;
+  }
+
+  .page {
+    padding-top: 3.5rem;
+  }
+
+  /* Previous and next sit side by side once there is room for both. */
+  .lesson-nav {
+    flex-direction: row;
+    justify-content: space-between;
+    gap: var(--gutter);
+  }
+}

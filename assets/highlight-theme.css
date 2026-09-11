@@ -1,0 +1,131 @@
+/* highlight-theme.css — highlight.js tokens in VS Code Dark Modern colours.
+ *
+ * Dark Modern is the stock default theme, and no `workbench.colorTheme` is set
+ * in this editor, so this is the palette a snippet actually has when it is read
+ * in the editor rather than in a lesson. Hex values below are the theme's own.
+ *
+ * `.hljs` deliberately sets no background: the `.code` container in lesson.css
+ * owns that, so a highlighted block and an unhighlighted one look the same
+ * except for the token colours.
+ *
+ * highlight.js exposes one `.hljs-keyword` class where Dark Modern distinguishes
+ * control keywords (#c586c0) from storage keywords (#569cd6). Control wins here,
+ * since in Python `if`/`for`/`return`/`import` outnumber `def`/`class`.
+ */
+
+.hljs {
+  background: transparent;
+  color: #cccccc;
+}
+
+/* Comments and docstring tags. */
+.hljs-comment,
+.hljs-quote {
+  color: #6a9955;
+}
+
+.hljs-doctag {
+  color: #569cd6;
+}
+
+/* Keywords. */
+.hljs-keyword {
+  color: #c586c0;
+}
+
+.hljs-literal,
+.hljs-variable.language_,
+.hljs-symbol,
+.hljs-selector-id {
+  color: #569cd6;
+}
+
+/* Callables: builtins, function names, decorators. */
+.hljs-built_in,
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.function_.invoke__,
+.hljs-meta,
+.hljs-meta .hljs-keyword {
+  color: #dcdcaa;
+}
+
+/* Types and classes. */
+.hljs-type,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-class .hljs-title {
+  color: #4ec9b0;
+}
+
+/* Names: identifiers, parameters, attributes, properties. */
+.hljs-variable,
+.hljs-params,
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-template-variable {
+  color: #9cdcfe;
+}
+
+/* Strings. */
+.hljs-string,
+.hljs-meta .hljs-string,
+.hljs-addition {
+  color: #ce9178;
+}
+
+.hljs-char.escape_,
+.hljs-selector-tag,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: #d7ba7d;
+}
+
+/* f-string interpolation returns to plain foreground, as in the editor. */
+.hljs-subst {
+  color: #cccccc;
+}
+
+/* Numbers and other literal constants. */
+.hljs-number {
+  color: #b5cea8;
+}
+
+.hljs-regexp {
+  color: #d16969;
+}
+
+.hljs-deletion {
+  color: #ce9178;
+}
+
+/* Operators and punctuation stay at plain foreground. */
+.hljs-operator,
+.hljs-punctuation,
+.hljs-bullet {
+  color: #d4d4d4;
+}
+
+/* Markup: tags, sections, links. */
+.hljs-name,
+.hljs-section {
+  color: #569cd6;
+}
+
+.hljs-tag {
+  color: #808080;
+}
+
+.hljs-link {
+  color: #ce9178;
+  text-decoration: underline;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
