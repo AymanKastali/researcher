@@ -113,7 +113,9 @@ p {
 }
 
 .lead {
-  font-size: 1.1875rem;
+  /* `em`, not `rem`: the lead has to stay a step above body text at every
+   * breakpoint, including the ones that raise the body size. */
+  font-size: 1.1em;
   color: var(--ink-strong);
   line-height: 1.6;
 }
@@ -738,10 +740,11 @@ tbody tr:last-child td {
 
 /* ------------------------------------------------- wider viewports only */
 
+/* Tablet and up. */
 @media (min-width: 40rem) {
   :root {
     --gutter: 2rem;
-    --measure: 38rem;
+    --measure: 42rem;
   }
 
   body {
@@ -759,3 +762,21 @@ tbody tr:last-child td {
     gap: var(--gutter);
   }
 }
+
+/* Laptop. The column widens rather than staying at phone measure in the middle
+ * of a big screen: code blocks and comparison tables need the room, and a
+ * reading measure that is right on a phone looks cramped at arm's length. */
+@media (min-width: 64rem) {
+  :root {
+    --gutter: 2.5rem;
+    --measure: 50rem;
+  }
+
+  body {
+    font-size: 1.1875rem;
+  }
+}
+
+/* There is deliberately no tier above this. 50rem at 19px is about 84
+ * characters a line, which is already at the wide end of comfortable; a bigger
+ * display gets more margin, not longer lines. */
