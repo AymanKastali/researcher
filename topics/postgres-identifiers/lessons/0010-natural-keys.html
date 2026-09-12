@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>10. Natural keys and the issuing authority — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0010</span>
+        <h1>Natural keys and the issuing authority</h1>
+        <p class="lesson-mission">
+          The last candidate, and the only one whose failure mode is scheduled by
+          somebody else. The synthesis at the end of this lesson is the one piece
+          of advice in the topic that survives every other choice you make.
+        </p>
+      </header>
+
+      <p class="lead">
+        A natural key uses data that already means something — an email address,
+        an ISBN, a country code, an order number from the warehouse system. The
+        appeal is genuine, and it is worth stating properly before taking it
+        apart.
+      </p>
+
+      <h2>The case for</h2>
+
+      <ul>
+        <li><strong>One less column.</strong> No surrogate to carry, generate, or explain.</li>
+        <li>
+          <strong>No join to read the meaningful value.</strong> The child row
+          already contains the email address, the ISBN, the country code.
+        </li>
+        <li>
+          <strong>The uniqueness constraint expresses a real business rule.</strong>
+          “Two users cannot share an email address” is a fact about the domain,
+          and putting it in the schema is correct.
+        </li>
+      </ul>
+
+      <p>
+        Recall from lesson 1 that Codd's own worked example of a primary key —
+        <code>part number</code> — is a natural key. This is not a fringe
+        position, and it is not what the relational model argues against.
+      </p>
+
+      <h2>The case against, in one documented example</h2>
+
+      <p>
+        The problem is that the issuing authority is not you, and it will change
+        the format. The cleanest citable example:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            ISBNs were 10 digits in length up to the end of December 2006, but
+            since 1 January 2007 they now always consist of 13 digits.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.isbn-international.org/content/what-isbn/10"
+            >International ISBN Agency</a
+          >, “What is an ISBN?”.
+        </figcaption>
+      </figure>
+
+      <p>
+        A schema that keyed on ISBN-10 needed, on a date chosen by someone else,
+        to widen the key column in every table that referenced it. PostgreSQL
+        prices that migration explicitly:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Changing the type of an existing column will normally cause the
+            entire table and its indexes to be rewritten. […] Table and/or index
+            rebuilds may take a significant amount of time for a large table, and
+            will temporarily require as much as double the disk space.
+          </p>
+          <p>
+            <code>ALTER TABLE</code> changes the definition of an existing table.
+            <strong>An <code>ACCESS EXCLUSIVE</code> lock is acquired</strong>
+            unless explicitly noted.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/sql-altertable.html"
+            >ALTER TABLE</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Read what <code>ACCESS EXCLUSIVE</code> means here</span>
+        <p>
+          It is the strongest lock PostgreSQL has: nothing else may read or write
+          the table, not even a <code>SELECT</code>. So the bill for a natural
+          key's format change is a full rewrite of the table and all its indexes,
+          needing up to double the disk space, with the table completely
+          unavailable throughout — repeated for every table that references it.
+          <strong>And the date was chosen by the ISBN agency.</strong>
+        </p>
+      </div>
+
+      <h2>The cheaper failure that is still expensive</h2>
+
+      <p>
+        You do not need a format change to be hurt. A natural key that merely
+        <em>updates</em> costs plenty, and lesson 5 already built the argument:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Analogous to <code>ON DELETE</code> there is also
+            <code>ON UPDATE</code> which is invoked when a referenced column is
+            changed (updated). […] In this case, <code>CASCADE</code> means that
+            the updated values of the referenced column(s) should be copied into
+            the referencing row(s).
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK"
+            >§5.5.5</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        “Copied into the referencing row(s)” means rewriting every child row, in
+        every child table, inside the transaction that changed one email address
+        — and each of those rewrites forfeits HOT and touches
+        <strong>every</strong> index on the child table. One user correcting a
+        typo becomes an unbounded write amplification.
+      </p>
+
+      <p>RFC 9562 makes the same argument from the other direction:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Designers of database schema are cautioned against using name-based
+            UUIDs […] as primary keys in tables. The general advice is to avoid
+            name-based UUID natural keys and, instead, to utilize time-based UUID
+            surrogate keys
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §6.13</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What makes a natural key a structural risk rather than a style
+          preference?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It is unordered, so inserts land at random positions
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its values are guessable, so enumerating them gets easier
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Its format is controlled by someone outside your schema
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its greater width makes every index entry cost more
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Width and insert ordering are real costs and are usually modest. The
+          structural risk is that the issuing authority can widen or restructure
+          the key on a date it chooses, and your migration — a full table and
+          index rewrite under <code>ACCESS EXCLUSIVE</code>, propagated to every
+          referencing table — is then scheduled by them rather than by you. The
+          ISBN change of 1 January 2007 is the documented case.
+        </p>
+      </div>
+
+      <h2>The synthesis</h2>
+
+      <div class="aside insight">
+        <span class="label">Not “never use natural keys”</span>
+        <p>
+          A natural key's uniqueness is a genuine business rule and
+          <strong>belongs in the schema</strong> — as a <code>UNIQUE</code>
+          constraint, which by lesson 1 is “functionally almost the same thing”
+          as a primary key.
+        </p>
+        <p>
+          What it should not be is <strong>the target of your foreign
+          keys</strong>. Declare <code>UNIQUE (email)</code>; key on something you
+          control.
+        </p>
+      </div>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE users (
+    id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email  text NOT NULL,
+
+    -- The business rule, enforced. Not the foreign-key target.
+    CONSTRAINT users_email_key UNIQUE (email)
+);
+
+CREATE TABLE orders (
+    id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id  bigint NOT NULL REFERENCES users (id)
+    -- Changing an email now rewrites exactly one row.
+);</code></pre>
+      </div>
+
+      <p>
+        Because <code>id</code> is <code>GENERATED ALWAYS</code> it can never be
+        updated at all (lesson 7), so the <code>ON UPDATE</code> cascade scan the
+        docs describe simply cannot occur for it. The failure mode is not
+        mitigated — it is structurally excluded.
+      </p>
+
+      <h2>One PostgreSQL-specific subtlety</h2>
+
+      <p>
+        If you do put a <code>UNIQUE</code> constraint on nullable natural-key
+        data, know that by default “two null values are not considered equal”, so
+        a nullable column permits any number of rows that are null in it.
+        <code>UNIQUE NULLS NOT DISTINCT</code> (PostgreSQL 15+) changes that, and
+        the docs attach a warning worth carrying:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The default null treatment in unique constraints is
+            implementation-defined according to the SQL standard, and other
+            implementations have a different behavior.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/ddl-constraints.html"
+            >§5.5</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        So this is a place where an assumption carried in from another database
+        will be silently wrong in one direction or the other. Lesson 4's habit
+        applies: ask which engine the advice was written for.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Where does a natural key's uniqueness rule belong in the schema?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Nowhere at all, because the application should enforce it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              In a unique constraint, not as the referenced column
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              In the primary key, since it identifies rows correctly
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              In a check constraint, validated on every single write
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The rule is real and the database should enforce it, so a
+          <code>UNIQUE</code> constraint is right — and by lesson 1 that is
+          “functionally almost the same thing” as a primary key, carrying the
+          same B-tree index. What you avoid is making it the foreign-key target,
+          because that is what turns one changed value into a cascade across
+          every child table. A <code>CHECK</code> cannot express uniqueness at
+          all.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        All seven candidates are now on the table, priced on storage, ordering
+        and mutability. What has been deliberately postponed is the argument
+        people usually start with: that you should expose an opaque identifier so
+        attackers cannot enumerate your rows.
+      </p>
+
+      <p>
+        <a href="0011-guessability.html">Lesson 11</a> takes that argument
+        seriously, finds that its normative source says something much narrower
+        and stricter than the argument claims, and ends with the sharpest
+        cross-specification finding in the topic.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/sql-altertable.html"
+              >PostgreSQL 18 manual, <code>ALTER TABLE</code></a
+            >
+            — specifically the “Notes” section and the table of lock levels. It
+            is dry, and it is the document that tells you what a schema change
+            will actually cost you in downtime. Reading it once, properly, changes
+            how you design tables.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth raising: composite natural keys, which
+          this lesson does not cover. A two- or three-column key inherits every
+          problem above and adds width to every child index, but there are
+          genuine cases — join tables, time-series partitions — where it is right.
+          Ask for the trade-off in your own schema rather than generalising from
+          here.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The candidates are done, so this is another natural long pause. Before
+            lesson 11, try to name all seven and, for each, the single sentence
+            that most decides against it.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0009-ulid-snowflake-typeid.html">9. ULID, Snowflake, and TypeID</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0011-guessability.html">11. Guessability, and a trap between two specs</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

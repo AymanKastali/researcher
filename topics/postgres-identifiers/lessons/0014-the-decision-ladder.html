@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>14. The decision ladder — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0014</span>
+        <h1>The decision ladder</h1>
+        <p class="lesson-mission">
+          The payoff. Everything priced in lessons 2 to 13 turns into four rungs
+          and one sentence that survives all of them — but first, a claim this
+          topic has been quietly relying on that turns out not to be documented
+          at all.
+        </p>
+      </header>
+
+      <p class="lead">
+        Lesson 13 argued that narrow join keys are worth having. It is worth
+        checking whether the documentation supports that, and the honest answer
+        is: not in the form it is usually stated.
+      </p>
+
+      <h2>Does a wider join key actually cost anything?</h2>
+
+      <div class="aside warning">
+        <span class="label">The claim, graded</span>
+        <p>
+          <strong
+            >The PostgreSQL documentation makes no claim that join-key width
+            affects join performance.</strong
+          >
+          The <code>EXPLAIN</code> page reports row <code>width=</code> estimates
+          but never connects key width to join cost or plan choice. Any “16-byte
+          keys join more slowly than 8-byte keys” assertion is undocumented, and
+          this topic will not make it.
+        </p>
+      </div>
+
+      <p>What <em>is</em> documented is a chain you can reason from:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Here, the planner has chosen to use a hash join, in which rows of one
+            table are entered into an in-memory hash table, after which the other
+            table is scanned and the hash table is probed for matches to each row.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/using-explain.html"
+            >§14.1</a
+          >.
+        </figcaption>
+      </figure>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Sets the base maximum amount of memory to be used by a query
+            operation (such as a sort or hash table)
+            <strong>before writing to temporary disk files.</strong> […] The
+            memory limit for a hash table is computed by multiplying
+            <code>work_mem</code> by <code>hash_mem_multiplier</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual, <code>work_mem</code>,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/runtime-config-resource.html"
+            >§20.4.1</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Hash joins build an in-memory table bounded by
+        <code>work_mem × hash_mem_multiplier</code>; exceeding it produces
+        multiple batches, which involve disk. Wider keys make each entry larger,
+        so the bound is reached with fewer rows.
+      </p>
+
+      <p>
+        That is a coherent argument and probably true, but it is
+        <strong>inference, not documentation</strong> — and note its shape: the
+        effect is a <em>step function at the spill threshold</em>, not a smooth
+        tax on every join. A schema well under the threshold pays nothing at all.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The defensible version of the claim</span>
+        <p>
+          It is lesson 2's, and it needs no claim about join algorithms at all:
+          <strong>narrower keys make indexes smaller, so more of the working set
+          fits in <code>shared_buffers</code>.</strong> That is a cache-residency
+          argument, it is grounded in quoted constants, and it is the form in
+          which lesson 13's “~28% reduction across every child index” should
+          always be stated.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          How should the benefit of narrow foreign keys be argued?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              As faster joins, since hash probes compare fewer bytes
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              As shallower trees, since fan-out rises with narrower keys
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              As smaller indexes, since more working set stays cached
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              As cheaper plans, since the planner prefers narrow columns
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The cache-residency argument rests entirely on quoted constants from
+          lesson 2 and requires no claim the docs do not make. Join speed is
+          undocumented — the plausible version is a step function at the
+          <code>work_mem</code> spill threshold, not a per-row tax. Depth barely
+          moves (lesson 3), and nothing suggests the planner has a preference for
+          narrow columns as such.
+        </p>
+      </div>
+
+      <h2>What the decoupling buys at the API boundary</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Three concrete benefits of separating the two jobs.</caption>
+          <thead>
+            <tr>
+              <th>Benefit</th>
+              <th>Why it follows</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Renumbering becomes possible</strong></td>
+              <td>
+                Merging two databases, resharding, or backfilling from a legacy
+                system can renumber <code>id</code> freely as long as
+                <code>public_id</code> travels with the row. External references —
+                links customers bookmarked, ids in partners' systems, values in
+                your own webhook history — stay valid.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>JSON stays safe</strong></td>
+              <td>
+                By lesson 9, a 64-bit integer does not survive JavaScript's
+                53-bit number type. A <code>uuid</code> serialises as a string and
+                cannot be corrupted this way. If you ever <em>do</em> expose
+                <code>id</code>, serialise it as a string.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Enumeration stops being trivial</strong></td>
+              <td>
+                With lesson 11's caveat firmly attached: this is
+                <strong>defence in depth behind an authorisation check, never a
+                substitute for one</strong>. RFC 9562 §8 is normative on that
+                point.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        If you want TypeID's ergonomics (lesson 9), this is exactly where to add
+        them: <code>public_id</code> stays <code>uuid</code> in the database, and
+        the serialisation layer renders it as
+        <code>order_2x4y6z8a0b1c2d3e4f5g6h7j8k</code>. The prefix is a property of
+        the table, so storing it per row buys nothing.
+      </p>
+
+      <h2>When not to do this</h2>
+
+      <p>
+        The pattern earns its cost when identifiers are exposed to parties you do
+        not control, or when the internal id might have to change.
+        <strong>Below that threshold it is two columns and a lookup where one
+        column would do</strong> — and the discipline cost from lesson 13 is
+        still charged in full.
+      </p>
+
+      <h2>The ladder</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            A reasonable default ladder. Climb only as far as your situation
+            requires.
+          </caption>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Situation</th>
+              <th>Choice</th>
+              <th>What you are accepting</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1</strong></td>
+              <td>
+                Single-node application, ids not publicly meaningful.
+              </td>
+              <td>
+                <code>bigint GENERATED ALWAYS AS IDENTITY</code>
+              </td>
+              <td>
+                Narrowest, fastest, simplest. Serialise it as a string. No
+                offline generation, and it leaks order if exposed.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>2</strong></td>
+              <td>Ids appear in URLs or in third parties' hands.</td>
+              <td>
+                Dual-identifier: <code>bigint</code> internal +
+                <code>uuidv7()</code> external
+              </td>
+              <td>
+                Lesson 13's four costs, of which the discipline cost is
+                permanent.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>3</strong></td>
+              <td>Client-side or offline generation is required.</td>
+              <td>A single <code>uuid</code> primary key holding a v7</td>
+              <td>
+                8 more bytes per row and per child index entry, in exchange for
+                generation without a round trip. For many distributed systems
+                this is simply the right trade.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>4</strong></td>
+              <td>The id is a security-relevant surface.</td>
+              <td>UUIDv4 for the external id</td>
+              <td>
+                Lesson 3's index behaviour on that one index, on RFC 9562 §8's
+                own advice.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">What survives every rung</span>
+        <p>
+          <strong
+            >Key on something you control, never update it, and put a unique
+            constraint on anything that must be unique</strong
+          >
+          — including the identifier your framework already thinks is unique.
+        </p>
+        <p class="small-print">
+          Each clause has a lesson behind it: “something you control” is lesson
+          10, “never update it” is lesson 5, and “put a unique constraint on it”
+          is lesson 7's warning that an identity column does not guarantee
+          uniqueness on its own.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Your mobile app must create records while offline and sync them later.
+          Which rung applies?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Rung one, using a plain narrow identity column
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Rung three, using a single time-ordered UUID key
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Rung two, using the internal and external pair
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Rung four, using a fully random UUID column
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Offline creation means the device must mint the id before any database
+          has seen the row, which no sequence can do at any price (lesson 12). A
+          single <code>uuid</code> primary key holding a v7 pays 8 extra bytes per
+          row and per child index entry and buys exactly that capability. Rung two
+          would not help, since the internal <code>bigint</code> still needs the
+          database; rung four's v4 would additionally forfeit the index locality
+          for no security requirement that was stated.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        That is the decision. What remains is the part most likely to outlive it.
+      </p>
+
+      <p>
+        <a href="0015-reading-the-evidence.html">Lesson 15</a> collects everything
+        the sources refused to say — eighteen items — and makes the evidence
+        grading itself the object of study. PostgreSQL 19 will change some of the
+        answers above. It will not change how to check them.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/using-explain.html"
+              >PostgreSQL 18 manual, §14.1 “Using EXPLAIN”</a
+            >
+            — read it looking for a claim about key width, and notice that there
+            is not one. Reading a document for an absence is a genuinely different
+            skill from reading it for a fact, and it is the skill lesson 15 is
+            built around.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. This is the point to bring a real schema.
+          Ask which rung it is on, and — more useful — which rung it was designed
+          for versus which one it is now actually operating at. Systems commonly
+          climb a rung without anyone deciding to.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 15, try to reproduce the ladder from memory: four rungs,
+            what triggers each, and what each one costs. Then state the closing
+            sentence and name the lesson behind each of its three clauses.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0013-the-dual-identifier-pattern.html">13. The dual-identifier pattern</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0015-reading-the-evidence.html">15. Reading the evidence</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

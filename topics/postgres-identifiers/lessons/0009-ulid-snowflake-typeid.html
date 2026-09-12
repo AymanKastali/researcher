@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>9. ULID, Snowflake, and TypeID — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0009</span>
+        <h1>ULID, Snowflake, and TypeID</h1>
+        <p class="lesson-mission">
+          Three designs that solved this before UUIDv7 existed, or went further
+          than it does. The useful skill here is judging a specification by its
+          governance as well as its bit layout — which is a different kind of
+          evidence from anything in lessons 2 to 8.
+        </p>
+      </header>
+
+      <p class="lead">
+        Each of these is a real design with a real argument behind it. Each also
+        answers a question you should ask of any specification: who maintains it,
+        when did they last touch it, and what happens to me if they stop?
+      </p>
+
+      <h2>ULID: the design UUIDv7 inherited</h2>
+
+      <p>ULID predates UUIDv7 and solves the same problem. Its stated motivation:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>UUID can be suboptimal for many use-cases because:</p>
+          <ul>
+            <li>
+              It isn't the most character efficient way of encoding 128 bits of
+              randomness
+            </li>
+            <li>
+              UUID v1/v2 is impractical in many environments, as it requires
+              access to a unique, stable MAC address
+            </li>
+            <li>
+              UUID v3/v5 requires a unique seed and produces randomly distributed
+              IDs, which can cause fragmentation in many data structures
+            </li>
+            <li>
+              UUID v4 provides no other information than randomness which can
+              cause fragmentation in many data structures
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://github.com/ulid/spec">ULID spec</a>,
+          commit <code>d0c7170</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        Layout: a 48-bit millisecond timestamp plus 80 bits of randomness,
+        encoded as 26 characters of Crockford's Base32 —
+        <code>0123456789ABCDEFGHJKMNPQRSTVWXYZ</code>, an alphabet that “excludes
+        the letters I, L, O, and U to avoid confusion and abuse”.
+      </p>
+
+      <p>
+        That is a good design. The honest assessment is nevertheless that
+        <strong>UUIDv7 has superseded it</strong>, and the reasons are about
+        governance rather than bits.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Five findings about the ULID specification itself.</caption>
+          <thead>
+            <tr>
+              <th>Finding</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>The spec is unversioned and dormant.</strong></td>
+              <td>
+                No tags, no releases, no version number, no date inside the
+                document. Last commit to <code>master</code> is
+                <code>d0c7170</code>, <strong>2019-05-23</strong>. 74 issues
+                open; a <code>clarifications-jan-2020</code> branch was opened
+                and never merged. The only stable way to cite it is by commit
+                SHA.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>It defines itself by one implementation.</strong>
+              </td>
+              <td>
+                “Below is the current specification of ULID as implemented in
+                ulid/javascript”, adding “<em>Note: the binary format has not
+                been implemented in JavaScript as of yet.</em>”
+              </td>
+            </tr>
+            <tr>
+              <td><strong>No security considerations section.</strong></td>
+              <td>
+                None at all, and its randomness requirement is softer than the
+                RFC's: “Cryptographically secure source of randomness,
+                <strong>if possible</strong>”.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>“128-bit compatibility with UUID” is bare size
+                equivalence.</strong>
+              </td>
+              <td>
+                The spec says nothing about version or variant bits, so a ULID
+                stored in a <code>uuid</code> column is <em>not</em> a conformant
+                RFC 9562 UUID — it carries whatever its randomness produced where
+                the version nibble belongs. It round-trips through PostgreSQL
+                fine (lesson 6: “any UUID, regardless of the origin”), but
+                <code>uuid_extract_version()</code> returns whatever those four
+                bits happen to be.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>A real intra-millisecond trap.</strong></td>
+              <td>
+                The headline bullet claims “Monotonic sort order (correctly
+                detects and handles the same millisecond)”, but the Sorting
+                section says “<strong>Within the same millisecond, sort order is
+                not guaranteed</strong>”. Only the separate
+                <code>monotonicFactory</code> provides ordering — and lesson 11
+                explains why that mode is worse than it looks.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">A fair summary</span>
+        <p>
+          RFC 9562 §2.1 lists ULID first among the 16 implementations analysed
+          while drafting the standard. It is fair to read UUIDv7 as
+          <strong>ULID's design, given a version field, a variant field, a
+          standards body, and a security section</strong> — which is a
+          compliment to ULID and still a reason to reach for v7.
+        </p>
+      </div>
+
+      <h2>Snowflake: the 64-bit constraint</h2>
+
+      <p>
+        The only 64-bit candidate here that is also time-ordered, and the
+        constraint that produced it is worth reading:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Additionally, these numbers have to fit into 64 bits.
+            <strong>We've been through the painful process of growing the number
+            of bits used to store tweet ids before.</strong> It's unsurprisingly
+            hard to do when you have over 100,000 different codebases involved.
+          </p>
+          <p>
+            We also considered various UUIDs, but all the schemes we could find
+            required 128 bits.
+          </p>
+        </blockquote>
+        <figcaption>
+          “Announcing Snowflake”, Twitter Engineering, 1 June 2010.
+          <strong>The live page returns HTTP 403</strong>; read from the
+          <a
+            class="citation"
+            href="https://web.archive.org/web/20240422012321/https://blog.twitter.com/engineering/en_us/a/2010/announcing-snowflake"
+            >Wayback capture of 2024-04-22</a
+          >.
+        </figcaption>
+      </figure>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            * id is composed of:<br />
+            &nbsp;&nbsp;* time - 41 bits (millisecond precision w/ a custom epoch
+            gives us 69 years)<br />
+            &nbsp;&nbsp;* configured machine id - 10 bits - gives us up to 1024
+            machines<br />
+            &nbsp;&nbsp;* sequence number - 12 bits - rolls over every 4096 per
+            machine (with protection to avoid rollover in the same ms)
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://raw.githubusercontent.com/twitter-archive/snowflake/snowflake-2010/README.mkd"
+            >twitter-archive/snowflake <code>README.mkd</code></a
+          >, at the <code>snowflake-2010</code> tag.
+        </figcaption>
+      </figure>
+
+      <p class="small-print">
+        The 5+5 datacenter/worker split and the epoch are <strong>not</strong> in
+        the README — they are in <code>IdWorker.scala</code>:
+        <code>val twepoch = 1288834974657L</code>, <code>workerIdBits = 5</code>,
+        <code>datacenterIdBits = 5</code>, <code>sequenceBits = 12</code>. The
+        sign bit is stated nowhere; it is only inferable from 41 + 10 + 12 = 63
+        of a signed <code>Long</code>. Grade two throughout.
+      </p>
+
+      <p>Its ordering guarantee is deliberately weak, and named:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We can guarantee, however, that the id numbers will be k-sorted […]
+            within a reasonable bound (we're promising 1s, but shooting for 10's
+            of ms).
+          </p>
+        </blockquote>
+        <figcaption>Snowflake README, <code>snowflake-2010</code> tag.</figcaption>
+      </figure>
+
+      <p>Three things make this a poor default in 2026.</p>
+
+      <p>
+        <strong>It is retired.</strong> The repository is archived
+        (<code>"archived": true</code>, last push 2020-07-22), and the master
+        README says: “We have retired the initial release of Snowflake […] We
+        won't be accepting pull requests or responding to issues for the retired
+        release.” What you would adopt is the <em>design</em>, reimplemented by
+        you.
+      </p>
+
+      <p>
+        <strong>Worker-id assignment is a coordination problem.</strong> “worker
+        numbers are chosen at startup via zookeeper”. Ten bits means exactly 1024
+        concurrent generators, and assigning them uniquely — across autoscaling,
+        container restarts and blue/green deploys — is the actual engineering
+        cost. It is not an uncoordinated scheme; it is a scheme where the
+        coordination happens once at startup instead of once per id.
+      </p>
+
+      <p><strong>64-bit ids break JavaScript</strong>, which Twitter documented first-party:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Numbers as large as 64-bits can cause issues with programming
+            languages that represent integers with fewer than 64-bits. An example
+            of this is JavaScript, where integers are limited to 53-bits in size.
+            […] If you run the command
+            <code>(10765432100123456789).toString()</code> in a browser
+            JavaScript console, the result will be
+            <code>"10765432100123458000"</code> — the 64-bit integer loses
+            accuracy
+          </p>
+        </blockquote>
+        <figcaption>
+          Twitter developer documentation, “Twitter IDs”.
+          <strong>The live URL no longer carries this content</strong>; read from
+          the
+          <a
+            class="citation"
+            href="https://web.archive.org/web/20240425032320/https://developer.twitter.com/en/docs/twitter-ids"
+            >Wayback capture of 2024-04-25</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Their fix was to serialise ids as strings (<code>id_str</code>), and “In
+        newer versions of the API, all large integer values are represented as
+        strings by default.” Discord reached the same conclusion independently:
+        “Because Snowflake IDs are up to 64 bits in size (e.g. a uint64),
+        <strong>they are always returned as strings in the HTTP API</strong> to
+        prevent integer overflows in some languages.”
+      </p>
+
+      <div class="aside warning">
+        <span class="label">This applies to your <code>bigint</code> too</span>
+        <p>
+          The 53-bit hazard is not peculiar to Snowflake. It applies verbatim to
+          a <code>bigint</code> primary key that you expose in JSON. It is the one
+          practical hazard <code>bigint</code> shares with Snowflake, and it is
+          entirely avoidable by serialising as a string.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Discord's live variant differs slightly — 42 timestamp bits, 5 worker +
+        5 process + 12 increment, epoch <code>1420070400000</code>
+        (<a class="citation" href="https://docs.discord.com/developers/reference"
+          >Discord API reference</a
+        >) — a useful reminder that “Snowflake” names a <em>family</em>, not a
+        format.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What is the real engineering cost of adopting Snowflake-style ids?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The extra index width the format requires per row
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The custom epoch every consumer must be told about
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The clock sync that every machine must maintain exactly
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The unique worker id every generator must be assigned
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Ten bits gives exactly 1024 concurrent generators, and each needs a
+          distinct one — Twitter used ZooKeeper for this. Assigning them reliably
+          across autoscaling, restarts and blue/green deploys is the whole cost,
+          and it is why Snowflake is not an uncoordinated scheme. Width is
+          actually its advantage: 64 bits, narrower than any UUID.
+        </p>
+      </div>
+
+      <h2>TypeID: a presentation layer, sold as a format</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            TypeIDs are a type-safe extension of UUIDv7, they encode UUIDs in
+            base32 and add a type prefix.
+          </p>
+          <p>A typeid consists of three parts:</p>
+          <ol>
+            <li>
+              A <strong>type prefix</strong>: a string denoting the type of the
+              ID. The prefix should be at most 63 characters in all lowercase
+              snake_case ASCII <code>[a-z_]</code>.
+            </li>
+            <li>
+              A <strong>separator</strong>: an underscore <code>_</code>
+              character. The separator is omitted if the prefix is empty.
+            </li>
+            <li>
+              A <strong>UUID suffix</strong>: a 128-bit UUIDv7 encoded as a
+              26-character string in base32.
+            </li>
+          </ol>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://github.com/jetify-com/typeid/blob/main/spec/README.md"
+            >TypeID Specification v0.3.0</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Giving <code>user_2x4y6z8a0b1c2d3e4f5g6h7j8k</code>. The prefix regex is
+        <code>^([a-z]([a-z_]{0,61}[a-z])?)?$</code> — lowercase alphabetic and
+        underscore only, no digits, no leading or trailing underscore. Total
+        length 26 to 90 characters.
+      </p>
+
+      <p>
+        Critically, and unlike ULID, the underlying value is
+        <strong>required</strong> to be a real UUIDv7:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When generating a new TypeID, the generated UUID suffix MUST decode
+            to a valid UUIDv7. This means:
+          </p>
+          <ul>
+            <li>Bits 48-51 of the UUID MUST be <code>0111</code> (indicating version 7)</li>
+            <li>Bits 64-65 of the UUID MUST be <code>10</code> (indicating the UUID variant)</li>
+          </ul>
+        </blockquote>
+        <figcaption>TypeID Specification v0.3.0.</figcaption>
+      </figure>
+
+      <p>
+        <strong>A TypeID is a UUIDv7 plus a presentation layer</strong>, so the
+        storage question has a clean answer: store the <code>uuid</code>, render
+        the prefix.
+      </p>
+
+      <p>
+        The official SQL implementation offers two encodings, and neither is
+        that. The text encoding costs ~30 characters per index entry — by lesson
+        2, roughly 2× a native <code>uuid</code>. The composite stores a
+        <code>varchar(63)</code> prefix on <em>every single row</em>, even though
+        the prefix is a property of the table and is identical for every row in
+        it.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">-- The pragmatic reading: TypeID as an API format, not a storage format.
+CREATE TABLE users (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id  uuid   NOT NULL DEFAULT uuidv7(),
+
+    CONSTRAINT users_public_id_key UNIQUE (public_id)
+);
+-- The serialisation layer renders public_id as user_2x4y6z8a0b1c2d3e4f5g6h7j8k.
+-- The prefix is a property of the table, so storing it per row buys nothing.</code></pre>
+      </div>
+
+      <p class="small-print">
+        Two caveats on the implementation, both from its own repositories: the
+        SQL implementation tracks spec v0.2 while Go and TypeScript are at v0.3,
+        and the root README still describes UUIDv7 as “the upcoming UUID
+        standard”, linking an expired IETF draft rather than the published RFC.
+      </p>
+
+      <h2>The bet underneath TypeID</h2>
+
+      <p>
+        TypeID's acknowledged inspiration is Stripe, and Stripe's own position on
+        their ids is instructive — and opposite:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Changing the length or format of opaque strings, such as object IDs
+            […] This includes adding or removing fixed prefixes (such as
+            <code>ch_</code> on charge IDs). Make sure that your integration can
+            handle Stripe-generated object IDs, which can contain up to 255
+            characters.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://docs.stripe.com/upgrades">Stripe API upgrades</a>,
+          under “Backward-compatible changes”.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Two defensible, opposite bets</span>
+        <p>
+          Stripe classifies changing an id's length, and adding or removing the
+          prefix, as a <strong>backward-compatible</strong> change that clients
+          must tolerate — the id is opaque, and the prefix is a convenience for
+          humans. TypeID inverts this: its format is fixed and parseable
+          <em>by design</em>, so clients may rely on it.
+        </p>
+        <p>
+          Both are coherent. What you cannot do is adopt TypeID's ergonomics
+          while making Stripe's promise, and noticing that is the real lesson
+          here.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why is a ULID stored in a <code>uuid</code> column not a conformant
+          RFC 9562 UUID?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It specifies neither a version nor a variant bit
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It encodes 26 characters, which exceeds the byte limit
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It orders its timestamp bytes in the reverse direction
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It reserves eighty random bits, more than the maximum
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          RFC 9562 requires specific bits to carry the version and variant; the
+          ULID spec never mentions either, so those positions hold whatever the
+          randomness produced. It still stores and round-trips fine, because
+          PostgreSQL's <code>uuid</code> type is a container rather than a
+          validator — but <code>uuid_extract_version()</code> on it returns
+          noise. This is exactly the property TypeID was careful to require.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Six candidates down, one to go.
+        <a href="0010-natural-keys.html">Lesson 10</a> takes the option that
+        needs no invention at all — using data that already means something — and
+        prices the one risk that makes it a schema decision rather than a
+        preference.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://github.com/ulid/spec">The ULID specification</a>
+            — it is one README and takes ten minutes. Read it as an exercise in
+            the skill this lesson is really teaching: note the last commit date,
+            look for a version number, look for a security section, and find the
+            contradiction between the headline monotonicity bullet and the
+            Sorting section. Doing that to a specification yourself is worth more
+            than being told the findings.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If TypeID appeals — and its ergonomics
+          genuinely are pleasant — ask for the trade-offs of doing the prefixing
+          at the serialisation boundary versus in the database. The answer is not
+          only about storage; it is about where a wrong-type id gets caught.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 10, try to state from memory what each of these three
+            still offers over a plain UUIDv7 in a <code>uuid</code> column. One
+            of them has a genuine answer, one has an answer only in a narrow
+            case, and one has none.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0008-uuidv4-and-uuidv7.html">8. UUIDv4 and UUIDv7</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0010-natural-keys.html">10. Natural keys and the issuing authority</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

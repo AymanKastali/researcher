@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4. There is no clustered index — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0004</span>
+        <h1>There is no clustered index</h1>
+        <p class="lesson-mission">
+          One sentence, three quotations, and most of the internet's advice on
+          this subject stops applying. This is the lesson that lets you read a
+          confident blog post and know immediately which engine its author
+          learned on.
+        </p>
+      </header>
+
+      <p class="lead">
+        “Random primary keys fragment your table” is the most widely repeated
+        claim in this area. It is true — in MySQL's InnoDB and in SQL Server. In
+        PostgreSQL the mechanism it describes does not exist, and three
+        documented facts establish that.
+      </p>
+
+      <h2>The three facts</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When a table is clustered, it is physically reordered based on the
+            index information. <strong>Clustering is a one-time operation: when
+            the table is subsequently updated, the changes are not clustered.
+            That is, no attempt is made to store new or updated rows according to
+            their index order.</strong>
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/current/sql-cluster.html"
+            >CLUSTER</a
+          >.
+        </figcaption>
+      </figure>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>Each table and index is stored in a separate file.</p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/storage-file-layout.html"
+            >§66.1</a
+          >.
+        </figcaption>
+      </figure>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            All indexes in PostgreSQL are secondary indexes, meaning that each
+            index is stored separately from the table's main data area (which is
+            called the table's heap in PostgreSQL terminology).
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html"
+            >§11.9</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>What follows</h2>
+
+      <p>
+        In an engine with a clustered index, the primary key <em>is</em> the
+        table's physical order. Inserting a row with a random key means inserting
+        it into the middle of the table's own storage, so a random key scatters
+        <strong>row</strong> insertions and fragments the table itself.
+      </p>
+
+      <p>
+        In PostgreSQL that mechanism does not exist. Heap inserts go to whatever
+        page the free space map offers, regardless of key value. The index is a
+        separate file that happens to point at them.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The conclusion</span>
+        <p>
+          <strong
+            >The cost of a random key in PostgreSQL is confined to the B-tree
+            index on that key.</strong
+          >
+          It does not fragment your table. Any advice that says otherwise was
+          written for a different engine.
+        </p>
+        <p class="small-print">
+          Note the grade: the manual never states this conclusion in so many
+          words. It follows from the three quotations above, and it is the only
+          inference in this lesson that this topic is willing to make flatly —
+          because each premise is a documented guarantee and the step between
+          them is one of definition, not of mechanism.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does <code>CLUSTER</code> actually do in PostgreSQL?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Maintains the table in key order from then on
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Reorders the table once, and then has no effect
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Moves the primary key index into the heap file
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Rebuilds every index on the table in one pass
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          “Clustering is a one-time operation”, in the manual's own words, and
+          afterwards “no attempt is made to store new or updated rows according
+          to their index order”. The name is borrowed from engines where
+          clustering is a maintained property; in PostgreSQL it names a one-shot
+          rewrite. Nothing ever merges an index into the heap — all indexes are
+          secondary, always.
+        </p>
+      </div>
+
+      <h2>Write amplification, carefully</h2>
+
+      <p>
+        There is a second cost often attributed to random keys, and it is real,
+        but the evidence for it is weaker than for anything else in lessons 2 to
+        4. Being precise about that is the point of this section.
+      </p>
+
+      <p>The documented mechanism:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When this parameter is on, the PostgreSQL server writes the entire
+            content of each disk page to WAL during the first modification of
+            that page after a checkpoint. […] Storing the full page image
+            guarantees that the page can be correctly restored, but at the price
+            of increasing the amount of data that must be written to WAL.
+            (Because WAL replay always starts from a checkpoint, it is sufficient
+            to do this during the first change of each page after a checkpoint.
+            Therefore, one way to reduce the cost of full-page writes is to
+            increase the checkpoint interval parameters.) […] The default is on.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <code>full_page_writes</code>,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/runtime-config-wal.html"
+            >§20.5.1</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        That establishes something precise: the cost is per
+        <strong>distinct page dirtied after a checkpoint</strong>, and each one
+        costs about 8 kB of WAL. It is about pages touched, not rows written.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Now the inference, labelled as one</span>
+        <p>
+          Random keys scatter inserts across many leaf pages (lesson 3) → more
+          distinct pages are dirtied per checkpoint → more full-page images →
+          more WAL.
+        </p>
+        <p>
+          <strong>No PostgreSQL document states this chain.</strong> The docs
+          establish the <code>full_page_writes</code> mechanism and the
+          rightmost-page insert behaviour in completely separate places and never
+          connect them. It is a sound inference from two quoted facts, and this
+          topic will not pretend it is more than that.
+        </p>
+      </div>
+
+      <p>
+        If it does bite you, <code>wal_compression</code> compresses full-page
+        images specifically. Its default value is <code>off</code>.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does <code>full_page_writes</code> cost per checkpoint interval?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              One full image for each page first dirtied
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One full image for each row that changed
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One full image for each index that exists
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One full image for each commit that succeeds
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The manual says “the first modification of that page after a
+          checkpoint”, so the unit is the page, and only its first dirtying
+          counts. That is exactly why insert <em>locality</em> could matter:
+          twenty rows landing on one page cost one image, while twenty rows
+          landing on twenty pages cost twenty. The connection to key ordering,
+          though, is your inference and not the manual's.
+        </p>
+      </div>
+
+      <h2>How to read the internet after this lesson</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Claims you will meet, and what this lesson does to them.
+          </caption>
+          <thead>
+            <tr>
+              <th>Claim</th>
+              <th>Verdict in PostgreSQL</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>“Random keys fragment your table.”</td>
+              <td>
+                <strong>False here.</strong> No clustered index, so the heap is
+                unaffected. Imported from InnoDB or SQL Server.
+              </td>
+            </tr>
+            <tr>
+              <td>“Random keys bloat your index.”</td>
+              <td>
+                <strong>True</strong>, and lesson 3 gives the mechanism and
+                roughly the magnitude.
+              </td>
+            </tr>
+            <tr>
+              <td>“Random keys cost you a B-tree level.”</td>
+              <td>
+                <strong>Almost never.</strong> Lesson 3's depth table: zero extra
+                levels below about ten billion rows.
+              </td>
+            </tr>
+            <tr>
+              <td>“Random keys increase WAL volume.”</td>
+              <td>
+                <strong>Probably true, undocumented.</strong> A sound inference
+                from two quoted facts that no PostgreSQL page connects.
+              </td>
+            </tr>
+            <tr>
+              <td>“UUID inserts are an order of magnitude slower.”</td>
+              <td>
+                <strong>Unsourced.</strong> No primary source publishes a
+                benchmark — lesson 15 traces where that number came from.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Lessons 2 to 4 have priced inserting a key. <a href="0005-churn-and-immutability.html">Lesson 5</a>
+        prices <em>changing</em> one — which turns out to be the strongest
+        argument in the whole topic, and the one with the least folklore around
+        it. It also closes out the mechanics with the thing that makes all of
+        this arithmetic unnecessary: measuring your own database instead.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html"
+              >PostgreSQL 18 manual, §11.9 “Index-Only Scans and Covering
+              Indexes”</a
+            >
+            — short, and it opens with the sentence this lesson turns on: all
+            indexes are secondary. Read the whole page now rather than later,
+            because its second half is the visibility-map dependency that lesson
+            13 needs.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good use of it here: bring a blog post
+          arguing against UUID keys and work through which of its claims survive
+          this lesson. Most such posts contain a mix, and separating the
+          mechanism from the imported assumption is the skill this topic is
+          really building.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Lessons 2, 3 and 4 are one argument in three parts, so this is a
+            natural place to pause for longer. Before lesson 5, try to state the
+            whole chain from memory: what an entry costs, what a split does,
+            where the cost is confined, and which step of that chain is an
+            inference rather than a documented fact.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0003-the-rightmost-page.html">3. The rightmost page</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0005-churn-and-immutability.html">5. Churn, and why a key must never change</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

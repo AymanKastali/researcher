@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PostgreSQL feature ledger — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>PostgreSQL feature ledger</h1>
+        <p class="page-blurb">
+          What shipped in which release, the function catalogue, the extension
+          situation, and working DDL for every pattern in this topic. Written for
+          PostgreSQL 18.6; check it again when 19 ships.
+        </p>
+      </header>
+
+      <h2>Release ledger</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>First shipped</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY</code></td>
+              <td>10 (2017-10-05)</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/release/10.0/">PG10 notes</a></td>
+            </tr>
+            <tr>
+              <td><code>INCLUDE</code> covering indexes</td>
+              <td>11 (2018-10-18)</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/release/11.0/">PG11 notes</a></td>
+            </tr>
+            <tr>
+              <td>Deduplication in B-trees, “enabled by default”</td>
+              <td>13 (2020-09-24)</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/current/btree.html">§65.1.4.3</a></td>
+            </tr>
+            <tr>
+              <td><code>gen_random_uuid()</code> in core</td>
+              <td>13 (2020-09-24)</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/release/13.0/">PG13 notes</a></td>
+            </tr>
+            <tr>
+              <td>Bottom-up index deletion</td>
+              <td>14</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/current/btree.html">§65.1.4.2</a></td>
+            </tr>
+            <tr>
+              <td><code>UNIQUE NULLS NOT DISTINCT</code></td>
+              <td>15 (2022-10-13)</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/release/15.0/">PG15 notes</a></td>
+            </tr>
+            <tr>
+              <td><code>uuidv7()</code>, <code>uuidv4()</code></td>
+              <td>18 (2025-09-25)</td>
+              <td><a class="citation" href="https://www.postgresql.org/docs/release/18.0/">PG18 notes</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        <strong>Not established:</strong> the introducing version of
+        <code>uuid_extract_timestamp()</code> and
+        <code>uuid_extract_version()</code>. Both are present in 18; the PG17
+        release notes were not fetched, so no version is claimed.
+      </p>
+
+      <h2>Function catalogue</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Function</th><th>What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>uuidv7([shift interval])</code></td>
+              <td>
+                Version 7 UUID: Unix ms + sub-ms + random. Optional
+                <code>shift</code> moves the timestamp; it must stay within the
+                48-bit range, 1970-01-01 to approximately year 10889.
+              </td>
+            </tr>
+            <tr>
+              <td><code>uuidv4()</code> / <code>gen_random_uuid()</code></td>
+              <td>Version 4 UUID. Aliases; the second predates the first.</td>
+            </tr>
+            <tr>
+              <td><code>uuid_extract_timestamp(uuid)</code></td>
+              <td>
+                <code>timestamptz</code> from a v1 or v7; null for other
+                versions. “Not necessarily exactly equal to the time the UUID was
+                generated” — for a client-generated id it reports the
+                <strong>client's</strong> clock.
+              </td>
+            </tr>
+            <tr>
+              <td><code>uuid_extract_version(uuid)</code></td>
+              <td>
+                The version nibble. On a ULID stored in a <code>uuid</code>
+                column this returns whatever those four random bits happen to be.
+              </td>
+            </tr>
+            <tr>
+              <td><code>gen_random_bytes(n)</code></td>
+              <td>
+                <code>pgcrypto</code>. “Cryptographically strong random bytes”, at
+                most 1024 per call.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The monotonicity guarantee, exactly</span>
+        <p>
+          From commit <code>78c5e141e</code>: “<strong>the monotonicity of
+          generated UUIDs is ensured within the same backend</strong>.” A backend
+          is one connection's server process. The guarantee does not extend
+          across a connection pool, across application instances, or across
+          servers.
+        </p>
+        <p>
+          <strong>Good for index locality</strong> — inserts land near the right
+          edge either way. <strong>Not good for <code>ORDER BY id</code></strong>
+          — same-millisecond rows from different connections have no defined
+          order.
+        </p>
+      </div>
+
+      <h2>Extensions</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Extension</th><th>Status</th><th>Still worth installing for</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>pgcrypto</code></td>
+              <td>
+                Its <code>gen_random_uuid()</code> is marked “(Obsolete, this
+                function internally calls the core function of the same name.)”
+              </td>
+              <td><code>gen_random_bytes()</code>. Not UUID generation.</td>
+            </tr>
+            <tr>
+              <td><code>uuid-ossp</code></td>
+              <td>
+                “Only necessary for special requirements beyond what is available
+                in core PostgreSQL.”
+              </td>
+              <td>
+                v1, v3, v5 — the only in-tree source. Note its own warning that
+                v1 “reveal[s] the identity of the computer that created the
+                identifier and the time at which it did so”.
+              </td>
+            </tr>
+            <tr>
+              <td><code>pg_uuidv7</code></td>
+              <td>
+                Third-party, MPL-2.0, v1.7.0 (2025-10-13), not archived. Its
+                README: “As of Postgres 18, there is a built in
+                <code>uuidv7()</code> function, however it does not include all
+                of the functionality below.”
+              </td>
+              <td>
+                <code>uuid_timestamptz_to_v7(ts, true)</code> — the range-boundary
+                constructor, which core has no equivalent for.
+                <strong>Not available on AWS RDS.</strong>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Quoted from the pg_uuidv7 README</span>
+        </div>
+        <pre><code class="language-sql">-- for date range queries set the second argument to true to zero the random bits
+SELECT uuid_timestamptz_to_v7('2023-01-02 04:26:40.637+00', true);
+-- 018570bb-4a7d-7000-8000-000000000000</code></pre>
+      </div>
+
+      <p>
+        That turns a time range into a
+        <code>WHERE id &gt;= … AND id &lt; …</code> predicate against the primary
+        key index, with no secondary index on <code>created_at</code> at all.
+      </p>
+
+      <p class="small-print">
+        <strong>Platform availability:</strong> AWS RDS/Aurora lists
+        <code>uuid-ossp</code> (1.1) and <code>pgcrypto</code>;
+        <code>pg_uuidv7</code> appears in no major version's supported list. Neon
+        lists <code>pg_uuidv7</code> at 1.6 for PG14–18. Supabase does not
+        enumerate its extensions, so nothing is claimed either way.
+      </p>
+
+      <h2>DDL recipes</h2>
+
+      <h3>Rung 1 — single narrow key</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE orders (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- ALWAYS rejects INSERT of an explicit value without OVERRIDING SYSTEM VALUE,
+-- and rejects ANY update to a value other than DEFAULT. That immutability is
+-- the reason to prefer it over BY DEFAULT and over bigserial.
+-- Serialise id as a STRING: 64-bit integers do not survive JavaScript.</code></pre>
+      </div>
+
+      <h3>Rung 2 — the dual-identifier pattern</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE orders (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id   uuid   NOT NULL DEFAULT uuidv7(),      -- PG18+
+    created_at  timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT orders_public_id_key UNIQUE (public_id)
+);
+
+CREATE TABLE order_lines (
+    id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id  bigint NOT NULL REFERENCES orders (id)   -- id, never public_id
+);
+
+-- NOT created automatically. The docs: "it is often a good idea to index
+-- the referencing columns too."
+CREATE INDEX order_lines_order_id_idx ON order_lines (order_id);
+
+-- Rules: id is never serialised. public_id never appears in a foreign key.</code></pre>
+      </div>
+
+      <h3>Rung 3 — single UUID key, offline generation</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE orders (
+    id          uuid PRIMARY KEY DEFAULT uuidv7(),
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- The client may supply id instead of taking the DEFAULT. Treat a
+-- client-supplied value as hostile input, exactly like any other field.
+-- RFC 9562 6.4: you MUST be willing to rely on every host's RNG.</code></pre>
+      </div>
+
+      <h3>Natural key — constrain it, do not key on it</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE users (
+    id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email  text NOT NULL,
+    CONSTRAINT users_email_key UNIQUE (email)
+);
+
+-- If the column is nullable, know that by default "two null values are not
+-- considered equal", so any number of null rows are permitted. PG15+:
+--   CONSTRAINT users_email_key UNIQUE NULLS NOT DISTINCT (email)
+-- The docs warn this default is implementation-defined across databases.</code></pre>
+      </div>
+
+      <h3>Storing a UUID as text — what not to do</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">-- WRONG: 44-byte index entries instead of 28, for no benefit.
+-- RFC 9562 6.13: UUIDs SHOULD be stored "as the underlying 128-bit binary value".
+CREATE TABLE bad (id text PRIMARY KEY DEFAULT uuidv7()::text);
+
+-- If you genuinely must store an identifier as a string, use text with a
+-- CHECK. varchar(n) buys nothing: the docs say there is "no performance
+-- difference among these three types".
+CREATE TABLE ulid_keyed (
+    id text PRIMARY KEY CHECK (id ~ '^[0-9A-HJKMNP-TV-Z]{26}$')
+);</code></pre>
+      </div>
+
+      <h3>The covering-index optimisation — usually premature</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">CREATE UNIQUE INDEX orders_public_id_idx
+    ON orders (public_id) INCLUDE (id);
+
+-- Three documented caveats:
+--   1. Needs the visibility map's all-visible bits -- slowly-changing data only.
+--   2. "INCLUDE indexes can never use deduplication."
+--   3. Only helps if the query touches nothing else:
+--        SELECT id   FROM orders WHERE public_id = $1   -- qualifies
+--        SELECT *    FROM orders WHERE public_id = $1   -- does not
+-- Most application code issues the second. Measure before adding this.</code></pre>
+      </div>
+
+      <h2>Sequence behaviour</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Behaviour</th><th>Detail</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Gaps are guaranteed</td>
+              <td>
+                “PostgreSQL sequence objects cannot be used to obtain ‘gapless’
+                sequences.” An aborted transaction never returns its value, and
+                <code>INSERT … ON CONFLICT</code> consumes one before detecting
+                the conflict.
+              </td>
+            </tr>
+            <tr>
+              <td>Order across sessions</td>
+              <td>
+                At the default <code>CACHE 1</code>, “it is safe to assume that
+                <code>nextval</code> values are generated sequentially”. Above 1,
+                sessions reserve blocks and values interleave out of order.
+              </td>
+            </tr>
+            <tr>
+              <td>Uniqueness</td>
+              <td>
+                “An identity column does not guarantee uniqueness; a
+                <code>PRIMARY KEY</code> or <code>UNIQUE</code> constraint is
+                needed for that.”
+              </td>
+            </tr>
+            <tr>
+              <td>Range</td>
+              <td>
+                <code>bigint</code>: −9223372036854775808 to
+                +9223372036854775807. Use it rather than <code>integer</code> for
+                anything expected to exceed 2³¹ rows over its lifetime.
+              </td>
+            </tr>
+            <tr>
+              <td>Partitions</td>
+              <td>
+                “Partitions inherit identity columns from the partitioned table;
+                they cannot have their own.”
+              </td>
+            </tr>
+            <tr>
+              <td>Security</td>
+              <td>
+                <strong>None.</strong> Gaps are incidental. Nothing here makes the
+                next value hard to guess.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        Taught across
+        <a href="../lessons/0006-what-postgres-can-generate.html">lesson 6</a>,
+        <a href="../lessons/0007-identity-columns-and-gaps.html">lesson 7</a>,
+        <a href="../lessons/0010-natural-keys.html">lesson 10</a> and
+        <a href="../lessons/0013-the-dual-identifier-pattern.html">lesson 13</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Primary Keys and External Identifiers in PostgreSQL</title>
+    <link rel="stylesheet" href="../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Topic</span>
+        <h1>Primary Keys and External Identifiers in PostgreSQL</h1>
+        <p class="page-blurb">
+          What a key actually costs inside a B-tree leaf page, why the gap
+          between a random key and a time-ordered one is mostly a special case in
+          the split code, and how to tell a documented guarantee from a
+          <code>#define</code> from somebody's arithmetic.
+        </p>
+      </header>
+
+      <p class="lead">
+        Fifteen lessons, built to be spaced over days rather than read in one
+        sitting. The five reference documents at the bottom are the ones designed
+        to be come back to. PostgreSQL 18 is the version taught throughout.
+      </p>
+
+      <h2>Lessons</h2>
+
+      <ul class="index-list">
+        <li>
+          <span class="index-number">0001</span>
+          <a class="index-title" href="lessons/0001-two-jobs-one-column.html"
+            >Two jobs, one column</a
+          >
+          <p class="index-summary">
+            Internal identity and external reference share no criterion. Codd's
+            1970 definitions, the “arbitrarily selected” clause that disarms every
+            appeal to the relational model, and why a primary key in PostgreSQL is
+            a designation rather than a structure.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0002</span>
+          <a class="index-title" href="lessons/0002-inside-a-leaf-page.html"
+            >Inside a leaf page</a
+          >
+          <p class="index-summary">
+            The three grades of evidence, the constants the manual actually
+            states, the three it does not, and a per-entry model validated to the
+            byte against a real page the manual prints.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0003</span>
+          <a class="index-title" href="lessons/0003-the-rightmost-page.html"
+            >The rightmost page</a
+          >
+          <p class="index-summary">
+            The hinge. Depth barely moves, and the real difference is a special
+            case in <code>nbtsplitloc.c</code> that is not in the manual: ~90%
+            density at the right edge against ~50% everywhere else.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0004</span>
+          <a class="index-title" href="lessons/0004-no-clustered-index.html"
+            >There is no clustered index</a
+          >
+          <p class="index-summary">
+            Three quotations, and most imported advice stops applying. Plus write
+            amplification, carefully labelled as the inference it is.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0005</span>
+          <a class="index-title" href="lessons/0005-churn-and-immutability.html"
+            >Churn, and why a key must never change</a
+          >
+          <p class="index-summary">
+            HOT's first condition is the strongest argument in the topic. Plus
+            bottom-up deletion, deduplication, why TOAST never applies, and the
+            commands that make lesson 2's arithmetic unnecessary.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0006</span>
+          <a
+            class="index-title"
+            href="lessons/0006-what-postgres-can-generate.html"
+            >What PostgreSQL can generate</a
+          >
+          <p class="index-summary">
+            The feature ledger with release-note evidence, and the sentence every
+            summary drops: <code>uuidv7()</code>'s monotonicity is ensured only
+            within one backend.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0007</span>
+          <a
+            class="index-title"
+            href="lessons/0007-identity-columns-and-gaps.html"
+            >Identity columns and the gap myth</a
+          >
+          <p class="index-summary">
+            The baseline: narrowest key, best index behaviour, immutable if you
+            spell it <code>ALWAYS</code>. Gaps are guaranteed and are not a
+            security feature.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0008</span>
+          <a class="index-title" href="lessons/0008-uuidv4-and-uuidv7.html"
+            >UUIDv4 and UUIDv7</a
+          >
+          <p class="index-summary">
+            One bit-layout difference, and a trade that maps onto lesson 3. Also
+            where the RFC makes its single quantitative claim, and where to apply
+            the evidence grading to a standards document.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0009</span>
+          <a class="index-title" href="lessons/0009-ulid-snowflake-typeid.html"
+            >ULID, Snowflake, and TypeID</a
+          >
+          <p class="index-summary">
+            Judging a specification by its governance as well as its bits: a
+            dormant spec with no security section, an archived repo with a
+            coordination problem, and a presentation layer sold as a format.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0010</span>
+          <a class="index-title" href="lessons/0010-natural-keys.html"
+            >Natural keys and the issuing authority</a
+          >
+          <p class="index-summary">
+            The only candidate whose failure is scheduled by somebody else. ISBN
+            went 10→13 digits on a date it chose, and the synthesis here survives
+            every other decision in the topic.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0011</span>
+          <a class="index-title" href="lessons/0011-guessability.html"
+            >Guessability, and a trap between two specs</a
+          >
+          <p class="index-summary">
+            RFC 9562 §8 in full — UUIDs <strong>MUST NOT</strong> be security
+            capabilities — and the sharpest finding in the topic, which exists
+            only when you read ULID and the RFC against each other.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0012</span>
+          <a
+            class="index-title"
+            href="lessons/0012-collisions-and-offline-generation.html"
+            >Collisions, and generating away from the database</a
+          >
+          <p class="index-summary">
+            A question both specifications deliberately refuse to answer, and the
+            capability that is the honest reason to accept a 128-bit key.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0013</span>
+          <a
+            class="index-title"
+            href="lessons/0013-the-dual-identifier-pattern.html"
+            >The dual-identifier pattern</a
+          >
+          <p class="index-summary">
+            Refusing to choose between the two jobs — with the bill printed:
+            four costs, of which the discipline cost is permanent, plus why the
+            covering-index optimisation usually does nothing.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0014</span>
+          <a class="index-title" href="lessons/0014-the-decision-ladder.html"
+            >The decision ladder</a
+          >
+          <p class="index-summary">
+            A claim the topic relied on that turns out to be undocumented, what
+            the decoupling buys at the API boundary, and four rungs plus one
+            sentence that survives all of them.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0015</span>
+          <a class="index-title" href="lessons/0015-reading-the-evidence.html"
+            >Reading the evidence</a
+          >
+          <p class="index-summary">
+            Everything the sources refused to say, and the four questions to ask
+            of any claim. PostgreSQL 19 will change some answers above; it will
+            not change how to check them.
+          </p>
+        </li>
+      </ul>
+
+      <h2>Reference</h2>
+
+      <p>
+        Compressed for lookup rather than reading. These are what the lessons are
+        for.
+      </p>
+
+      <ul class="index-list">
+        <li>
+          <a class="index-title" href="reference/glossary.html">Glossary</a>
+          <p class="index-summary">
+            Every term this topic uses, with the aliases to avoid and the source
+            each definition comes from — including the three grades of evidence
+            as terms in their own right.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/candidate-comparison.html"
+            >Candidate comparison</a
+          >
+          <p class="index-summary">
+            All seven side by side: width, ordering, bit layouts, entropy, spec
+            status, and the one sentence that most decides for and against each.
+            Ends with the ladder.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/index-arithmetic.html"
+            >Index arithmetic</a
+          >
+          <p class="index-summary">
+            The quoted constants, the per-entry model, its validation against a
+            real page, the depth table, and the <code>pageinspect</code> and
+            <code>pgstattuple</code> commands that replace all of it.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/postgres-feature-ledger.html"
+            >PostgreSQL feature ledger</a
+          >
+          <p class="index-summary">
+            What shipped in which release, the function catalogue, the extension
+            situation with platform availability, and working DDL for every rung
+            of the ladder.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/unverified-claims.html"
+            >Unverified claims</a
+          >
+          <p class="index-summary">
+            Every inference, every grade-two constant, and every question the
+            sources decline to answer. Reach for this when somebody cites a
+            number.
+          </p>
+        </li>
+      </ul>
+
+      <h2>How to study this</h2>
+
+      <div class="aside insight">
+        <span class="label">Storage strength, not fluency</span>
+        <p>
+          The goal is retention in a year, not comprehension today. That means
+          leaving gaps between lessons, and — before opening the next one —
+          trying to state the previous one's argument out loud from memory. The
+          recall attempt is the learning; re-reading only feels like it.
+        </p>
+        <p>
+          Lessons 1–5 are the physical mechanics, 6–10 the candidates, 11–12
+          security and distribution, 13–15 the decision and how to check it. The
+          natural long pauses are after 5 and after 10. Lesson 3 is the one to
+          over-learn: almost everything later leans on it.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">A note on what is not here</span>
+        <p>
+          There are no benchmark numbers anywhere in this topic, because no
+          primary source publishes one. Every performance statement is either a
+          quoted mechanism or arithmetic labelled as derived. Where you expect a
+          figure and find none, that is deliberate — and
+          <a href="reference/unverified-claims.html">Unverified claims</a> records
+          every such case.
+        </p>
+      </div>
+
+      <p>
+        The mission, the sources and the working notes live beside this page as
+        <code>MISSION.md</code>, <code>RESOURCES.md</code>,
+        <code>GLOSSARY.md</code> and <code>NOTES.md</code>.
+      </p>
+
+      <p class="small-print">
+        Built from primary sources: RFC 9562, the PostgreSQL 18 manual and
+        <code>REL_18_STABLE</code> source tree, Codd (1970), the ULID and TypeID
+        specifications, the archived Twitter Snowflake repository and blog post,
+        and the first-party documentation of Discord, Stripe, AWS, Neon and the
+        International ISBN Agency. Source-code citations and derived arithmetic
+        are labelled as such wherever they appear.
+        <a href="../../index.html">Back to all topics</a>.
+      </p>
+    </main>
+  </body>
+</html>

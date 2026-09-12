@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Unverified claims — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Unverified claims</h1>
+        <p class="page-blurb">
+          Everything in this topic that is inference rather than documentation,
+          every constant that is grade two, and every question the primary
+          sources decline to answer. Reach for this when someone cites a number.
+        </p>
+      </header>
+
+      <div class="aside warning">
+        <span class="label">The headline</span>
+        <p>
+          <strong>This topic contains no benchmark numbers, because no primary
+          source provides any.</strong> The PostgreSQL manual publishes no
+          performance comparison of <code>bigint</code>, <code>uuid</code> and
+          text keys — not for insert throughput, index size, or cache behaviour.
+          The only magnitude claim anywhere is RFC 9562 §6.11's “one order of
+          magnitude or more”, which is unattributed, names no workload and no
+          engine, and is framed around clustering behaviour PostgreSQL does not
+          have.
+        </p>
+      </div>
+
+      <h2>The three grades</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Grade</th><th>Source</th><th>Weight</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Documented guarantee</strong></td>
+              <td>The manual, an RFC, a vendor specification.</td>
+              <td>May be stated flatly. A change will be announced.</td>
+            </tr>
+            <tr>
+              <td><strong>Source-code fact</strong></td>
+              <td>
+                A <code>REL_18_STABLE</code> header, README or commit, where the
+                manual is silent.
+              </td>
+              <td>
+                Could change without a release note.
+                <strong>A <code>#define</code> is not a promise.</strong>
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Derived arithmetic</strong></td>
+              <td>Computed from quoted constants.</td>
+              <td>
+                As good as its inputs and stated assumptions. Checkable — and in
+                this topic, checked.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Claims here that are inference, not documentation</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Claim</th><th>Why it is inference</th><th>Lesson</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Random keys increase WAL volume.</td>
+              <td>
+                The docs establish the <code>full_page_writes</code> mechanism and
+                the rightmost-page behaviour <em>separately</em> and never connect
+                them.
+              </td>
+              <td>4</td>
+            </tr>
+            <tr>
+              <td>Wider join keys cost something.</td>
+              <td>
+                The docs make no claim that join-key width affects join
+                performance. The <code>work_mem</code> spill argument is a step
+                function at a threshold, not a per-row tax.
+              </td>
+              <td>14</td>
+            </tr>
+            <tr>
+              <td>A random key does not fragment the table.</td>
+              <td>
+                Follows from three quoted facts, but the manual never states the
+                conclusion. The one inference this topic makes flatly, because
+                each premise is documented and the step is definitional.
+              </td>
+              <td>4</td>
+            </tr>
+            <tr>
+              <td>Store a TypeID as a <code>uuid</code> column.</td>
+              <td>
+                TypeID's binary representation is not specified — only the
+                canonical lowercase string encoding. Inferred from the
+                requirement that the suffix decode to a valid UUIDv7.
+              </td>
+              <td>9</td>
+            </tr>
+            <tr>
+              <td>
+                No padding between a <code>bigint</code> and a <code>uuid</code>.
+              </td>
+              <td>
+                Per-attribute alignment and column-ordering advice is not
+                documented. Both types are fixed-width, so none is expected.
+              </td>
+              <td>2</td>
+            </tr>
+            <tr>
+              <td>A v4 index settles at ~50% leaf density.</td>
+              <td>
+                A tendency the split rule produces over many random inserts, not
+                a documented figure. The source comment states 50% as the outcome
+                being <em>avoided</em> at the right edge.
+              </td>
+              <td>3</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Constants cited from source, not the manual</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Constant</th><th>Where it really lives</th><th>What the manual says instead</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>uuid</code> = 16 bytes</td>
+              <td><code>src/include/utils/uuid.h</code>, <code>UUID_LEN</code></td>
+              <td>“128-bit quantity”, with no byte count</td>
+            </tr>
+            <tr>
+              <td>2704-byte max index entry</td>
+              <td><code>src/include/access/nbtree.h</code>, <code>BTMaxItemSize</code></td>
+              <td>“approximately one-third of a page”</td>
+            </tr>
+            <tr>
+              <td>The rightmost-leaf fastpath</td>
+              <td>
+                <code>nbtsplitloc.c</code> and the <code>nbtree</code> README
+              </td>
+              <td>
+                <strong>Nothing.</strong> A full-text search of
+                <code>btree.html</code> for “fastpath”, “rightmost”, “ascending”
+                and “monotonic” returns zero hits. §65.1.4 does point at the
+                source README.
+              </td>
+            </tr>
+            <tr>
+              <td>MAXALIGN = 8</td>
+              <td>Platform fact on 64-bit</td>
+              <td>Only “the MAXALIGN distance for the platform”</td>
+            </tr>
+            <tr>
+              <td>Snowflake epoch, 5+5 split, sign bit</td>
+              <td>
+                <code>IdWorker.scala</code>. The sign bit is stated nowhere and
+                is only inferable from 41 + 10 + 12 = 63.
+              </td>
+              <td>N/A — the README gives only 41/10/12</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Questions the sources decline to answer</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Question</th><th>What the source actually says</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>What is the collision probability?</td>
+              <td>
+                Neither RFC 9562 nor the ULID spec states one. RFC 9562 never
+                mentions the birthday problem — zero hits for “birthday”, and
+                “probability” appears four times, never attached to a figure. It
+                offers an impact framing (§6.7) instead. The familiar “a billion
+                a second for a century” figures are not in it.
+              </td>
+            </tr>
+            <tr>
+              <td>What is a healthy <code>leaf_fragmentation</code>?</td>
+              <td>
+                “Leaf page fragmentation” is the <em>complete</em> documented
+                description. No computation, no units, no threshold. Same for
+                <code>avg_leaf_density</code>: “Average density of leaf pages”.
+              </td>
+            </tr>
+            <tr>
+              <td>Should I expose UUIDs to prevent enumeration?</td>
+              <td>
+                PostgreSQL documents nothing about enumeration, guessability or
+                ID exposure. The stated rationale for the <code>uuid</code> type
+                is uniqueness in distributed systems. The normative language is
+                RFC 9562 §8, and it says UUIDs <strong>MUST NOT</strong> be used
+                as security capabilities.
+              </td>
+            </tr>
+            <tr>
+              <td>How fast is a v7 index versus a v4 one?</td>
+              <td>
+                Nobody published a measurement. Derive it from the split rule and
+                label the derivation as yours.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Sourcing caveats</h2>
+
+      <ul>
+        <li>
+          <strong>The ULID spec cannot be cited by version.</strong> No tags, no
+          releases, no version number, no internal date. Cite commit
+          <code>d0c7170</code> (2019-05-23).
+        </li>
+        <li>
+          <strong>ULID's “case insensitive” and “URL safe” are feature bullets,
+          not specified behaviour.</strong> The Encoding section defines a single
+          uppercase alphabet and says nothing normative about lowercase.
+        </li>
+        <li>
+          <strong>Two Twitter sources are Wayback captures.</strong> The 2010
+          announcement returns HTTP 403 live; the developer documentation on
+          Twitter IDs has been removed. An archived original is still a primary
+          source; a blog post describing it would not be.
+        </li>
+        <li>
+          <strong>Codd is quoted from a university mirror of the scan</strong>,
+          not the paywalled ACM copy. Two OCR run-together artifacts were
+          corrected. The paper does <strong>not</strong> use the term “surrogate
+          key”.
+        </li>
+        <li>
+          <strong>The <code>uuidv7()</code> commit cites “RFC 9652”.</strong> A
+          typo in the commit; the type page and function docs both say RFC 9562.
+        </li>
+        <li>
+          <strong>The <code>uuid-ossp</code> page does not recommend
+          <code>gen_random_uuid()</code></strong> — only the generic “this module
+          is only necessary for special requirements”.
+        </li>
+        <li>
+          <strong>§8.1.4 does not recommend identity columns over
+          <code>serial</code></strong> — it calls identity “Another way”. The only
+          documented advantage is the PG10 note's “SQL standard compliant”.
+        </li>
+        <li>
+          <strong>Supabase's <code>pg_uuidv7</code> support is undetermined.</strong>
+          Its docs do not enumerate extensions. Absence of a page is not evidence
+          of absence of the extension.
+        </li>
+        <li>
+          <strong>Instagram's sharded-ID design could not be retrieved.</strong>
+          No Instagram bit layout appears anywhere in this topic.
+        </li>
+        <li>
+          <strong>The introducing version of
+          <code>uuid_extract_timestamp()</code> and
+          <code>uuid_extract_version()</code> was not established.</strong>
+        </li>
+      </ul>
+
+      <h2>The four questions</h2>
+
+      <div class="aside insight">
+        <span class="label">Ask these of any claim in this subject</span>
+        <ol>
+          <li>
+            <strong>Is this quoted or recalled?</strong> If the writer cannot
+            point at the sentence, neither can you.
+          </li>
+          <li>
+            <strong>Which grade is it?</strong> Manual, header file, and
+            arithmetic carry three different weights.
+          </li>
+          <li>
+            <strong>Which engine was it written for?</strong> The highest-yield
+            question in this subject, because PostgreSQL has no clustered index.
+          </li>
+          <li>
+            <strong>What does the source decline to say?</strong> An absence in a
+            careful source is usually information.
+          </li>
+        </ol>
+      </div>
+
+      <p class="small-print">
+        Taught in
+        <a href="../lessons/0015-reading-the-evidence.html">lesson 15</a>, and
+        applied on every page of this topic.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

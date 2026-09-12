@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3. The rightmost page — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0003</span>
+        <h1>The rightmost page</h1>
+        <p class="lesson-mission">
+          This is the hinge of the whole topic. The real difference between a
+          random key and a time-ordered one in PostgreSQL is not the eight extra
+          bytes — it is a special case in the page-split code, and it is not in
+          the manual.
+        </p>
+      </header>
+
+      <p class="lead">
+        Lesson 2 ended with a <code>uuid</code> index needing about 1.4× the leaf
+        pages of a <code>bigint</code> one. The obvious next thought is that the
+        tree must therefore be deeper and lookups slower. That thought is wrong,
+        and disposing of it properly is what makes room for the fact that
+        actually matters.
+      </p>
+
+      <h2>Depth barely moves</h2>
+
+      <p>
+        Tree depth is logarithmic in fan-out. Taking the fan-out figures derived
+        in lesson 2 — about 366, 262 and 166 entries per leaf at fillfactor 90:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Derived from lesson 2's fan-out figures. Levels needed to address a
+            given row count.
+          </caption>
+          <thead>
+            <tr>
+              <th>Rows</th>
+              <th><code>bigint</code></th>
+              <th><code>uuid</code></th>
+              <th><code>text</code>(26)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>10⁶</td>
+              <td>3 levels</td>
+              <td>3</td>
+              <td>3</td>
+            </tr>
+            <tr>
+              <td>10⁸</td>
+              <td>4</td>
+              <td>4</td>
+              <td>4</td>
+            </tr>
+            <tr>
+              <td>10¹⁰</td>
+              <td>4</td>
+              <td>5</td>
+              <td>5</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        A 28% reduction in fan-out usually buys <strong>zero</strong> extra
+        levels, and occasionally one — at ten billion rows.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">A claim to stop repeating</span>
+        <p>
+          “UUID keys cost you a tree level” is arithmetic nobody did. Key width
+          is a <strong>size</strong> problem, not a <strong>depth</strong>
+          problem.
+        </p>
+      </div>
+
+      <p>
+        What <em>does</em> follow from the size difference is cache pressure. The
+        same working set occupies 1.4× the pages, competing for a
+        <code>shared_buffers</code> whose default is “typically 128 megabytes”
+        and whose recommended starting point is “25% of the memory in your
+        system”
+        (<a
+          class="citation"
+          href="https://www.postgresql.org/docs/current/runtime-config-resource.html"
+          >§20.4.1</a
+        >). That is a real cost, and it is the honest version of the
+        width argument.
+      </p>
+
+      <h2>What a page split is</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            New leaf pages are added to a B-Tree index when an existing leaf page
+            cannot fit an incoming tuple. A page split operation makes room for
+            items that originally belonged on the overflowing page by moving a
+            portion of the items to a new page. Page splits must also insert a
+            new downlink to the new page in the parent page, which may cause the
+            parent to split in turn. Page splits “cascade upwards” in a recursive
+            fashion.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/current/btree.html"
+            >§65.1.4</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Split a full page down the middle and you get two half-full pages. Do
+        that everywhere, forever, and the tree settles at about
+        <strong>50% density</strong>. That is the default behaviour, and it is
+        what a key with no ordering gets.
+      </p>
+
+      <h2>The special case</h2>
+
+      <p>
+        The manual's only nod to ordered inserts is a clause buried inside the
+        <code>fillfactor</code> description — easy to read past, and the thread
+        worth pulling:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            For B-trees, leaf pages are filled to this percentage during initial
+            index builds, <strong>and also when extending the index at the right
+            (adding new largest key values)</strong>. If pages subsequently become
+            completely full, they will be split, leading to fragmentation of the
+            on-disk index structure.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/sql-createindex.html"
+            >CREATE INDEX</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The mechanism behind that clause is in the source, and it is the single
+        most important quotation in this topic:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C comment</span>
+        </div>
+        <pre><code>If the page is the rightmost page on its level, we instead try to
+arrange to leave the left split page fillfactor% full.  In this way,
+when we are inserting successively increasing keys (consider sequences,
+timestamps, etc) we will end up with a tree whose pages are about
+fillfactor% full, instead of the 50% full result that we'd get without
+this special case.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>src/backend/access/nbtree/nbtsplitloc.c</code>,
+        <code>_bt_findsplitloc()</code>, <code>REL_18_STABLE</code>. Grade two:
+        a source-code fact, not a documented guarantee.
+      </p>
+
+      <p>And a second, separate optimisation for the same access pattern:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">README</span>
+        </div>
+        <pre><code>We optimize for a common case of insertion of increasing index key
+values by caching the last page to which this backend inserted the last
+value, if this page was the rightmost leaf page.  For the next insert,
+we can then quickly check if the cached page is still the rightmost leaf
+page and also the correct place to hold the current value.  We can avoid
+the cost of walking down the tree in such common cases.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>src/backend/access/nbtree/README</code>, “Fastpath For Index
+        Insertion”, <code>REL_18_STABLE</code>. Grade two.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The mechanism, in one paragraph</span>
+        <p>
+          An <strong>ordered</strong> key — a <code>bigint</code> sequence,
+          UUIDv7, ULID, Snowflake — always inserts at the right edge. Splits
+          there leave the left page ~90% full instead of 50%, so the tree settles
+          at about 90% density, and the target page is cached so the insert
+          skips the descent entirely. A <strong>random</strong> key — UUIDv4 —
+          inserts everywhere. Those are ordinary 50/50 splits, the tree tends
+          toward 50% density, and every insert touches a different, probably
+          cold, leaf page.
+        </p>
+      </div>
+
+      <h2>The number that was being reached for</h2>
+
+      <p>
+        Now put the two effects together, using lesson 2's entries-per-leaf
+        figures.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Derived. Entries per leaf page, at the density each key's insert
+            pattern actually produces.
+          </caption>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Entry width</th>
+              <th>Settles at</th>
+              <th>Entries per leaf</th>
+              <th>Relative</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>bigint</code> sequence</td>
+              <td>20 bytes</td>
+              <td>~90% (right edge)</td>
+              <td>~366</td>
+              <td>1.00</td>
+            </tr>
+            <tr>
+              <td><code>uuid</code> holding a v7</td>
+              <td>28 bytes</td>
+              <td>~90% (right edge)</td>
+              <td>~262</td>
+              <td>0.72</td>
+            </tr>
+            <tr>
+              <td><code>uuid</code> holding a v4</td>
+              <td>28 bytes</td>
+              <td>~50% (random splits)</td>
+              <td>~145</td>
+              <td><strong>0.40</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Against a <code>bigint</code> sequence's ~366, a randomly-ordered
+        <code>uuid</code> index at ~145 entries per leaf is the genuine
+        <strong>~2.5× gap</strong> — and note where it comes from:
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The sentence to remember from this topic</span>
+        <p>
+          <strong
+            >Most of the cost of a random key is the split behaviour, not the
+            eight extra bytes.</strong
+          >
+          Width takes you from 366 to 262. Insert ordering takes you from 262 to
+          145. This is precisely why UUIDv7 recovers most of the difference
+          without narrowing the column by a single byte.
+        </p>
+      </div>
+
+      <p>The README makes the same point about unique indexes directly:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">README</span>
+        </div>
+        <pre><code>a primary key on an identity column will usually only have leaf page
+splits caused by the insertion of new logical rows within the rightmost
+leaf page.  If there is a split of a non-rightmost leaf page, then the
+split must have been triggered by inserts associated with UPDATEs of
+existing logical rows.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>src/backend/access/nbtree/README</code>, “Deduplication in unique
+        indexes”, <code>REL_18_STABLE</code>. Grade two.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A UUIDv4 primary-key index holds roughly 40% as many entries per leaf
+          page as a <code>bigint</code> one. What accounts for most of that gap?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The eight additional bytes in each stored key
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The extra tree level that wider keys need
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The even page splits that random inserts cause
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The larger page header a UUID index needs
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Width takes you from ~366 entries to ~262 — real, but the smaller
+          half. Random insert positions mean ordinary 50/50 splits rather than
+          right-edge splits, taking ~262 down to ~145, which is the larger half.
+          There is no extra tree level at realistic sizes, and the page header is
+          24 bytes regardless of what the index is on.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Where is the rightmost-page split behaviour documented?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              In the manual's own section on B-tree internals
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              In the release notes for PostgreSQL version 11
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              In RFC 9562's section on database index locality
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Nowhere in the manual, only in source code
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A full-text search of the manual's B-tree page for “fastpath”,
+          “rightmost”, “ascending” and “monotonic” returns zero hits. The manual
+          gestures at the behaviour once, inside the <code>fillfactor</code>
+          description on the <code>CREATE INDEX</code> page, and then sends you
+          to <code>src/backend/access/nbtree/README</code>. So the most important
+          mechanism in this topic is grade-two evidence, and could change without
+          a release note.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now have the mechanism and the magnitude. The next question is how
+        far the damage spreads: does a random key scatter your
+        <em>rows</em> as well as your index entries?
+      </p>
+
+      <p>
+        In InnoDB and SQL Server the answer is yes, and most of the writing on
+        this subject was produced by people who learned it there.
+        <a href="0004-no-clustered-index.html">Lesson 4</a> shows why the answer
+        in PostgreSQL is no, and why that one fact invalidates a great deal of
+        imported advice.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/access/nbtree/README"
+              >
+              <code>src/backend/access/nbtree/README</code>, <code>REL_18_STABLE</code></a
+            >
+            — the manual explicitly sends you here, and the sections “Fastpath
+            For Index Insertion” and “Deduplication in unique indexes” are the
+            two quoted above. It is a long file written for contributors; read
+            those two sections and skim the rest. Seeing how differently it
+            speaks from the manual is itself the lesson in evidence grading.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. The step most worth challenging here is
+          “~50% density” — it is a tendency the split rule produces over many
+          random inserts, not a guarantee, and the source comment states it as
+          the thing being avoided rather than as a measured figure. Ask about
+          what would make the real number differ.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the lesson to over-learn. Before lesson 4, try to say out
+            loud — without looking — what happens when a rightmost page splits,
+            what happens when any other page splits, and which of those two facts
+            explains most of the gap between a v4 and a v7.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0002-inside-a-leaf-page.html">2. Inside a leaf page</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0004-no-clustered-index.html">4. There is no clustered index</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

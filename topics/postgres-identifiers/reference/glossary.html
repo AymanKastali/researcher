@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glossary &mdash; PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Glossary</h1>
+        <p class="page-blurb">
+          The vocabulary of choosing a key: what the relational model actually named, the physical structures the choice lands in, the candidate formats, and the grades of evidence this topic keeps apart. Where a term has a quoted definition in a specification or in the PostgreSQL manual, that quotation is the authority and this entry is its compression.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Canonical source: <code>GLOSSARY.md</code> in this topic. The two are kept
+        in step; this page is the readable rendering.
+      </p>
+
+      <h2>The relational terms</h2>
+
+      <div class="definition">
+        <span class="term">Primary key</span>
+        <p>The candidate key a designer selects to identify rows of a table. In PostgreSQL it is a <em>designation</em> carrying a <code>UNIQUE</code> B-tree index and <code>NOT NULL</code>, not a distinct physical structure. Defined by <a class="citation" href="https://www.seas.upenn.edu/~zives/03f/cis550/codd.pdf">Codd 1970 p. 379</a> and <a class="citation" href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-PRIMARY-KEYS">§5.5.4</a>.</p>
+        <span class="attribution">Avoid: The ID, the row key, the clustered key.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Candidate key</span>
+        <p>Any column or combination that uniquely identifies rows and has no superfluous part. Codd calls these “nonredundant primary keys” and says one is “arbitrarily selected” to be <em>the</em> primary key.</p>
+        <span class="attribution">Avoid: Alternate key, unique key.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Foreign key</span>
+        <p>“A domain (or domain combination) of relation R [that] is not the primary key of R but its elements are values of the primary key of some relation S” (<a class="citation" href="https://www.seas.upenn.edu/~zives/03f/cis550/codd.pdf">Codd 1970</a>). In PostgreSQL it may reference any unique constraint, not only the primary key.</p>
+        <span class="attribution">Avoid: Reference, pointer, FK link.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Surrogate key</span>
+        <p>A key whose values carry no meaning outside the database and are issued by it or for it. <strong>Not Codd’s term</strong> — the word does not appear in the 1970 paper.</p>
+        <span class="attribution">Avoid: Artificial key, technical key, meaningless key.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Natural key</span>
+        <p>A key drawn from data that already means something to someone outside the database — an email address, an ISBN, a country code. Its format is controlled by its issuing authority, not by you.</p>
+        <span class="attribution">Avoid: Business key, semantic key, real key.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Issuing authority</span>
+        <p>Whoever defines and may change the format of a natural key. The reason a natural key is a schema risk: the ISBN agency widened ISBNs from 10 to 13 digits on 1 January 2007, on a date it chose.</p>
+        <span class="attribution">Avoid: The source system, upstream, the standard.</span>
+      </div>
+
+      <h2>The physical structures</h2>
+
+      <div class="definition">
+        <span class="term">Heap</span>
+        <p>The table’s own data area, stored in its own file. Rows go wherever the free space map offers, never in key order.</p>
+        <span class="attribution">Avoid: The table file, the data pages, the store.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Secondary index</span>
+        <p>An index stored separately from the heap. “All indexes in PostgreSQL are secondary indexes” (<a class="citation" href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html">§11.9</a>), which is why PostgreSQL has no clustered index.</p>
+        <span class="attribution">Avoid: Non-clustered index (the contrast it implies does not exist here).</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Clustered index</span>
+        <p>An index that <em>is</em> the table’s physical row order, so the key value determines where the row lives. A structure PostgreSQL does not have; <code>CLUSTER</code> is a one-time reordering, not a maintained property. Named here only to disarm advice imported from engines that do have one.</p>
+        <span class="attribution">Avoid: Index-organised table, primary index.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Page</span>
+        <p>The fixed unit of storage and I/O, “usually 8 kB” (<a class="citation" href="https://www.postgresql.org/docs/current/storage-page-layout.html">§66.6</a>). Every cost in this topic is counted in pages, never in rows.</p>
+        <span class="attribution">Avoid: Block, chunk, disk page.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Leaf page</span>
+        <p>A B-tree page holding actual index entries rather than downlinks to lower levels. Where key width is paid for.</p>
+        <span class="attribution">Avoid: Bottom page, data page, index block.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Line pointer</span>
+        <p>The 4-byte <code>ItemIdData</code> slot at the top of a page that locates one item within it. Counted separately from the item itself in every arithmetic in this topic.</p>
+        <span class="attribution">Avoid: Slot, item id, offset.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Index entry</span>
+        <p>One key occurrence in a leaf page: an 8-byte <code>IndexTupleData</code> header, the key value, MAXALIGNed, plus its line pointer. The unit whose width a key type decides.</p>
+        <span class="attribution">Avoid: Index row, index tuple, key slot.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Fan-out</span>
+        <p>How many entries one page holds, and therefore how many children one internal page can address. Sets tree depth logarithmically, which is why a 28% fan-out reduction usually buys zero extra levels.</p>
+        <span class="attribution">Avoid: Branching factor, page capacity.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Fillfactor</span>
+        <p>The percentage of a leaf page an index build or a right-edge extension fills, defaulting to 90 for B-trees. Leaves room so that later inserts need not split the page.</p>
+        <span class="attribution">Avoid: Packing ratio, density setting.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Leaf density</span>
+        <p>How full leaf pages actually are. The number a key’s insert ordering decides: about 90% for an ordered key, tending toward 50% for a random one.</p>
+        <span class="attribution">Avoid: Index bloat, fill ratio, utilisation.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Page split</span>
+        <p>The operation that makes room when a leaf page cannot fit an incoming entry, by moving part of its contents to a new page and inserting a downlink in the parent — which “may cause the parent to split in turn” (<a class="citation" href="https://www.postgresql.org/docs/current/btree.html">§65.1.4</a>).</p>
+        <span class="attribution">Avoid: Rebalance, overflow, node split.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Rightmost-page fastpath</span>
+        <p>Two distinct optimisations for keys that arrive in increasing order: a split of the rightmost page leaves the left side <em>fillfactor</em>% full “instead of the 50% full result that we’d get without this special case”, and a cached rightmost leaf page lets an insert “avoid the cost of walking down the tree”. From <code>nbtsplitloc.c</code> and the <code>nbtree</code> README; <strong>not in the manual</strong>.</p>
+        <span class="attribution">Avoid: Append optimisation, sequential insert path.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">HOT (heap-only tuple)</span>
+        <p>An update optimisation available only when “the update does not modify any columns referenced by the table’s indexes” (<a class="citation" href="https://www.postgresql.org/docs/current/storage-hot.html">§66.7</a>). The mechanical reason a key must never change.</p>
+        <span class="attribution">Avoid: In-place update, cheap update.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Write amplification</span>
+        <p>More bytes written than the change logically requires. Here it arises because <code>full_page_writes</code> costs one ~8 kB image per <em>distinct page</em> first dirtied after a checkpoint, so scattering inserts across many pages costs more WAL. <strong>The link to key ordering is inference, not documentation.</strong></p>
+        <span class="attribution">Avoid: WAL bloat, I/O overhead.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Index-only scan</span>
+        <p>A scan answered entirely from an index, possible only when the visibility map marks the candidate rows’ heap pages all-visible. The mechanism an <code>INCLUDE</code> column exists to serve.</p>
+        <span class="attribution">Avoid: Covering scan, index-covered query.</span>
+      </div>
+
+      <h2>The candidate formats</h2>
+
+      <div class="definition">
+        <span class="term">Identity column</span>
+        <p>A column declared <code>GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY</code>, backed by an implicit sequence and implicitly <code>NOT NULL</code>. The SQL-standard spelling of an autoincrementing column. <code>ALWAYS</code> additionally rejects any <code>UPDATE</code> to a value other than <code>DEFAULT</code>.</p>
+        <span class="attribution">Avoid: Serial, autoincrement, auto number.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Gap</span>
+        <p>A sequence value allocated but never committed. Guaranteed to occur — “PostgreSQL sequence objects cannot be used to obtain ’gapless’ sequences” (<a class="citation" href="https://www.postgresql.org/docs/current/functions-sequence.html">§9.17</a>) — and never a security property.</p>
+        <span class="attribution">Avoid: Hole, skipped id, lost number.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">UUIDv4</span>
+        <p>A UUID of 122 random bits plus a fixed version nibble and two variant bits (<a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html#section-5.4">RFC 9562 §5.4</a>). No structure, therefore nothing to correlate and nothing to order by.</p>
+        <span class="attribution">Avoid: Random UUID, GUID, v4 GUID.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">UUIDv7</span>
+        <p>A UUID of a 48-bit big-endian Unix millisecond timestamp followed by 74 bits not fixed by the format (<a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7">RFC 9562 §5.7</a>). Time-ordered to the millisecond, and the version the RFC says implementations <strong>SHOULD</strong> use instead of v1 and v6.</p>
+        <span class="attribution">Avoid: Sortable UUID, ordered GUID, sequential UUID.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">ULID</span>
+        <p>A 128-bit identifier of a 48-bit millisecond timestamp plus 80 random bits, canonically rendered as 26 characters of Crockford’s Base32. Its specification is unversioned and last committed 2019-05-23, and it defines no version or variant bits — so a ULID in a <code>uuid</code> column is not a conformant RFC 9562 UUID.</p>
+        <span class="attribution">Avoid: Sortable UUID (that is v7), lexicographic ID.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Snowflake</span>
+        <p>A family of 64-bit time-ordered identifiers after Twitter’s 2010 design: 41 bits of custom-epoch milliseconds, 10 bits of machine id, 12 bits of sequence. A <em>family</em>, not a format — Discord’s live variant uses a different split.</p>
+        <span class="attribution">Avoid: Snowflake ID format, the Snowflake standard.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">k-sorted</span>
+        <p>Snowflake’s own weaker-than-sorted guarantee: ids are ordered to within a bounded window rather than exactly — “we’re promising 1s, but shooting for 10’s of ms”.</p>
+        <span class="attribution">Avoid: Roughly sorted, approximately ordered.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">TypeID</span>
+        <p>A UUIDv7 rendered as a lowercase type prefix, an underscore, and a 26-character base32 suffix, whose suffix <strong>MUST</strong> decode to a valid UUIDv7 (<a class="citation" href="https://github.com/jetify-com/typeid/blob/main/spec/README.md">spec v0.3.0</a>). A presentation layer over a UUIDv7, and best adopted as one.</p>
+        <span class="attribution">Avoid: Prefixed UUID, typed ID, Stripe-style ID.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Opaque identifier</span>
+        <p>An identifier whose holder is expected to parse nothing out of it, so its issuer may change its length and format freely. Stripe classifies exactly that change as backward-compatible; TypeID takes the opposite bet.</p>
+        <span class="attribution">Avoid: Random string, token, blob id.</span>
+      </div>
+
+      <h2>The architecture</h2>
+
+      <div class="definition">
+        <span class="term">Dual-identifier pattern</span>
+        <p>Giving a row two identifiers, each doing one job: a narrow internal <code>bigint</code> that every foreign key references and nothing serialises, and an external <code>uuid</code> that appears in URLs and payloads and never appears in a foreign key.</p>
+        <span class="attribution">Avoid: Public/private key (means something else entirely), external ID pattern.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Internal identity</span>
+        <p>The job of joining children to parents, anchoring indexes, and surviving physical reorganisation. Judged on width, ordering, and immutability.</p>
+        <span class="attribution">Avoid: The real key, the true id.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">External reference</span>
+        <p>The job of appearing in URLs, API payloads, support tickets, and webhook bodies. Judged on opacity, portability, and whether a client can mint one before the database has seen the row.</p>
+        <span class="attribution">Avoid: Public key, slug, display id.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Offline generation</span>
+        <p>Minting a valid identifier with no round trip to the database and no coordination with any other generator. The capability a sequence cannot offer at any price, and the honest reason to accept a 128-bit key.</p>
+        <span class="attribution">Avoid: Client-side ID, pre-generated key.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Security capability</span>
+        <p>“An identifier whose mere possession grants access”. RFC 9562 §8 says UUIDs <strong>MUST NOT</strong> be used as one. Naming the anti-pattern is the point of the term.</p>
+        <span class="attribution">Avoid: Secret URL, unguessable link, capability URL.</span>
+      </div>
+
+      <h2>The grades of evidence</h2>
+
+      <div class="definition">
+        <span class="term">Documented guarantee</span>
+        <p>A claim quoted from the PostgreSQL manual, an RFC, or a vendor’s own specification. The only grade that may be stated without qualification.</p>
+        <span class="attribution">Avoid: The docs say, officially, canonically.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Source-code fact</span>
+        <p>A claim taken from a <code>REL_18_STABLE</code> header, README, or commit because the manual is silent. Weaker: it may change without a release note. <strong>A <code>#define</code> is not a promise.</strong></p>
+        <span class="attribution">Avoid: Internally, under the hood, actually.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Derived arithmetic</span>
+        <p>A number computed from quoted constants rather than quoted. Always labelled as derived, and checkable — the model in this topic is validated against a real page dump printed in the manual.</p>
+        <span class="attribution">Avoid: Roughly, about, in practice (when what is meant is “I calculated it”).</span>
+      </div>
+
+      <h2>Notes on usage</h2>
+      <ul>
+        <li><strong>“Primary key” names a designation, not a structure.</strong> A <code>UNIQUE</code> constraint plus <code>NOT NULL</code> is, in the manual’s own words, “functionally almost the same thing”. Saying “the primary key is faster” is almost always a claim about a B-tree index, and is clearer stated that way.</li>
+        <li><strong>Say “leaf density”, not “bloat”</strong>, when describing what a random key costs. Bloat conflates three unrelated things — dead tuples, low fill, and fragmented pages — and only one of them is caused by key ordering.</li>
+        <li><strong>Never say a random key “fragments the table”.</strong> It cannot: PostgreSQL has no clustered index, so the cost is confined to the B-tree on that key. That sentence is imported from InnoDB or SQL Server every time it appears.</li>
+        <li><strong>Say “effectively unguessable”, never “secure”.</strong> Per RFC 9562 §8, a UUID’s unguessability is a property of the RNG behind it and is never an authorisation mechanism.</li>
+        <li><strong>Distinguish “ordered” from “sortable by creation time”.</strong> <code>uuidv7()</code> is ordered enough for the B-tree’s right edge while guaranteeing strict monotonicity only “within the same backend” — that is, within one connection. The two properties are routinely conflated and only one of them is documented.</li>
+        <li><strong>A “UUID” stored in a <code>text</code> column is not a UUID decision, it is a storage mistake.</strong> It roughly doubles the index entry and buys nothing, and RFC 9562 §6.13 says so directly.</li>
+      </ul>
+
+      <p class="small-print">
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

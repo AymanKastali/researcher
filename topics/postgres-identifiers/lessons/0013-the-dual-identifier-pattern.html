@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>13. The dual-identifier pattern — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0013</span>
+        <h1>The dual-identifier pattern</h1>
+        <p class="lesson-mission">
+          Lesson 1 said the two jobs conflict and you must choose which to
+          sacrifice. This is the pattern that refuses — and unlike most write-ups
+          of it, this lesson prints the bill before recommending anything.
+        </p>
+      </header>
+
+      <p class="lead">
+        Give the row two identifiers, each doing exactly one of lesson 1's jobs.
+        The idea is not subtle. What is worth the lesson is the set of documented
+        facts that make it work, and the four costs most descriptions leave out.
+      </p>
+
+      <h2>The pattern</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE orders (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id   uuid   NOT NULL DEFAULT uuidv7(),
+    -- ... domain columns ...
+    created_at  timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT orders_public_id_key UNIQUE (public_id)
+);
+
+CREATE TABLE order_lines (
+    id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id  bigint NOT NULL REFERENCES orders (id),
+    -- ...
+);
+
+CREATE INDEX ON order_lines (order_id);   -- see below; not automatic</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The two rules that make it work</span>
+        <p>
+          <strong><code>id</code> is never serialised.</strong>
+          <strong><code>public_id</code> never appears in a foreign key.</strong>
+        </p>
+        <p>
+          Every internal join runs on 8-byte integers with the best possible
+          index behaviour (lesson 3), and every external reference is an opaque
+          128-bit value revealing only a creation timestamp.
+        </p>
+      </div>
+
+      <p class="small-print">
+        <code>uuidv7()</code> requires PostgreSQL 18. On 13–17 the equivalent is
+        <code>pg_uuidv7</code>'s <code>uuid_generate_v7()</code> where your
+        platform allows it (lesson 6), <code>gen_random_uuid()</code> if you
+        would rather have a v4 than a dependency, or application-side generation.
+      </p>
+
+      <h2>What it costs, stated plainly</h2>
+
+      <p>This pattern is not free, and most write-ups skip the bill.</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Four costs. The last one is the one that actually bites.</caption>
+          <thead>
+            <tr>
+              <th>Cost</th>
+              <th>Size of it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>An extra 16-byte column</strong></td>
+              <td>On every row of the parent table. Real, and small.</td>
+            </tr>
+            <tr>
+              <td><strong>An extra unique B-tree index</strong></td>
+              <td>
+                About 28 bytes per entry by lesson 2, and — being on a v7 value —
+                it benefits from the rightmost fastpath, so it settles near 90%
+                density.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>An extra lookup on every external request</strong></td>
+              <td>
+                A URL carries <code>public_id</code>; the query needs
+                <code>id</code>. One index probe before the real work starts. The
+                only genuinely negotiable cost, and the section below is about
+                negotiating it.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Two ways to name the same row</strong>
+              </td>
+              <td>
+                A permanent invitation to leak the wrong one. This is a
+                <strong>discipline cost</strong>, it never goes away, and it is
+                the one that actually bites.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Foreign keys: two documented facts</h2>
+
+      <p><strong>The referenced side does not have to be the primary key:</strong></p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A foreign key must reference columns that either are a primary key or
+            form a unique constraint, or are columns from a non-partial unique
+            index.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK"
+            >§5.5.5</a
+          >. Note this relaxes Codd's definition from lesson 1, which named
+          <em>the primary key</em> of the referenced relation.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">So <code>REFERENCES orders (public_id)</code> is legal</span>
+        <p>
+          The <code>UNIQUE</code> constraint suffices. It is also
+          <strong>the exact mistake this whole pattern exists to avoid</strong>:
+          it puts 16 bytes in every child row and 16-byte keys in every child
+          index, discarding the benefit and keeping all of the cost.
+          <strong>Reference <code>id</code>.</strong>
+        </p>
+      </div>
+
+      <p>
+        <strong>The referencing side is not indexed for you</strong>, and the docs
+        are explicit about why you usually want to:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Since a <code>DELETE</code> of a row from the referenced table or an
+            <code>UPDATE</code> of a referenced column will require a scan of the
+            referencing table for rows matching the old value,
+            <strong>it is often a good idea to index the referencing columns
+            too.</strong> Because this is not always needed, and there are many
+            choices available on how to index, the declaration of a foreign key
+            constraint does not automatically create an index on the referencing
+            columns.
+          </p>
+        </blockquote>
+        <figcaption>PostgreSQL 18 manual, §5.5.5.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Where the pattern quietly pays off a second time</span>
+        <p>
+          You will create that index on <code>order_lines (order_id)</code>
+          regardless. Making it 8 bytes wide rather than 16 is a ~28% reduction
+          in its entry size by lesson 2 — <strong>replicated across every child
+          table in the schema</strong>. In a schema with many many-to-one
+          relationships, this compounds far more than the single extra index on
+          the parent costs.
+        </p>
+        <p>
+          And note that an <code>ALWAYS</code> identity primary key can never be
+          updated (lesson 7), so the <code>ON UPDATE</code> scan the docs describe
+          simply cannot occur for it. Lesson 10's natural-key failure mode is
+          structurally excluded, not merely avoided.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A colleague writes <code>REFERENCES orders (public_id)</code> because
+          the <code>UNIQUE</code> constraint makes it legal. What is wrong with
+          it?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It works, but widens every child row and index
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It fails, because foreign keys need a primary key
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It works, but forfeits the fastpath on that index
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It fails, because a UUID cannot be referenced here
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          It is perfectly legal — a unique constraint is enough, as the manual
+          says. The problem is that it defeats the purpose: 16-byte keys land in
+          every child row and every child index, so you pay for the extra column
+          and the extra index on the parent and get none of the narrow-join
+          benefit. The fastpath is unaffected, since a v7 is time-ordered wherever
+          it sits.
+        </p>
+      </div>
+
+      <h2>Making the extra lookup cheap</h2>
+
+      <p>
+        The <code>public_id</code> → <code>id</code> resolution can in principle
+        be served entirely from the index, without touching the heap:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">CREATE UNIQUE INDEX orders_public_id_idx
+    ON orders (public_id) INCLUDE (id);</code></pre>
+      </div>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A non-key column cannot be used in an index scan search
+            qualification, and it is disregarded for purposes of any uniqueness or
+            exclusion constraint enforced by the index. However,
+            <strong>an index-only scan can return the contents of non-key columns
+            without having to visit the index's table</strong>, since they are
+            available directly from the index entry.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/sql-createindex.html"
+            >CREATE INDEX</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>There are three caveats, all documented, and all worth knowing first.</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Why this optimisation is usually premature.</caption>
+          <thead>
+            <tr>
+              <th>Caveat</th>
+              <th>What it means here</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>It depends on the visibility map</strong></td>
+              <td>
+                An index-only scan checks the visibility map for each candidate's
+                heap page; if the all-visible bit is not set it must visit the
+                heap anyway. The docs say index-only scans are most beneficial
+                “when a large fraction of heap pages have their all-visible bits
+                set” — i.e. on slowly-changing data. A hot, frequently-updated
+                <code>orders</code> table will not get the benefit reliably.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>It disables deduplication on that index</strong></td>
+              <td>
+                Per lesson 5: “<code>INCLUDE</code> indexes can never use
+                deduplication.” A unique index has no logical duplicates, so the
+                direct cost is nil — but you also lose the documented secondary
+                use, absorbing version churn to postpone page splits. On an
+                update-heavy table that is a real trade, not a free win.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>It only helps if the query touches nothing else</strong></td>
+              <td>
+                <code>SELECT id FROM orders WHERE public_id = $1</code> qualifies.
+                <code>SELECT * FROM orders WHERE public_id = $1</code> does not —
+                and that is what most application code actually issues, in which
+                case the plain <code>UNIQUE (public_id)</code> index is all you
+                need and the <code>INCLUDE</code> buys nothing.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">The honest recommendation</span>
+        <p>
+          Measure before adding it. For most applications a unique index probe on
+          16 bytes is already fast enough that this optimisation is premature —
+          and the third caveat means the code you actually wrote probably cannot
+          use it anyway.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does <code>INCLUDE (id)</code> usually fail to help real
+          application code?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because included columns cannot be returned by any scan
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a unique index ignores its own included columns
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because included columns need a manual vacuum to refresh
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because most queries select whole rows, not one column
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          An index-only scan is only possible when the query needs nothing but
+          what the index carries. <code>SELECT id FROM orders WHERE public_id =
+          $1</code> qualifies; <code>SELECT *</code> does not, and
+          <code>SELECT *</code> is what most code issues. There are two further
+          costs — the visibility-map dependency, and losing deduplication on that
+          index — but this is the one that most often makes the whole thing moot.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You have the pattern and its price.
+        <a href="0014-the-decision-ladder.html">Lesson 14</a> asks whether the
+        narrow-join benefit is even real — the answer is more careful than you
+        might expect — then covers what the decoupling buys at the API boundary,
+        when not to do any of this, and the ladder that turns the whole topic into
+        a decision.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK"
+              >PostgreSQL 18 manual, §5.5.5 “Foreign Keys”</a
+            >
+            — read the whole section, which is short. The paragraph about not
+            auto-creating an index on the referencing side is the one people miss,
+            and missing it is one of the most common real performance faults in
+            production schemas — quite independent of which key type you chose.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. The discipline cost is the one worth
+          discussing concretely: ask how to make leaking <code>id</code>
+          structurally hard in your stack rather than a rule people remember —
+          serialiser-level exclusion, a distinct type, a test that greps
+          responses. A rule that lives only in someone's head is the cost, not the
+          mitigation.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 14, try to draw the two-table schema from memory,
+            including which column the foreign key references and why, and then
+            name all four costs. The fourth is the one people forget, which is
+            fitting, because it is the one that bites.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0012-collisions-and-offline-generation.html">12. Collisions, and generating away from the database</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0014-the-decision-ladder.html">14. The decision ladder</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

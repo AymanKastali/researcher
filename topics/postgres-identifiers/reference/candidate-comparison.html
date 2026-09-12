@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Candidate comparison — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Candidate comparison</h1>
+        <p class="page-blurb">
+          All seven candidates side by side: width, ordering, bit layout, spec
+          status, and the one sentence that most decides against each. For
+          lookup, not for reading.
+        </p>
+      </header>
+
+      <h2>At a glance</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Width in PG</th>
+              <th>Ordered?</th>
+              <th>Offline generation</th>
+              <th>Spec status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>bigint</code> identity</td>
+              <td>8 B</td>
+              <td>Yes, strictly</td>
+              <td>No</td>
+              <td>SQL standard</td>
+            </tr>
+            <tr>
+              <td>UUIDv4</td>
+              <td>16 B</td>
+              <td>No</td>
+              <td>Yes</td>
+              <td>RFC 9562 §5.4</td>
+            </tr>
+            <tr>
+              <td>UUIDv7</td>
+              <td>16 B</td>
+              <td>To the millisecond</td>
+              <td>Yes</td>
+              <td>RFC 9562 §5.7</td>
+            </tr>
+            <tr>
+              <td>ULID</td>
+              <td>16 B as <code>uuid</code>, or 26 chars as text</td>
+              <td>To the millisecond</td>
+              <td>Yes</td>
+              <td>GitHub README, unversioned, last touched 2019</td>
+            </tr>
+            <tr>
+              <td>Snowflake</td>
+              <td>8 B</td>
+              <td>To the millisecond</td>
+              <td>Yes, with coordinated worker ids</td>
+              <td>Archived repo</td>
+            </tr>
+            <tr>
+              <td>TypeID</td>
+              <td>16 B + prefix, or ~30 chars as text</td>
+              <td>To the millisecond</td>
+              <td>Yes</td>
+              <td>Spec v0.3.0</td>
+            </tr>
+            <tr>
+              <td>Natural key</td>
+              <td>Varies</td>
+              <td>No</td>
+              <td>N/A</td>
+              <td>Whoever issues it</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Index behaviour</h2>
+
+      <p class="small-print">
+        Entries per leaf are <strong>derived</strong> from the quoted constants in
+        <a href="index-arithmetic.html">Index arithmetic</a>, assuming 8 kB pages
+        and MAXALIGN 8. Density is the level the split rule tends toward, not a
+        guarantee.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Entry width</th>
+              <th>Settles at</th>
+              <th>Entries per leaf</th>
+              <th>Relative</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>bigint</code> sequence</td>
+              <td>20 B</td>
+              <td>~90%</td>
+              <td>~366</td>
+              <td>1.00</td>
+            </tr>
+            <tr>
+              <td><code>uuid</code>, v7 / ULID / Snowflake-in-uuid</td>
+              <td>28 B</td>
+              <td>~90%</td>
+              <td>~262</td>
+              <td>0.72</td>
+            </tr>
+            <tr>
+              <td><code>uuid</code>, v4</td>
+              <td>28 B</td>
+              <td>~50%</td>
+              <td>~145</td>
+              <td>0.40</td>
+            </tr>
+            <tr>
+              <td><code>text</code>, 26 chars (ULID or TypeID suffix)</td>
+              <td>44 B</td>
+              <td>~90% if time-ordered</td>
+              <td>~166</td>
+              <td>0.45</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The one-line version</span>
+        <p>
+          Width takes a <code>uuid</code> from 366 entries to 262. Insert
+          <em>ordering</em> takes it from 262 to 145.
+          <strong>Most of the cost of a random key is the split behaviour, not
+          the eight extra bytes.</strong>
+        </p>
+      </div>
+
+      <h2>Bit layouts</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Layout</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>UUIDv4</strong></td>
+              <td>
+                122 random bits + 4-bit version (<code>0b0100</code>) + 2-bit
+                variant (<code>0b10</code>). Both MUST be set.
+              </td>
+              <td>RFC 9562 §5.4</td>
+            </tr>
+            <tr>
+              <td><strong>UUIDv7</strong></td>
+              <td>
+                <code>unix_ts_ms</code> 48 bits (0–47) · <code>ver</code> 4 bits
+                = <code>0b0111</code> (48–51) · <code>rand_a</code> 12 bits
+                (52–63) · <code>var</code> 2 bits = <code>0b10</code> (64–65) ·
+                <code>rand_b</code> 62 bits (66–127). 74 bits not fixed by
+                format.
+              </td>
+              <td>RFC 9562 §5.7</td>
+            </tr>
+            <tr>
+              <td><strong>ULID</strong></td>
+              <td>
+                48-bit ms timestamp + 80 random bits, rendered as 26 chars of
+                Crockford's Base32
+                (<code>0123456789ABCDEFGHJKMNPQRSTVWXYZ</code>, excluding I, L,
+                O, U). <strong>No version or variant bits.</strong>
+              </td>
+              <td>ULID spec, commit <code>d0c7170</code></td>
+            </tr>
+            <tr>
+              <td><strong>Snowflake (Twitter 2010)</strong></td>
+              <td>
+                41 bits time (custom epoch, 69 years) · 10 bits machine id (1024
+                machines) · 12 bits sequence (4096/ms/machine). Sign bit implied:
+                41+10+12 = 63 of a signed <code>Long</code>.
+              </td>
+              <td>
+                README at <code>snowflake-2010</code>; the 5+5 datacenter/worker
+                split and epoch <code>1288834974657</code> are in
+                <code>IdWorker.scala</code> only
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Snowflake (Discord)</strong></td>
+              <td>
+                42 bits time · 5 worker · 5 process · 12 increment, epoch
+                <code>1420070400000</code>. A <em>family</em>, not a format.
+              </td>
+              <td>Discord API reference</td>
+            </tr>
+            <tr>
+              <td><strong>TypeID</strong></td>
+              <td>
+                <code>prefix</code> (<code>^([a-z]([a-z_]{0,61}[a-z])?)?$</code>)
+                + <code>_</code> + 26-char base32 suffix that MUST decode to a
+                valid UUIDv7. Total 26–90 chars. First suffix char MUST be ≤
+                <code>7</code>.
+              </td>
+              <td>TypeID spec v0.3.0</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Entropy</h2>
+
+      <p class="small-print">
+        Quoted, not derived. Neither specification states a numeric collision
+        probability; do any arithmetic explicitly and label it as yours.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Bits not determined by time or format</th>
+              <th>Scope</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>UUIDv4</td>
+              <td>122</td>
+              <td>Once, total</td>
+            </tr>
+            <tr>
+              <td>UUIDv7</td>
+              <td>74</td>
+              <td>Per millisecond</td>
+            </tr>
+            <tr>
+              <td>ULID</td>
+              <td>80</td>
+              <td>Per millisecond (2⁸⁰ ≈ 1.21e+24)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The deciding sentence for each</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Candidate</th>
+              <th>What most decides for it</th>
+              <th>What most decides against it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong><code>bigint</code> identity</strong></td>
+              <td>
+                Narrowest key, strictly ascending so the rightmost fastpath
+                always applies, and <code>ALWAYS</code> makes it immutable at the
+                schema level.
+              </td>
+              <td>
+                <code>nextval()</code> is a call into one database — no offline
+                or client-side generation at any price. Sequential by default, so
+                it leaks volume and order if exposed.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>UUIDv4</strong></td>
+              <td>
+                No structure at all: nothing to correlate, nothing to leak. RFC
+                9562 §8's own choice for anything security-adjacent.
+              </td>
+              <td>
+                ~50% leaf density, a cold page per insert. The RFC calls the
+                effect on B-trees “dramatic”.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>UUIDv7</strong></td>
+              <td>
+                Offline generation with ~90% leaf density. Native in PG18. The
+                RFC's own recommendation over v1 and v6.
+              </td>
+              <td>
+                Carries a plaintext creation timestamp, and PostgreSQL's
+                monotonicity is guaranteed only <em>within one backend</em> —
+                not across a connection pool.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>ULID</strong></td>
+              <td>
+                Character-efficient 26-char rendering; a genuinely good design
+                that UUIDv7 inherited from.
+              </td>
+              <td>
+                Spec unversioned and last committed 2019-05-23, no security
+                section, no version/variant bits, and its monotonic mode
+                increments by exactly 1 — the construction RFC 9562 §6.2 says
+                SHOULD NOT be used where unguessability matters.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Snowflake</strong></td>
+              <td>
+                64 bits and time-ordered — the only candidate that is both.
+              </td>
+              <td>
+                Repo archived (last push 2020-07-22); worker-id assignment across
+                autoscaling is the real cost; 64-bit ids break JavaScript's
+                53-bit numbers.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>TypeID</strong></td>
+              <td>
+                A real UUIDv7 underneath, plus type-safe ergonomics at the API
+                boundary.
+              </td>
+              <td>
+                Both official SQL encodings are worse than necessary — the text
+                one is ~2× a native <code>uuid</code>, the composite stores a
+                <code>varchar(63)</code> table-constant prefix per row. Adopt it
+                as an API format, not a storage format.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Natural key</strong></td>
+              <td>
+                One less column, no join to read the meaningful value, and the
+                uniqueness constraint expresses a real business rule.
+              </td>
+              <td>
+                The issuing authority controls the format and will change it on a
+                date it chooses — ISBN went 10→13 digits on 2007-01-01, and the
+                migration is a rewrite under <code>ACCESS EXCLUSIVE</code>
+                propagated to every referencing table.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The ladder</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Situation</th>
+              <th>Choice</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Single-node, ids not publicly meaningful</td>
+              <td>
+                <code>bigint GENERATED ALWAYS AS IDENTITY</code>. Serialise as a
+                string.
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Ids in URLs or third-party hands</td>
+              <td>
+                Dual-identifier: <code>bigint</code> internal +
+                <code>uuidv7()</code> external
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Client-side or offline generation required</td>
+              <td>Single <code>uuid</code> primary key holding a v7</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Id is a security-relevant surface</td>
+              <td>UUIDv4 for the external id, on RFC 9562 §8's advice</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">What survives every rung</span>
+        <p>
+          Key on something you control, never update it, and put a unique
+          constraint on anything that must be unique — including the identifier
+          your framework already thinks is unique.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Taught across
+        <a href="../lessons/0007-identity-columns-and-gaps.html">lesson 7</a>,
+        <a href="../lessons/0008-uuidv4-and-uuidv7.html">lesson 8</a>,
+        <a href="../lessons/0009-ulid-snowflake-typeid.html">lesson 9</a>,
+        <a href="../lessons/0010-natural-keys.html">lesson 10</a> and
+        <a href="../lessons/0014-the-decision-ladder.html">lesson 14</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

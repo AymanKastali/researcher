@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2. Inside a leaf page — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0002</span>
+        <h1>Inside a leaf page</h1>
+        <p class="lesson-mission">
+          Pricing the internal-identity job means counting bytes in a B-tree
+          leaf. This lesson builds that count from quoted constants — and then
+          checks it against a real page the manual prints, because a model you
+          cannot validate is folklore with arithmetic on top.
+        </p>
+      </header>
+
+      <p class="lead">
+        Three figures appear in nearly every blog post on this subject: that a
+        <code>uuid</code> is 16 bytes, that an index entry cannot exceed 2704
+        bytes, and that ascending inserts get special treatment. None of the
+        three is in the PostgreSQL manual. Knowing where they actually come from
+        is the first real skill in this topic.
+      </p>
+
+      <h2>Three grades of evidence</h2>
+
+      <p>
+        From here on, every number on every page of this topic is one of three
+        things, and the page always says which:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The grading used throughout this topic.</caption>
+          <thead>
+            <tr>
+              <th>Grade</th>
+              <th>Where it comes from</th>
+              <th>How much weight it carries</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Documented guarantee</strong></td>
+              <td>The manual, an RFC, a vendor specification.</td>
+              <td>
+                May be stated flatly. The project has committed to it and will
+                announce a change.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Source-code fact</strong></td>
+              <td>
+                A <code>REL_18_STABLE</code> header, README, or commit, used
+                only where the manual is silent.
+              </td>
+              <td>
+                Weaker. It is true today and could change without a release
+                note. <strong>A <code>#define</code> is not a promise.</strong>
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Derived arithmetic</strong></td>
+              <td>Computed from quoted constants.</td>
+              <td>
+                Only as good as its inputs and its assumptions, both of which
+                must be stated. Checkable, and checked below.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The manual itself authorises the second grade, and points at exactly
+        where to look:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            See <code>src/backend/access/nbtree/README</code> in the source
+            distribution for a much more detailed, internals-focused description
+            of the B-Tree implementation.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/current/btree.html"
+            >§65.1.4</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>The quoted constants</h2>
+
+      <p>
+        Everything the manual does state, in one place. These are grade one, and
+        every calculation later in the topic is built only from these.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Documented constants, PostgreSQL 18.</caption>
+          <thead>
+            <tr>
+              <th>Constant</th>
+              <th>Value, as worded</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Page size</td>
+              <td>“usually 8 kB”</td>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/current/storage-page-layout.html"
+                  >§66.6</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><code>PageHeaderData</code></td>
+              <td>“24 bytes long”</td>
+              <td>§66.6, Table 66.2</td>
+            </tr>
+            <tr>
+              <td><code>ItemIdData</code> (line pointer)</td>
+              <td>“4 bytes per item”</td>
+              <td>§66.6, Table 66.2</td>
+            </tr>
+            <tr>
+              <td>Heap tuple header</td>
+              <td>“occupying 23 bytes on most machines”</td>
+              <td>§66.6.1</td>
+            </tr>
+            <tr>
+              <td><code>bigint</code></td>
+              <td>“8 bytes”</td>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/current/datatype-numeric.html"
+                  >§8.1, Table 8.2</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><code>uuid</code></td>
+              <td>“128-bit quantity”</td>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/current/datatype-uuid.html"
+                  >§8.12</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Short string, ≤126 bytes</td>
+              <td>“1 byte plus the actual string”</td>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/current/datatype-character.html"
+                  >§8.3</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Maximum index entry</td>
+              <td>“approximately one-third of a page”</td>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/current/btree.html"
+                  >§65.1.1</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>B-tree default fillfactor</td>
+              <td>“90”</td>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/current/sql-createindex.html"
+                  >CREATE INDEX</a
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Note what is missing</span>
+        <p>
+          The manual calls a <code>uuid</code> a “128-bit quantity” and
+          <strong>never gives a byte count</strong>. It says an index entry
+          “cannot exceed approximately one-third of a page” and
+          <strong>never says 2704</strong>. Both of those numbers are real, but
+          they are grade two.
+        </p>
+      </div>
+
+      <h2>The same three facts, from source</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C</span>
+        </div>
+        <pre><code class="language-c">/* src/include/utils/uuid.h */
+#define UUID_LEN 16
+
+/* src/include/access/itup.h — IndexTupleData */
+ItemPointerData  t_tid;      /* 6 bytes */
+unsigned short   t_info;     /* 2 bytes */
+                             /* = 8 bytes of index tuple header */
+
+/* src/include/access/nbtree.h */
+BTMaxItemSize    /* evaluates to 2704 at 8 kB pages */</code></pre>
+      </div>
+
+      <p class="small-print">
+        Read from <code>REL_18_STABLE</code>. Grade two: true today, and able to
+        change without a release note.
+      </p>
+
+      <p>
+        One more platform fact, which the manual mentions only obliquely.
+        MAXALIGN is 8 on 64-bit platforms; the manual never states the value,
+        saying only that <code>t_hoff</code> “must always be a multiple of the
+        MAXALIGN distance for the platform”. Treat it as a platform fact rather
+        than a documented constant, and state the assumption every time you use
+        it — as this lesson does.
+      </p>
+
+      <h2>The arithmetic</h2>
+
+      <div class="aside note">
+        <span class="label">Grade three from here to the end of the section</span>
+        <p>
+          Everything below is <strong>computed, not quoted</strong>. Assumptions:
+          8 kB pages, MAXALIGN 8, a single-column <code>NOT NULL</code> key, no
+          <code>INCLUDE</code> columns, ASCII text.
+        </p>
+      </div>
+
+      <p>
+        A B-tree leaf page starts with 8192 bytes, loses the 24-byte page header,
+        and loses 16 more to <code>BTPageOpaqueData</code> at the end of the
+        page. That leaves <strong>8152 bytes</strong> to share between line
+        pointers and entries.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">PAGE = 8192
+USABLE = PAGE - 24 - 16      # page header, BTPageOpaqueData  -> 8152
+TUPLE_HEADER = 8             # IndexTupleData, from itup.h
+LINE_POINTER = 4             # ItemIdData, from the manual
+MAXALIGN = 8                 # 64-bit platform assumption
+
+
+def per_entry(key_bytes: int) -> int:
+    """Bytes one index entry costs, including its line pointer."""
+    body = TUPLE_HEADER + key_bytes
+    padded = -(-body // MAXALIGN) * MAXALIGN      # round up to MAXALIGN
+    return padded + LINE_POINTER
+
+
+def entries_per_leaf(key_bytes: int, fillfactor: int = 100) -> int:
+    return (USABLE * fillfactor // 100) // per_entry(key_bytes)
+
+
+for name, width in [("bigint", 8), ("uuid", 16), ("text, 26 chars", 1 + 26)]:
+    print(name, per_entry(width), entries_per_leaf(width),
+          entries_per_leaf(width, 90))</code></pre>
+      </div>
+
+      <p>Which gives:</p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Derived. Bytes per index entry, and entries per leaf page.
+          </caption>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Header</th>
+              <th>+ key</th>
+              <th>MAXALIGNed</th>
+              <th>+ line ptr</th>
+              <th>Per entry</th>
+              <th>Per leaf, ff 90</th>
+              <th>Relative</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>bigint</code></td>
+              <td>8</td>
+              <td>8</td>
+              <td>16</td>
+              <td>4</td>
+              <td><strong>20 bytes</strong></td>
+              <td>~366</td>
+              <td>1.00</td>
+            </tr>
+            <tr>
+              <td><code>uuid</code></td>
+              <td>8</td>
+              <td>16</td>
+              <td>24</td>
+              <td>4</td>
+              <td><strong>28 bytes</strong></td>
+              <td>~262</td>
+              <td>0.72</td>
+            </tr>
+            <tr>
+              <td><code>text</code>, 26 chars</td>
+              <td>8</td>
+              <td>27</td>
+              <td>40</td>
+              <td>4</td>
+              <td><strong>44 bytes</strong></td>
+              <td>~166</td>
+              <td>0.45</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Checking the model against two real pages</h2>
+
+      <p>
+        This is the part that separates the arithmetic above from the arithmetic
+        in a blog post. The <code>pageinspect</code> documentation prints real
+        output from two different real indexes, and the model predicts both to
+        the byte.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>SELECT * FROM bt_multi_page_stats('pg_proc_oid_index', 5, 2);</code><br />
+            <code>live_items | 367</code> · <code>avg_item_size | 16</code> ·
+            <code>page_size | 8192</code> · <code>free_size | 808</code>
+          </p>
+          <p>
+            <code>SELECT * FROM bt_page_stats('pg_cast_oid_index', 1);</code><br />
+            <code>live_items | 224</code> · <code>avg_item_size | 16</code> ·
+            <code>page_size | 8192</code> · <code>free_size | 3668</code>
+          </p>
+        </blockquote>
+        <figcaption>
+          Two leaf pages, printed in the PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/pageinspect.html"
+            >§F.23.3</a
+          >. Both indexes are on <code>oid</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        An <code>oid</code> is 4 bytes. So 8 + 4 = 12, rounded up to MAXALIGN 16
+        — the same item size as a <code>bigint</code>, and exactly the
+        <code>avg_item_size</code> the manual prints for both. Now run the model
+        forward:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">>>> per_entry(4)              # oid: 8 + 4 = 12 -> MAXALIGN 16, + 4 line ptr
+20
+
+# pg_proc_oid_index, a full page: live_items 367
+>>> USABLE - 367 * 20         # 8152 - 7340
+812
+# PageGetFreeSpace withholds one further line pointer, so 812 - 4 = 808,
+# which is the free_size the manual prints. Exact.
+
+# pg_cast_oid_index, a page barely half full: live_items 224
+>>> USABLE - 224 * 20         # 8152 - 4480
+3672
+# 3672 - 4 = 3668, again exactly what the manual prints.
+
+>>> 367 / entries_per_leaf(4)  # how full is the pg_proc page?
+0.9017...                      # the documented fillfactor, arriving on its own</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Why this check is worth the space</span>
+        <p>
+          The free-space prediction lands to the byte on
+          <strong>two different indexes</strong> — one packed at ~90%, one barely
+          half full at ~55% — so the model is not fitted to a single lucky case.
+          And on the packed page the documented fillfactor of 90 falls out on its
+          own, to within a fifth of a percent, from numbers that were never used
+          to build the model.
+        </p>
+        <p>
+          That is what licenses the <code>uuid</code> and <code>text</code> rows,
+          which no manual page prints. An unvalidated model of this kind would be
+          exactly as trustworthy as the folklore it is meant to replace.
+        </p>
+      </div>
+
+      <p>The headline consequence, stated as derived:</p>
+
+      <p>
+        <strong
+          >A <code>uuid</code> primary-key index needs roughly 1.4× the leaf
+          pages of a <code>bigint</code> one; a 26-character text key roughly
+          2.2×.</strong
+        >
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Where does the claim “a <code>uuid</code> is 16 bytes in PostgreSQL”
+          actually come from?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The manual's page on the UUID data type
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The RFC section defining the UUID bit layout
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The release notes for PostgreSQL 13 or 18
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A header file in the PostgreSQL source tree
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>#define UUID_LEN 16</code> lives in
+          <code>src/include/utils/uuid.h</code>. The manual's §8.12 says only
+          “128-bit quantity” and never converts it to bytes — which is a real
+          distinction, because 128 bits is a fact about the format while 16 bytes
+          is a fact about this implementation's storage. RFC 9562 specifies the
+          format, not PostgreSQL's layout.
+        </p>
+      </div>
+
+      <h2>One trap on text keys, pre-empted by the manual</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            There is no performance difference among these three types, apart
+            from increased storage space when using the blank-padded type, and a
+            few extra CPU cycles to check the length when storing into a
+            length-constrained column. While <code>character(n)</code> has
+            performance advantages in some other database systems, there is no
+            such advantage in PostgreSQL; in fact <code>character(n)</code> is
+            usually the slowest of the three because of its additional storage
+            costs.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/datatype-character.html"
+            >§8.3</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        So <code>varchar(26)</code> buys nothing over <code>text</code>. If you
+        store an identifier as a string — and lessons 8 and 9 will argue you
+        usually should not — store it as <code>text</code> with a
+        <code>CHECK</code> constraint, and know from the table above that you
+        have roughly halved how many keys fit in a page.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does an 8-byte <code>bigint</code> key cost 20 bytes per index
+          entry rather than 8?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Eight bytes of padding, plus four for compression
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Eight bytes of tuple header, plus four line-pointer
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Eight bytes for the value, duplicated for safety
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Eight bytes of page header, plus four checksum
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Each entry carries an 8-byte <code>IndexTupleData</code> header — a
+          6-byte heap pointer and 2 bytes of flags — giving 16 after MAXALIGN, and
+          each item on a page also needs a 4-byte <code>ItemIdData</code> line
+          pointer in the page's slot array. The page header is 24 bytes and is
+          paid once per page, not per entry; nothing here is compressed or
+          duplicated.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        A 1.4× difference in index size sounds like it should show up as a deeper
+        tree and slower lookups. <a href="0003-the-rightmost-page.html">Lesson 3</a>
+        shows that it does not — depth barely moves — and that the number
+        everyone is reaching for when they say “UUIDs are slow” is a completely
+        different one, produced by a mechanism that has nothing to do with width.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/storage-page-layout.html"
+              >PostgreSQL 18 manual, §66.6 “Database Page Layout”</a
+            >
+            — Tables 66.1 and 66.2 are the whole basis of this lesson, and the
+            page is short. Read it with the arithmetic above beside you and
+            confirm that every input came from there. Then open
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/pageinspect.html"
+              >§F.23.3</a
+            >
+            and find the <code>free_size | 808</code> line yourself.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If you have a database to hand, ask for the
+          <code>pageinspect</code> queries that reproduce the manual's output
+          against one of your own indexes — seeing your own numbers land where
+          the model predicts is worth more than reading this lesson twice. Note
+          that <code>pageinspect</code> is superuser-only.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before opening lesson 3, try to reconstruct the 20-byte figure from
+            scratch: page size, what comes off the top, what each entry carries.
+            If you can rebuild it rather than recall it, the rest of the topic
+            will cost you much less effort.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0001-two-jobs-one-column.html">1. Two jobs, one column</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0003-the-rightmost-page.html">3. The rightmost page</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

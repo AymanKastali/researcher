@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>15. Reading the evidence — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0015</span>
+        <h1>Reading the evidence</h1>
+        <p class="lesson-mission">
+          The last lesson, and the one most likely to outlive the rest.
+          PostgreSQL 19 will change some of the answers in this topic. It will
+          not change how to check them — so the grading itself becomes the object
+          of study here, along with every single thing the sources refused to say.
+        </p>
+      </header>
+
+      <p class="lead">
+        Fourteen lessons have carried a label on every number: documented
+        guarantee, source-code fact, or derived arithmetic. This lesson makes
+        that discipline explicit, and then does the thing almost no technical
+        writing does — lists what could not be established, rather than quietly
+        filling the gaps.
+      </p>
+
+      <h2>The most important absence</h2>
+
+      <div class="aside warning">
+        <span class="label">There are no benchmark numbers in this topic</span>
+        <p>
+          Not because they were omitted for brevity, but because
+          <strong>no primary source provides any</strong>. The PostgreSQL manual
+          publishes no performance comparison of <code>bigint</code>,
+          <code>uuid</code> and text keys — not for insert throughput, not for
+          index size, not for cache behaviour.
+        </p>
+        <p>
+          The only magnitude claim anywhere in the primary sources is RFC 9562
+          §6.11's “one order of magnitude or more”, which is unattributed, names
+          no workload and no engine, and is framed around clustering behaviour
+          that lesson 4 showed PostgreSQL does not have.
+        </p>
+        <p>
+          <strong
+            >Every performance statement in this topic is therefore either a
+            quoted mechanism or labelled arithmetic.</strong
+          >
+        </p>
+      </div>
+
+      <p>
+        This is worth sitting with, because it explains the state of the
+        literature. A subject where everyone has an opinion, the mechanism is
+        documented, and nobody published a measurement is a subject that will
+        generate confident blog posts indefinitely.
+      </p>
+
+      <h2>Everything that could not be verified</h2>
+
+      <p>
+        These are gaps in the sources, not omissions from the lessons. Each is
+        grouped by what kind of gap it is.
+      </p>
+
+      <h3>Claims made here that are inference, not documentation</h3>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Claim</th>
+              <th>Status</th>
+              <th>Lesson</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Random keys increase WAL volume.</td>
+              <td>
+                The docs establish the <code>full_page_writes</code> mechanism
+                and the rightmost-page behaviour <em>separately</em>, and never
+                connect them. The chain is reasoning from two quoted facts.
+              </td>
+              <td>4</td>
+            </tr>
+            <tr>
+              <td>Wider join keys cost something.</td>
+              <td>
+                The docs make no claim that join-key width affects join
+                performance. The <code>work_mem</code> spill argument is
+                inference, and describes a step function rather than a per-row
+                tax.
+              </td>
+              <td>14</td>
+            </tr>
+            <tr>
+              <td>A random key does not fragment the table.</td>
+              <td>
+                Follows from three quoted facts — <code>CLUSTER</code> is
+                one-time, each relation is its own file, all indexes are
+                secondary — but the manual never states the conclusion.
+              </td>
+              <td>4</td>
+            </tr>
+            <tr>
+              <td>Store a TypeID as a <code>uuid</code> column.</td>
+              <td>
+                TypeID's “binary representation” is not specified — the spec
+                defines only the canonical lowercase string encoding. The
+                recommendation is inference from the requirement that the suffix
+                decode to a valid UUIDv7.
+              </td>
+              <td>9</td>
+            </tr>
+            <tr>
+              <td>No padding between a <code>bigint</code> and a <code>uuid</code>.</td>
+              <td>
+                <code>storage-page-layout.html</code> covers page and tuple
+                <em>header</em> layout and the <code>t_hoff</code> MAXALIGN rule,
+                but says nothing about inter-column padding or column ordering.
+                Both types are fixed-width, so no padding is expected — inference.
+              </td>
+              <td>2</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Constants that are grade two, not grade one</h3>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Constant</th>
+              <th>Where it really comes from</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>uuid</code> = 16 bytes</td>
+              <td>
+                <code>#define UUID_LEN 16</code> in
+                <code>src/include/utils/uuid.h</code>. The manual says only
+                “128-bit quantity”.
+              </td>
+            </tr>
+            <tr>
+              <td>2704-byte maximum index entry</td>
+              <td>
+                <code>BTMaxItemSize</code> in
+                <code>src/include/access/nbtree.h</code>. The manual says only
+                “approximately one-third of a page”.
+              </td>
+            </tr>
+            <tr>
+              <td>The rightmost-leaf fastpath</td>
+              <td>
+                <code>nbtsplitloc.c</code> and the <code>nbtree</code> README. A
+                full-text search of the manual's B-tree page for “fastpath”,
+                “rightmost”, “ascending” and “monotonic” returns
+                <strong>zero hits</strong>.
+              </td>
+            </tr>
+            <tr>
+              <td>MAXALIGN = 8</td>
+              <td>
+                Never stated by the docs at all — only “the MAXALIGN distance for
+                the platform”. All of lesson 2's arithmetic assumes 8 on 64-bit.
+              </td>
+            </tr>
+            <tr>
+              <td>Snowflake's epoch and 5+5 split</td>
+              <td>
+                <code>IdWorker.scala</code>, not the README. The sign bit is
+                stated nowhere and is only inferable from 41 + 10 + 12 = 63 of a
+                signed <code>Long</code>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        §65.1.4 does direct readers to the source README, so this is sanctioned
+        rather than furtive. A header file is still weaker evidence than a
+        documented guarantee, and any of these could change without a release
+        note.
+      </p>
+
+      <h3>Things the sources simply do not say</h3>
+
+      <ul>
+        <li>
+          <strong
+            >PostgreSQL documents nothing about enumeration, guessability, or ID
+            exposure.</strong
+          >
+          The stated rationale for the <code>uuid</code> type is uniqueness in
+          distributed systems, not security. The entire “expose a UUID so
+          attackers cannot enumerate rows” argument has no support in the
+          project's documentation. It may well be sound — lesson 11 sources it to
+          RFC 9562 instead, which is where the normative language lives.
+        </li>
+        <li>
+          <strong
+            ><code>avg_leaf_density</code> and <code>leaf_fragmentation</code> are
+            undefined.</strong
+          >
+          The quoted one-line descriptions are <em>complete</em>: no computation,
+          no units, no threshold for “bad”. Any target figure for them does not
+          come from PostgreSQL.
+        </li>
+        <li>
+          <strong>Neither UUID specification states a collision probability.</strong>
+          RFC 9562 never mentions the birthday problem. The familiar “a billion a
+          second for a century” figures are not in it, and this topic does not
+          attribute them to it.
+        </li>
+        <li>
+          <strong>The ULID specification cannot be cited by version.</strong> No
+          tags, no releases, no version number, no internal date. Lesson 9 cites
+          it by commit SHA because that is the only stable reference that exists.
+        </li>
+        <li>
+          <strong>ULID's case-insensitivity is a feature bullet, not a specified
+          behaviour.</strong> “Case insensitive” appears only in the README's
+          headline list; the Encoding section defines a single uppercase alphabet
+          and says nothing normative about accepting or emitting lowercase. The
+          same applies to “No special characters (URL safe)”.
+        </li>
+        <li>
+          <strong>The introducing version of
+          <code>uuid_extract_timestamp()</code> and
+          <code>uuid_extract_version()</code> was not established.</strong> Both
+          are present in 18; the PG17 release notes were not fetched, so no
+          version is claimed for them.
+        </li>
+        <li>
+          <strong>Supabase's support for <code>pg_uuidv7</code> could not be
+          determined.</strong> Its docs do not enumerate extensions, and there is
+          no first-party page. Absence of a page is not evidence of absence of the
+          extension, so lesson 6 claims nothing either way.
+        </li>
+        <li>
+          <strong>Instagram's sharded-ID design could not be retrieved.</strong>
+          The host refused the connection and the archive API rate-limited, so no
+          Instagram bit layout appears anywhere in this topic.
+        </li>
+      </ul>
+
+      <h3>Sourcing caveats worth carrying</h3>
+
+      <ul>
+        <li>
+          <strong>Two Twitter sources are archive captures, not live pages.</strong>
+          The 2010 announcement returns HTTP 403 at its live URL, and the
+          developer documentation on Twitter IDs has been removed. Capture dates
+          are given on every page that quotes them. An archived copy of an
+          original is still a primary source; a blog post describing it would not
+          be.
+        </li>
+        <li>
+          <strong>Codd is quoted from a university mirror of the scan</strong>,
+          not the ACM Digital Library, whose full text is paywalled. The scan's
+          page footer matches the citation, and two OCR run-together artifacts
+          were corrected.
+        </li>
+        <li>
+          <strong>The <code>uuidv7()</code> commit message cites “RFC 9652”.</strong>
+          That is a typo in the commit itself; the <code>uuid</code> type page and
+          the function docs both correctly say RFC 9562. A primary source being
+          wrong in a detail is not a reason to distrust it — it is a reason to
+          read it rather than a summary of it.
+        </li>
+        <li>
+          <strong>Two widely-repeated assumptions turned out to be false.</strong>
+          The <code>uuid-ossp</code> page contains no statement that
+          <code>gen_random_uuid()</code> is preferable — only the generic “this
+          module is only necessary for special requirements”. And §8.1.4 does not
+          recommend identity columns over <code>serial</code>; it calls identity
+          “Another way”, and the only documented advantage is the PG10 release
+          note's “SQL standard compliant”.
+        </li>
+      </ul>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Someone cites RFC 9562 for the claim that time-ordered keys are ten
+          times faster in PostgreSQL. What are the two separate problems?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The claim is unmeasured, and it assumes clustered storage
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The RFC is outdated, and it describes another version
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The claim is disputed, and it contradicts section eight
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The claim is informative, and it omits normative keywords
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          First, §6.11 names no experiment, workload or engine — it is motivation
+          for a format, not a measurement. Second, its stated mechanism is
+          objects being “clustered together”, which describes storage PostgreSQL
+          does not have (lesson 4). Both problems have to be raised; fixing only
+          one leaves the citation looking usable. RFC 9562 is current, and nothing
+          here contradicts §8.
+        </p>
+      </div>
+
+      <h2>The habit worth keeping</h2>
+
+      <div class="aside insight">
+        <span class="label">Four questions, in order</span>
+        <ol>
+          <li>
+            <strong>Is this quoted or recalled?</strong> If the writer cannot
+            point at the sentence, neither can you.
+          </li>
+          <li>
+            <strong>Which grade is it?</strong> A manual page, a header file, and
+            someone's arithmetic carry three different weights, and merging them
+            into one confident voice is how folklore forms.
+          </li>
+          <li>
+            <strong>Which engine was it written for?</strong> Lesson 4 is the
+            single highest-yield application of this question in this subject.
+          </li>
+          <li>
+            <strong>What does the source decline to say?</strong> RFC 9562's
+            refusal to state a collision probability, and the manual's silence on
+            <code>leaf_fragmentation</code> thresholds, are both deliberate — and
+            both are routinely filled in by other people.
+          </li>
+        </ol>
+      </div>
+
+      <p>
+        That fourth question is the one this lesson exists for. An absence in a
+        careful source is usually information: it means the authors judged the
+        number to be workload-dependent, or implementation-defined, or not theirs
+        to give. Somebody supplying it anyway has not done extra work — they have
+        skipped the step where the source declined.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does this topic contain no benchmark comparing
+          <code>bigint</code> and <code>uuid</code> keys?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the difference is too small to be measurable
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a benchmark would date faster than the mechanism
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the manual forbids us from publishing such figures
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because no primary source published one to be quoted
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The topic's rule is that every claim is quoted, cited to source, or
+          labelled arithmetic — and no primary source publishes a measurement
+          here. The difference is real and substantial (lesson 3 derives the
+          magnitude from quoted constants), so it is certainly measurable. Nothing
+          forbids benchmarks; there simply is not one to cite, and inventing a
+          number would be exactly the failure this whole topic is built to avoid.
+        </p>
+      </div>
+
+      <h2>You are done</h2>
+
+      <p>
+        Fifteen lessons: the shape of the decision, four on the physical
+        mechanics, one on what the engine supplies, four on the candidates, two on
+        security and distribution, two on the pattern and the decision, and this
+        one.
+      </p>
+
+      <p>
+        The <a href="../index.html">topic index</a> lists five reference
+        documents, and those are the ones built to be come back to — the candidate
+        comparison, the index arithmetic with its measuring commands, the feature
+        ledger with working DDL, the glossary, and this lesson's list in lookup
+        form. Lessons are read once; reference documents are read for years.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">One last recall exercise</span>
+        <p>
+          Before you close this, try to answer without looking: why does a UUIDv7
+          index hold nearly twice as many entries per leaf page as a UUIDv4 one,
+          when both are 16 bytes? If you can reconstruct that from the split rule
+          rather than recall it as a fact, the topic did its job.
+        </p>
+      </div>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/btree.html"
+              >PostgreSQL 18 manual, §65.1 “B-Tree Indexes”</a
+            >
+            — the whole section, now that you know what it does and does not
+            contain. Read it specifically for its silences: notice where it hands
+            you to the source README, and notice that the behaviour lesson 3 turns
+            on is not on the page at all. That reading is the skill; the facts you
+            already have.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher, and this is where that matters most. When
+          PostgreSQL 19 ships, ask it to re-check the feature ledger in lesson 6
+          and every source-code citation in lessons 2 and 3 — a header file can
+          change without a release note, which is exactly why those claims were
+          labelled grade two. Bring it any identifier argument you meet, and ask
+          which grade each claim in it is.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing, one last time</span>
+          <p>
+            The real test is not today. Come back in a month and try to
+            reconstruct the ladder from lesson 14 and the split argument from
+            lesson 3 without opening either. What you cannot rebuild, re-read —
+            and re-read the lesson, not this summary, because the argument is what
+            sticks and the conclusion is what fades.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0014-the-decision-ladder.html">14. The decision ladder</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

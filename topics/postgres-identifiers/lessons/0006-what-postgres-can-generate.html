@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>6. What PostgreSQL can generate — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0006</span>
+        <h1>What PostgreSQL can generate</h1>
+        <p class="lesson-mission">
+          Half of this decision is availability, not performance. This lesson
+          establishes what the engine can mint natively, when each capability
+          arrived, and — the part most summaries drop — exactly how far the
+          UUIDv7 ordering guarantee extends.
+        </p>
+      </header>
+
+      <p class="lead">
+        Most advice on this subject was written before PostgreSQL 18, and a good
+        deal of it before 13. Two release notes have quietly retired the
+        arguments behind a generation of blog posts, so the first thing to get
+        straight is what shipped when.
+      </p>
+
+      <h2>The feature ledger</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Each capability, with its release-note evidence.</caption>
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>First shipped</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <code>GENERATED { ALWAYS | BY DEFAULT } AS IDENTITY</code>
+              </td>
+              <td>10 (2017-10-05)</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/release/10.0/"
+                  >PG10 notes</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><code>INCLUDE</code> covering indexes</td>
+              <td>11 (2018-10-18)</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/release/11.0/"
+                  >PG11 notes</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><code>gen_random_uuid()</code> in core</td>
+              <td>13 (2020-09-24)</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/release/13.0/"
+                  >PG13 notes</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><code>UNIQUE NULLS NOT DISTINCT</code></td>
+              <td>15 (2022-10-13)</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/release/15.0/"
+                  >PG15 notes</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td><code>uuidv7()</code>, <code>uuidv4()</code></td>
+              <td>18 (2025-09-25)</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/release/18.0/"
+                  >PG18 notes</a
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>The PG13 note retired a long-standing piece of advice:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Add function <code>gen_random_uuid()</code> to generate version-4
+            UUIDs (Peter Eisentraut)
+          </p>
+          <p>
+            Previously UUID generation functions were only available in the
+            external modules uuid-ossp and pgcrypto.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.postgresql.org/docs/release/13.0/"
+            >PostgreSQL 13 release notes</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>And the PG18 note retires most of the case for an extension at all:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>uuidv7()</code> function for generating timestamp-ordered
+            UUIDs. (Andrey Borodin) This <code>UUID</code> value is temporally
+            sortable.
+          </p>
+          <p>
+            Function alias <code>uuidv4()</code> has been added to explicitly
+            generate version 4 UUIDs.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.postgresql.org/docs/release/18.0/"
+            >PostgreSQL 18 release notes</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>The monotonicity guarantee, read carefully</h2>
+
+      <p>
+        “Temporally sortable” is doing a lot of work in that note. The commit
+        that added the function is precise about what is actually promised:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            In our implementation, the 12-bit sub-millisecond timestamp fraction
+            is stored immediately after the timestamp, in the space referred to
+            as “rand_a” in the RFC. This ensures additional monotonicity within a
+            millisecond. The rand_a bits also function as a counter. We select a
+            sub-millisecond timestamp so that it monotonically increases for
+            generated UUIDs within the same backend, even when the system clock
+            goes backward or when generating UUIDs at very high frequency.
+            <strong
+              >Therefore, the monotonicity of generated UUIDs is ensured within
+              the same backend.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          Masahiko Sawada, commit <code>78c5e141e</code>, 2024-12-11,
+          <a
+            class="citation"
+            href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=78c5e141e9c139fc2ff36a220334e4aa25e1b0eb"
+            >git.postgresql.org</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The sentence summaries drop</span>
+        <p>
+          A PostgreSQL <strong>backend</strong> is one connection's server
+          process. The guarantee does <strong>not</strong> extend across
+          connections in a pool, across two application instances, or across
+          servers. Two rows inserted in the same millisecond on two different
+          connections have <em>no defined order</em>.
+        </p>
+      </div>
+
+      <p>So be precise about what you have:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Two properties routinely conflated into one.</caption>
+          <thead>
+            <tr>
+              <th>Property</th>
+              <th>What <code>uuidv7()</code> gives you</th>
+              <th>Good enough for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Index locality</strong></td>
+              <td>
+                Millisecond-granular approximate ordering, globally. Inserts land
+                near the right edge.
+              </td>
+              <td>
+                <strong>Yes.</strong> The B-tree only needs inserts near the
+                right edge, not in perfect sequence (lesson 3).
+              </td>
+            </tr>
+            <tr>
+              <td><strong>“Sort by id for creation order”</strong></td>
+              <td>Strict ordering along a single connection only.</td>
+              <td>
+                <strong>No.</strong> Through a connection pool, same-millisecond
+                rows have no defined order.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        The construction is RFC 9562 §6.2 Method 3, “Replace Leftmost Random Bits
+        with Increased Clock Precision”, though the commit message does not name
+        it. The commit cites “RFC 9652”; that is a typo in the commit itself —
+        the <code>uuid</code> type page and the function docs both correctly say
+        RFC 9562.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Your application uses a connection pool. Two rows are inserted in the
+          same millisecond with <code>uuidv7()</code> defaults. What is
+          guaranteed about their relative order?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              They order by commit time, because one backend coordinates
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Nothing at all, because monotonicity stops at the backend
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              They order by insert time, because clocks are shared
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              They order by transaction id, because sequences are global
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The counter lives in <code>rand_a</code> and is per backend, so two
+          connections generating inside the same millisecond produce values whose
+          order is decided by random-ish bits rather than by time. This is fine
+          for the index — both still land near the right edge — and not fine for
+          any query that sorts by id expecting creation order. That is the whole
+          distinction, and it is the one the release note's “temporally sortable”
+          obscures.
+        </p>
+      </div>
+
+      <h2>The function catalogue</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>uuidv7([ shift interval ])</code> → <code>uuid</code> —
+            Generates a version 7 (time-ordered) UUID. The timestamp is computed
+            using UNIX timestamp with millisecond precision + sub-millisecond
+            timestamp + random. The optional parameter <em>shift</em> will shift
+            the computed timestamp by the given <code>interval</code>. […] The
+            shifted timestamp must fall within the range supported by UUID
+            version 7's 48-bit millisecond timestamp field: from 1970-01-01
+            00:00:00 UTC to approximately year 10889.
+          </p>
+          <p>
+            <code>uuid_extract_timestamp(uuid)</code> →
+            <code>timestamp with time zone</code> — Extracts a
+            <code>timestamp with time zone</code> from a UUID of version 1 or 7.
+            For other versions, this function returns null.
+            <strong
+              >Note that the extracted timestamp is not necessarily exactly equal
+              to the time the UUID was generated; this depends on the
+              implementation that generated the UUID.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/functions-uuid.html"
+            >§9.14</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        That caveat matters more than it looks: the timestamp is whatever the
+        generator put there. For a client-generated id,
+        <code>uuid_extract_timestamp()</code> reports the
+        <strong>client's</strong> clock — a point lesson 12 returns to.
+      </p>
+
+      <h2>What the <code>uuid</code> type is actually for</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This identifier is a 128-bit quantity that is generated by an
+            algorithm chosen to make it very unlikely that the same identifier
+            will be generated by anyone else in the known universe using the same
+            algorithm. <strong>Therefore, for distributed systems, these
+            identifiers provide a better uniqueness guarantee than sequence
+            generators, which are only unique within a single database.</strong>
+          </p>
+          <p>
+            PostgreSQL provides native support for generating UUIDs using the
+            UUIDv4 and UUIDv7 algorithms. Alternatively, UUID values can be
+            generated outside of the database using any algorithm.
+            <strong
+              >The data type <code>uuid</code> can be used to store any UUID,
+              regardless of the origin and the UUID version.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/datatype-uuid.html"
+            >§8.12</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Two things worth extracting</span>
+        <p>
+          <strong>The stated rationale is uniqueness without coordination.</strong>
+          It is not unguessability, and it is not security. The project's own
+          documentation never argues for UUIDs on security grounds — lesson 11
+          sources that argument to RFC 9562 instead, which is where the normative
+          language actually lives.
+        </p>
+        <p>
+          <strong>The type is a container, not a validator.</strong> “Any UUID,
+          regardless of the origin and the UUID version” is what makes it
+          possible to store a ULID, a Snowflake, or a TypeID's suffix in a
+          <code>uuid</code> column. Lesson 9 depends on this, and so does one of
+          its traps.
+        </p>
+      </div>
+
+      <h2>What is left of the case for extensions</h2>
+
+      <p>
+        <strong><code>pgcrypto</code></strong> — its UUID function is now a
+        shim:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>gen_random_uuid()</code> returns uuid — Returns a version 4
+            (random) UUID. <strong>(Obsolete, this function internally calls the
+            core function of the same name.)</strong>
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/current/pgcrypto.html"
+            >F.26</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Installing <code>pgcrypto</code> <em>for UUID generation</em> has been
+        pointless since 13. It remains the source of
+        <code>gen_random_bytes(count integer)</code> — “cryptographically strong
+        random bytes”, at most 1024 per call.
+      </p>
+
+      <p>
+        <strong><code>uuid-ossp</code></strong> — still the only in-tree source
+        of v1, v3 and v5, and its own page now says: “This module is only
+        necessary for special requirements beyond what is available in core
+        PostgreSQL.” Its <code>uuid_generate_v1()</code> entry carries a warning
+        lesson 11 will build on:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Note that UUIDs of this kind reveal the identity of the computer that
+            created the identifier and the time at which it did so, which might
+            make it unsuitable for certain security-sensitive applications.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/current/uuid-ossp.html"
+            >F.47</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        <strong><code>pg_uuidv7</code></strong> (third-party, MPL-2.0) — its own
+        README now narrows its remit: “As of Postgres 18, there is a built in
+        <code>uuidv7()</code> function, however it does not include all of the
+        functionality below.” The one function with no core equivalent is the
+        range-boundary constructor:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code
+              >-- for date range queries set the second argument to true to zero
+              the random bits</code
+            ><br />
+            <code
+              >SELECT uuid_timestamptz_to_v7('2023-01-02 04:26:40.637+00',
+              true);</code
+            ><br />
+            <code>→ 018570bb-4a7d-7000-8000-000000000000</code>
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://github.com/fboulnois/pg_uuidv7"
+            >fboulnois/pg_uuidv7</a
+          >
+          README. Not archived; latest release v1.7.0 (2025-10-13), roughly
+          annual cadence.
+        </figcaption>
+      </figure>
+
+      <p>
+        That is how you turn a time range into a
+        <code>WHERE id &gt;= … AND id &lt; …</code> predicate against the primary
+        key index, with no secondary index on <code>created_at</code> at all. It
+        is genuinely useful, and PG18 core documents no equivalent.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Availability usually decides this, not performance</span>
+        <p>
+          From first-party vendor documentation: <strong>AWS RDS and Aurora</strong>
+          list <code>uuid-ossp</code> (1.1) and <code>pgcrypto</code>;
+          <code>pg_uuidv7</code> does <strong>not</strong> appear in the
+          supported-extensions list for any major version. <strong>Neon</strong>
+          lists <code>pg_uuidv7</code> at 1.6 for PG14–18. <strong>Supabase</strong>
+          does not enumerate its extensions, so nothing can be concluded either
+          way — and this topic claims nothing either way.
+        </p>
+        <p>
+          A schema that depends on <code>uuid_timestamptz_to_v7()</code> is not
+          portable to RDS. That is a sharper constraint than any performance
+          argument in this topic.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You are on PostgreSQL 15 and want UUIDv4 primary keys. What do you need
+          to install?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Nothing, because core itself has supplied it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The <code>pgcrypto</code> module, for its generation function
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The <code>uuid-ossp</code> module, for that same function
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The <code>pg_uuidv7</code> extension, for its v7 function
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>gen_random_uuid()</code> moved into core in PostgreSQL 13, and
+          <code>pgcrypto</code>'s version has been an explicitly “obsolete” shim
+          calling it ever since. The advice to install an extension for v4
+          generation was correct before 2020 and has been wrong since — which is
+          a good illustration of why every claim in this topic is dated to a
+          release.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now know what the engine can supply.
+        <a href="0007-identity-columns-and-gaps.html">Lesson 7</a> takes the
+        first candidate seriously: the <code>bigint</code> identity column, which
+        is the narrowest and best-behaved key available, and whose two real
+        limits are both worth being able to state exactly.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=78c5e141e9c139fc2ff36a220334e4aa25e1b0eb"
+              >Commit <code>78c5e141e</code>, “Add UUID version 7 generation
+              function”</a
+            >
+            — read the commit message in full, then look at the diff. It is a
+            small, readable patch, and it is the difference between knowing that
+            <code>uuidv7()</code> is “temporally sortable” and knowing exactly
+            which twelve bits make it so and how far that promise reaches.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If you run on a managed platform, ask it to
+          check that platform's current extension list before you plan around
+          <code>pg_uuidv7</code> — the figures above were read at one point in
+          time, and availability is exactly the kind of fact that moves.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 7, try to state the backend-scope caveat out loud from
+            memory, including why it does not matter for the B-tree and does
+            matter for <code>ORDER BY id</code>. That pair of consequences from
+            one fact is the shape most of this topic takes.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0005-churn-and-immutability.html">5. Churn, and why a key must never change</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0007-identity-columns-and-gaps.html">7. Identity columns and the gap myth</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

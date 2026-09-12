@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>12. Collisions, and generating away from the database — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0012</span>
+        <h1>Collisions, and generating away from the database</h1>
+        <p class="lesson-mission">
+          Two things at once: a question every primary source deliberately
+          refuses to answer, and the capability that is the honest reason to
+          accept a 128-bit key at all. The refusal is as instructive as the
+          capability.
+        </p>
+      </header>
+
+      <p class="lead">
+        “A billion a second for a century” is the figure everyone reaches for
+        when asked about UUID collisions. It is worth knowing where that number
+        is <em>not</em> from.
+      </p>
+
+      <h2>What the specifications refuse to say</h2>
+
+      <div class="aside warning">
+        <span class="label">Neither specification states a numeric collision probability</span>
+        <p>
+          RFC 9562 never mentions the birthday problem — a full-text search of
+          the canonical text returns <strong>zero</strong> hits for “birthday”,
+          and “probability” appears four times, never attached to a figure. The
+          ULID spec gives no probability either.
+        </p>
+      </div>
+
+      <p>What the RFC offers instead is a framing:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Low Impact:</strong> A UUID collision generated a duplicate
+            log entry, which results in incorrect statistics derived from the
+            data. […]
+          </p>
+          <p>
+            <strong>High Impact:</strong> A duplicate key causes an airplane to
+            receive the wrong course, which puts people's lives at risk. In this
+            scenario, there is no margin for error. Collisions must be avoided:
+            failure is unacceptable.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §6.7</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>and a caution against over-claiming:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Although
+            <strong
+              >true global uniqueness is impossible to guarantee without a shared
+              knowledge scheme</strong
+            >, a shared knowledge scheme is not required by a UUID to provide
+            uniqueness for practical implementation purposes.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9562 §6.8.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Why the refusal is the right call</span>
+        <p>
+          A collision probability is meaningless without a generation rate, a
+          time horizon, a number of generators, and — above all — an impact
+          class. The RFC substitutes a question you can actually answer (what
+          does a collision cost me?) for one you cannot answer generically. That
+          is a deliberate editorial choice, not an oversight, and it is the same
+          instinct that keeps benchmark numbers out of this whole topic.
+        </p>
+      </div>
+
+      <h2>What can be stated honestly</h2>
+
+      <p>
+        The bit counts are quoted facts, so the entropy each format carries can
+        be stated flatly:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Quoted, not derived.</caption>
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Bits not determined by time or format</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>UUIDv4</td>
+              <td>122, <strong>once</strong></td>
+              <td>RFC 9562 §5.4: “122 bits total”</td>
+            </tr>
+            <tr>
+              <td>UUIDv7</td>
+              <td>74, <strong>per millisecond</strong></td>
+              <td>RFC 9562 §5.7: “the remaining 74 bits”</td>
+            </tr>
+            <tr>
+              <td>ULID</td>
+              <td>80, <strong>per millisecond</strong></td>
+              <td>ULID spec: “Randomness — 80 bits”</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The per-millisecond framing is the structural reason a v7 can be safe
+        with fewer random bits than a v4: <strong>the timestamp partitions the
+        space</strong>, so only ids born in the same millisecond can possibly
+        collide. ULID advertises this as “1.21e+24 unique ULIDs per millisecond”,
+        which is 2⁸⁰.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">>>> 2 ** 80
+1208925819614629174706176        # ULID's "1.21e+24 per millisecond"
+>>> 2 ** 74
+18889465931478580854784          # UUIDv7, per millisecond
+>>> 2 ** 122
+5316911983139663491615228241121378304   # UUIDv4, total
+
+# Whatever collision arithmetic you do from these, do it explicitly
+# and label it as yours. The specifications decline to do it for you,
+# and that refusal is deliberate.</code></pre>
+      </div>
+
+      <p>The practical mitigation is the same regardless, and it is lesson 7's:</p>
+
+      <div class="aside insight">
+        <span class="label">The only thing that actually guarantees uniqueness</span>
+        <p>
+          <strong>A unique index.</strong> Not the format, not the bit count, not
+          the RNG. And recall the manual's warning from lesson 7 — even an
+          identity column does not give you uniqueness: “a
+          <code>PRIMARY KEY</code> or <code>UNIQUE</code> constraint is needed for
+          that.”
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can a UUIDv7 be safe with 74 random bits when a UUIDv4 uses 122?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Its version bits add entropy the format specifies separately
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its generator reseeds the pool between each successive call
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Its timestamp field divides the space into millisecond buckets
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its values are checked against the index before returning
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Two v7 values born in different milliseconds cannot collide at all,
+          because their leading 48 bits differ. So the 74 bits only have to
+          separate values generated within the same millisecond, where a v4's 122
+          bits have to separate every value ever generated. Version and variant
+          bits are fixed and carry no entropy, and nothing checks the index before
+          the value is returned.
+        </p>
+      </div>
+
+      <h2>The capability a sequence cannot offer</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            One of the main reasons for using UUIDs is that no centralized
+            authority is required to administer them […] As a result, generation
+            on demand can be completely automated
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        This is the thing a <code>bigint</code> identity column cannot do at any
+        price, and it is the honest reason to reach for a 128-bit id. A client, a
+        mobile app offline, or three services writing to different shards can each
+        mint an identifier with no round trip and no coordination.
+        <code>nextval()</code> cannot: it is a call into one database.
+      </p>
+
+      <p>Two concrete consequences worth designing around:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>What offline generation actually buys.</caption>
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>How it works</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Retry without duplication</strong></td>
+              <td>
+                If the client generates the id, a retried <code>INSERT</code>
+                hits a unique violation instead of creating a second row. The
+                identifier <em>is</em> the deduplication mechanism, because the
+                client chose it before the first attempt.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Batch construction</strong></td>
+              <td>
+                An object graph — order, line items, shipment — can be built
+                entirely in memory with all foreign keys already wired, then
+                inserted in one round trip, because the parent id existed before
+                the parent row did.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The RFC's guidance is narrower than folklore</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            implementations should utilize the pseudorandom Node ID option if
+            additional collision resistance for distributed UUID generation is a
+            requirement. […] Implementations that choose to leverage an embedded
+            node id <strong>SHOULD</strong> utilize UUIDv8. The node id
+            <strong>SHOULD NOT</strong> be an IEEE 802 MAC address per Section 8.
+          </p>
+          <p>
+            <strong>Centralized Registry:</strong> […] Shared knowledge schemes
+            with central/global registries are outside the scope of this
+            specification and are <strong>NOT RECOMMENDED</strong>.
+          </p>
+          <p>
+            Distributed applications generating UUIDs at a variety of hosts
+            <strong>MUST</strong> be willing to rely on the random number source
+            at all hosts.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9562 §6.4.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">That last sentence is a trust statement, not a technical one</span>
+        <p>
+          If browsers or mobile devices mint your ids, you have accepted
+          <strong>every one of those devices' RNGs</strong> into your uniqueness
+          argument. And since the value arrives over the wire, you must treat it
+          as hostile input and constrain it exactly as you would any other
+          client-supplied field — lesson 11's fork caveat is one way this goes
+          wrong, and a malicious client simply sending a chosen value is another.
+        </p>
+      </div>
+
+      <p>
+        Against which the RFC sets a preference cutting the other way for a
+        single database, quoted in lesson 8: “Applications using a monolithic
+        database may find using database-generated UUIDs […] provides the best
+        UUID monotonicity.” And per lesson 6, even server-side generation in
+        PostgreSQL orders strictly only within one backend.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does RFC 9562 §6.4 require of an application whose clients
+          generate their own UUIDs?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A central registry, holding every id any host issued
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A willingness to rely on every host's random source
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A node identifier, embedded in every value per host
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A validation step, which rejects any value seen before
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          “Distributed applications generating UUIDs at a variety of hosts MUST be
+          willing to rely on the random number source at all hosts” — a trust
+          statement about machines you may not control. Central registries are
+          explicitly NOT RECOMMENDED, an embedded node id is only a SHOULD for the
+          case where extra collision resistance is needed, and rejecting values seen
+          before is duplicate detection rather than a uniqueness argument — it
+          tells you nothing about the values you have not seen.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Every candidate and every criterion is now on the table, and lesson 1's
+        problem is still unsolved: one column, two jobs, and no way to satisfy
+        both.
+      </p>
+
+      <p>
+        <a href="0013-the-dual-identifier-pattern.html">Lesson 13</a> stops
+        choosing. It gives the row two identifiers, and — unlike most write-ups
+        of that pattern — prints the bill.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+              >RFC 9562 §6.4 through §6.9</a
+            >
+            — five short subsections covering multi-node generation, collision
+            impact, global uniqueness and the CSPRNG requirement. Read them
+            together. The thing to notice is how consistently the document
+            declines to give you a number and instead tells you what question to
+            ask — which is unusual, and deliberate.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If you want the collision arithmetic anyway
+          — and it is a reasonable thing to want — ask for it explicitly, with the
+          generation rate and horizon stated as inputs. What you must not do is
+          quote the result as though a specification said it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 13, try to state the two things offline generation buys
+            you, and the one thing it costs you. The cost is the sentence about
+            trusting every host's RNG.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0011-guessability.html">11. Guessability, and a trap between two specs</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0013-the-dual-identifier-pattern.html">13. The dual-identifier pattern</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

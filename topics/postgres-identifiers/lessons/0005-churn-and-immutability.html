@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>5. Churn, and why a key must never change — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0005</span>
+        <h1>Churn, and why a key must never change</h1>
+        <p class="lesson-mission">
+          The usual argument for immutable keys is aesthetic — “an identifier
+          shouldn't mean anything”. There is a mechanical one that is far
+          stronger, and it is one documented paragraph long. This lesson closes
+          out the mechanics with it, and with the tools that make all of lesson
+          2's arithmetic unnecessary.
+        </p>
+      </header>
+
+      <p class="lead">
+        So far the topic has priced writing a key once. Updating one is a
+        different and much larger bill, and PostgreSQL prints it explicitly in
+        the documentation for an optimisation you silently lose.
+      </p>
+
+      <h2>HOT: the mechanical argument</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            To help reduce the overhead of updates, PostgreSQL has an
+            optimization called heap-only tuples (HOT). This optimization is
+            possible when:
+          </p>
+          <ul>
+            <li>
+              <strong
+                >The update does not modify any columns referenced by the table's
+                indexes</strong
+              >, not including summarizing indexes. […]
+            </li>
+            <li>
+              There is sufficient free space on the page containing the old row
+              for the updated row.
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/storage-hot.html"
+            >§66.7</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Read the first condition again</span>
+        <p>
+          It says <em>any</em> columns referenced by <em>the table's</em>
+          indexes — not “the index you are thinking about”. An indexed column
+          that changes forfeits HOT for that row <strong>and</strong> forces a
+          new index entry in <strong>every</strong> index on the table, including
+          the ones that have nothing to do with the column you changed.
+        </p>
+      </div>
+
+      <p>
+        That is the argument. It is not about elegance, and it does not depend on
+        anyone's taste in schema design. A mutable key is a standing tax on every
+        update to the row, paid across every index the table carries.
+      </p>
+
+      <h2>What happens when the key has children</h2>
+
+      <p>
+        Now add foreign keys. If a referenced value changes,
+        <code>ON UPDATE CASCADE</code> exists to keep the children consistent:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Analogous to <code>ON DELETE</code> there is also
+            <code>ON UPDATE</code> which is invoked when a referenced column is
+            changed (updated). […] In this case, <code>CASCADE</code> means that
+            the updated values of the referenced column(s) should be copied into
+            the referencing row(s).
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK"
+            >§5.5.5</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        “Copied into the referencing row(s)” means rewriting every child row, in
+        every child table, inside the transaction that changed one value — and
+        by the HOT rule above, each of those rewrites forfeits HOT and touches
+        every index on the child table.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The shape of the failure</span>
+        <p>
+          One user correcting a typo in their email address becomes an unbounded
+          write amplification: every order, every order line, every audit row
+          that referenced that address, rewritten in one transaction, each losing
+          HOT and updating every index it sits in. Lesson 10 is about why anyone
+          would have built that schema in the first place.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Updating one indexed column on a row forfeits HOT. What else does it
+          cost?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A new entry in that one particular index only
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A full rewrite of the entire table heap file
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A complete rebuild of the visibility map for it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A new entry in each of the table's indexes
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Losing HOT means a genuinely new heap tuple, and every index on the
+          table must now point at it — not only the index containing the column
+          you changed. That is why the condition is worded as “any columns
+          referenced by the table's indexes”: HOT is a property of the whole row,
+          not of one index.
+        </p>
+      </div>
+
+      <h2>Two features that absorb churn</h2>
+
+      <p>
+        Since version 13 PostgreSQL has had two mechanisms that soften version
+        churn in B-trees. Both matter later, so they are worth meeting here.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            B-Tree indexes incrementally delete version churn index tuples by
+            performing bottom-up index deletion passes. Each deletion pass is
+            triggered in reaction to an anticipated “version churn page split”.
+            […] <strong>It's quite possible that the on-disk size of certain
+            indexes will never increase by even one single page/block despite
+            constant version churn from UPDATEs.</strong>
+          </p>
+        </blockquote>
+        <figcaption>
+          Bottom-up index deletion, PostgreSQL 14+.
+          <a class="citation" href="https://www.postgresql.org/docs/current/btree.html"
+            >§65.1.4.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            It is sometimes possible for unique indexes (as well as unique
+            constraints) to use deduplication. This allows leaf pages to
+            temporarily “absorb” extra version churn duplicates. Deduplication in
+            unique indexes augments bottom-up index deletion, especially in cases
+            where a long-running transaction holds a snapshot that blocks garbage
+            collection.
+          </p>
+        </blockquote>
+        <figcaption>
+          Deduplication, PostgreSQL 13+, “enabled by default”.
+          <a class="citation" href="https://www.postgresql.org/docs/current/btree.html"
+            >§65.1.4.3</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        A primary key has no logical duplicates, so deduplication's usual space
+        saving is nil. The second use named above does apply, though — and one
+        restriction bears directly on an optimisation lesson 13 will offer:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            There is one further implementation-level restriction that applies
+            regardless of the operator class or collation used:
+            <strong
+              ><code>INCLUDE</code> indexes can never use
+              deduplication.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/current/btree.html"
+            >§65.1.4.3</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>TOAST is a non-issue</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The TOAST management code is triggered only when a row value to be
+            stored in a table is wider than <code>TOAST_TUPLE_THRESHOLD</code>
+            bytes (normally 2 kB).
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/storage-toast.html"
+            >§66.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        <code>bigint</code> and <code>uuid</code> are fixed-length and not
+        TOAST-able at all. A 26- or 36-character text identifier is TOAST-able in
+        principle but sits two orders of magnitude below the trigger. TOAST never
+        enters this decision — mentioned here only so that when you meet it in an
+        argument you can dismiss it with a number.
+      </p>
+
+      <h2>Stop arguing, measure</h2>
+
+      <p>
+        The manual is candid about the limits of fillfactor tuning, in both
+        directions:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            B-tree indexes on tables where many inserts and/or updates are
+            anticipated can benefit from lower fillfactor settings at CREATE
+            INDEX time […] Values in the range of 50 - 90 can usefully “smooth
+            out” the rate of page splits during the early life of the B-tree
+            index
+          </p>
+          <p>
+            In other specific cases it might be useful to increase fillfactor to
+            100 […] You should only consider this when you are completely sure
+            that the table is static (i.e. that it will never be affected by
+            either inserts or updates). A fillfactor setting of 100 otherwise
+            risks harming performance: <strong>even a few updates or inserts will
+            cause a sudden flood of page splits.</strong>
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/sql-createindex.html"
+            >CREATE INDEX</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>And on space that does not come back on its own:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            B-tree index pages that have become completely empty are reclaimed
+            for re-use. However, there is still a possibility of inefficient use
+            of space: if all but a few index keys on a page have been deleted,
+            the page remains allocated. Therefore, a usage pattern in which most,
+            but not all, keys in each range are eventually deleted will see poor
+            use of space. For such usage patterns, periodic reindexing is
+            recommended.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/routine-reindex.html"
+            >§24.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Rather than argue about any of it,
+        <code>bt_multi_page_stats(idx, 1, -1)</code> gives per-leaf
+        <code>live_items</code>, <code>avg_item_size</code> and
+        <code>free_size</code> — which answers “how wide is my index entry,
+        really” empirically and makes the whole of lesson 2 unnecessary for a
+        database you actually have.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Two cautions on measuring</span>
+        <p>
+          <strong>Access is restricted.</strong> <code>pgstattuple</code> defaults
+          to the <code>pg_stat_scan_tables</code> role, and of
+          <code>pageinspect</code> the manual says “All of these functions may be
+          used only by superusers.”
+        </p>
+        <p>
+          <strong>Two of the headline numbers are undefined.</strong>
+          <code>pgstatindex</code> reports <code>avg_leaf_density</code> —
+          “Average density of leaf pages” — and <code>leaf_fragmentation</code> —
+          “Leaf page fragmentation”. Those one-line descriptions are the
+          <em>complete</em> documentation. The manual does not say how either is
+          computed, gives no units for <code>leaf_fragmentation</code>, and names
+          no threshold for “bad”. Anyone quoting a target number for these is not
+          quoting PostgreSQL.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Someone tells you your index is unhealthy because
+          <code>leaf_fragmentation</code> is above 20. What is wrong with that?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The figure applies only to a non-unique B-tree index
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The figure is reported per page, never per index
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The manual defines no units and no healthy threshold
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The function needs superuser rights to run at all
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          “Leaf page fragmentation” is the entire documented definition — no
+          computation, no units, no threshold. So 20 cannot be compared against
+          anything PostgreSQL says, and any target figure for it came from
+          somewhere else. <code>pgstatindex</code> is in
+          <code>pgstattuple</code>, which defaults to the
+          <code>pg_stat_scan_tables</code> role rather than requiring superuser;
+          it is <code>pageinspect</code> that is superuser-only.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        The mechanics are done. You can now price a key's width, its insert
+        pattern, and its mutability, and you know which of those claims are
+        documented and which are inferred.
+      </p>
+
+      <p>
+        <a href="0006-what-postgres-can-generate.html">Lesson 6</a> turns to
+        supply: what PostgreSQL itself can mint, what shipped in which release,
+        and a monotonicity guarantee that is considerably narrower than the way
+        it is usually quoted.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/storage-hot.html"
+              >PostgreSQL 18 manual, §66.7 “Heap-Only Tuples (HOT)”</a
+            >
+            — one screen long, and it contains the strongest argument in this
+            whole topic. Read the two conditions slowly and notice that the first
+            one says “the table's indexes”, plural. That plural is the entire
+            case against mutable keys.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking about: whether bottom-up index
+          deletion weakens the immutability argument. It genuinely does soften
+          update churn — the manual's claim is strong — but it is aimed at
+          version churn from ordinary <code>UPDATE</code>s, not at a cascading
+          key change, and that distinction is worth working through rather than
+          taking on trust.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This closes the first half of the topic. A longer pause here is well
+            spent. Before lesson 6, try to state the HOT condition from memory —
+            and in particular the word that makes it expensive.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0004-no-clustered-index.html">4. There is no clustered index</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0006-what-postgres-can-generate.html">6. What PostgreSQL can generate</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

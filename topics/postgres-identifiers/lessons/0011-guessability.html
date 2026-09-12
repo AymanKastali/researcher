@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>11. Guessability, and a trap between two specs — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0011</span>
+        <h1>Guessability, and a trap between two specs</h1>
+        <p class="lesson-mission">
+          The security argument is the one most people start with, and its
+          normative source says something much narrower — and much stricter —
+          than the argument usually claims. This lesson ends with a finding that
+          exists only when you read two specifications against each other.
+        </p>
+      </header>
+
+      <p class="lead">
+        Note first where this argument does <em>not</em> come from. PostgreSQL
+        documents nothing about enumeration, guessability, or id exposure; the
+        stated rationale for the <code>uuid</code> type is uniqueness in
+        distributed systems (lesson 6). The normative language lives in RFC 9562,
+        and it is four paragraphs long.
+      </p>
+
+      <h2>What the RFC actually says</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Implementations <strong>SHOULD NOT</strong> assume that UUIDs are
+            hard to guess. For example, they <strong>MUST NOT</strong> be used as
+            security capabilities (identifiers whose mere possession grants
+            access). Discovery of predictability in a random number source will
+            result in a vulnerability.
+          </p>
+          <p>
+            Implementations <strong>MUST NOT</strong> assume that it is easy to
+            determine if a UUID has been slightly modified in order to redirect a
+            reference to another object. Humans do not have the ability to easily
+            check the integrity of a UUID by simply glancing at it.
+          </p>
+          <p>
+            MAC addresses pose inherent security risks around privacy and
+            <strong>SHOULD NOT</strong> be used within a UUID. Instead CSPRNG data
+            <strong>SHOULD</strong> be selected from a source with sufficient
+            entropy […]
+          </p>
+          <p>
+            Timestamps embedded in the UUID do pose a
+            <strong>very small attack surface</strong>. The timestamp in
+            conjunction with an embedded counter does signal the order of creation
+            for a given UUID and its corresponding data but does not define
+            anything about the data itself or the application as a whole.
+            <strong
+              >If UUIDs are required for use with any security operation within
+              an application context in any shape or form, then UUIDv4 SHOULD be
+              utilized.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9562.html#section-8"
+            >RFC 9562 §8, Security Considerations</a
+          >. That is the section in full.
+        </figcaption>
+      </figure>
+
+      <h2>Three consequences</h2>
+
+      <p>
+        <strong
+          >A UUID is not an authorisation mechanism, and the RFC says so
+          normatively.</strong
+        >
+        “MUST NOT be used as security capabilities (identifiers whose mere
+        possession grants access)” is unambiguous.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The most commonly misapplied idea in this subject</span>
+        <p>
+          If an object is reachable by anyone holding its id, that is a
+          <strong>missing ownership check</strong>. Swapping <code>bigint</code>
+          for <code>uuid</code> does not fix it — it hides it behind a larger
+          search space. Teams migrate to UUIDs <em>instead of</em> adding the
+          check, and the RFC forbids exactly that reasoning.
+        </p>
+      </div>
+
+      <p class="small-print">
+        The language hardened between revisions. RFC 4122 §6 said “Do not assume
+        that UUIDs are hard to guess”; RFC 9562 restates it as
+        <strong>SHOULD NOT</strong> / <strong>MUST NOT</strong>. That is a
+        deliberate strengthening by the working group, not a rewording.
+      </p>
+
+      <p>
+        <strong>Timestamp exposure is real, and the RFC rates it small.</strong>
+        A UUIDv7 carries a plaintext 48-bit millisecond timestamp in its leading
+        bits (lesson 8), so anyone holding one learns when the row was created,
+        and anyone holding two learns their order. The RFC's assessment is the
+        paragraph above; it never uses the words “leak” or “enumeration”.
+      </p>
+
+      <p>
+        Whether that matters is a question about your domain, not about the
+        format. A <code>user_id</code> revealing signup time is usually harmless.
+        An <code>invoice_id</code> that lets a competitor measure your order
+        volume by creating two accounts an hour apart is not.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">And note who else it applies to</span>
+        <p>
+          That attack works against <strong>any</strong> time-ordered scheme,
+          including <code>bigint</code>, ULID and Snowflake. It is the price of
+          sortability, not a defect peculiar to v7. Lesson 3 is where you learned
+          why you wanted sortability; this is its bill.
+        </p>
+      </div>
+
+      <p>
+        <strong>The RFC names its own escape hatch</strong>: UUIDv4, for anything
+        security-adjacent — accepting the index behaviour of lesson 3 for that one
+        index.
+      </p>
+
+      <h2>Unguessability is a property of your RNG</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Implementations <strong>SHOULD</strong> utilize a cryptographically
+            secure pseudorandom number generator (CSPRNG) to provide values that
+            are both difficult to predict (“unguessable”) and have a low
+            likelihood of collision (“unique”). […]
+            <strong
+              >Take care to ensure the CSPRNG state is properly reseeded upon
+              state changes, such as process forks</strong
+            >, to ensure proper CSPRNG operation.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §6.9</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The fork caveat is the practical one. A pre-forking application server
+        that seeds its RNG before forking hands every worker the same stream, and
+        the resulting “random” ids are neither unguessable
+        <em>nor unique</em>. The RFC calls this out by name because it is a
+        recurring bug, not a theoretical one.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A colleague proposes moving from <code>bigint</code> to
+          <code>uuid</code> ids so that customers cannot fetch each other's
+          orders. What does RFC 9562 §8 say about that?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It endorses the change, calling enumeration a real risk
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It permits the change, provided some CSPRNG is involved
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It defers the question, treating exposure as domain detail
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It forbids the reasoning, since possession must not grant
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          UUIDs “MUST NOT be used as security capabilities (identifiers whose
+          mere possession grants access)”. If holding the id is what lets a
+          customer fetch the order, the defect is a missing ownership check, and
+          a wider id only makes it harder to notice. Opaque ids are perfectly good
+          <em>defence in depth behind</em> such a check — but that is a different
+          claim from the one being made.
+        </p>
+      </div>
+
+      <h2>The trap between two specifications</h2>
+
+      <p>
+        This is the sharpest finding in the topic, and the thing to notice is
+        that <strong>both specifications are individually reasonable</strong>. It
+        exists only when you read them against each other.
+      </p>
+
+      <p>RFC 9562 offers a way to get ordering within a millisecond:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The increment value for every UUID generation is a random integer of
+            any desired length larger than zero. It ensures that the UUIDs retain
+            the required level of unguessability provided by the underlying
+            entropy. The increment value <strong>MAY</strong> be 1 when the number
+            of UUIDs generated in a particular period of time is important and
+            guessability is not an issue.
+            <strong
+              >However, incrementing the counter by 1 SHOULD NOT be used by
+              implementations that favor unguessability, as the resulting values
+              are easily guessable.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          RFC 9562 §6.2, “Monotonic Random (Method 2)”.
+        </figcaption>
+      </figure>
+
+      <p>And the ULID specification, defining its monotonic mode:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When generating a ULID within the same millisecond, we can provide
+            some guarantees regarding sort order. Namely, if the same millisecond
+            is detected,
+            <strong
+              >the <code>random</code> component is incremented by 1 bit in the
+              least significant bit position</strong
+            >
+            (with carrying).
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://github.com/ulid/spec">ULID spec</a>,
+          “Monotonicity”, with the worked example
+          <code>01BX5ZZKBKACTAV9WEVGEMMVRZ</code> →
+          <code>01BX5ZZKBKACTAV9WEVGEMMVS0</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The finding</span>
+        <p>
+          <strong
+            >ULID's monotonic factory is Method 2 with an increment of exactly
+            1</strong
+          >
+          — the construction RFC 9562 says SHOULD NOT be used where
+          unguessability matters.
+        </p>
+        <p>
+          The consequence is concrete: given one ULID from a monotonic generator,
+          the next one issued in that millisecond is not merely guessable, it is
+          <em>determined</em>. If you chose ULIDs as public identifiers partly
+          because they are hard to guess, monotonic mode removes that property for
+          any id sharing a millisecond with one an attacker holds.
+        </p>
+        <p class="small-print">
+          ULID has no security considerations section (lesson 9), so it issues no
+          warning of its own.
+        </p>
+      </div>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def decode(text: str) -> int:
+    value = 0
+    for char in text:
+        value = value * 32 + CROCKFORD.index(char)
+    return value
+
+
+def encode(value: int) -> str:
+    chars = []
+    for _ in range(26):
+        value, remainder = divmod(value, 32)
+        chars.append(CROCKFORD[remainder])
+    return "".join(reversed(chars))
+
+
+held = "01BX5ZZKBKACTAV9WEVGEMMVRZ"          # one value an attacker has
+print(encode(decode(held) + 1))               # the next one, in that millisecond
+# -> 01BX5ZZKBKACTAV9WEVGEMMVS0
+# Exactly the successor the ULID spec's own worked example prints.
+# No entropy was guessed. Adding one is the whole attack.</code></pre>
+      </div>
+
+      <p>
+        PostgreSQL's <code>uuidv7()</code> does not have this problem. Per lesson
+        6 it uses RFC 9562 §6.2 <em>Method 3</em> — sub-millisecond clock
+        precision in <code>rand_a</code> — leaving all 62 bits of
+        <code>rand_b</code> random on every call.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does ULID's monotonic mode undermine the reason many people chose
+          ULIDs?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It increments by one, so the successor is determined
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It drops the timestamp, so ordering silently stops working
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It shortens the field, so collisions become far likelier
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It reuses the value, so duplicates appear under load
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Within a millisecond the random component is incremented by exactly one
+          bit in the least significant position, so holding one value gives you
+          the next for free — no entropy is guessed. RFC 9562 §6.2 names this
+          construction and says SHOULD NOT use it where unguessability matters.
+          The timestamp still works, the field is not shortened, and no value is
+          reused; the ordering is real. It is the <em>unguessability</em> that
+          quietly goes.
+        </p>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The transferable skill</span>
+        <p>
+          Neither specification is wrong. ULID's monotonic mode does exactly what
+          it says; RFC 9562's Method 2 warning is clear. The defect appears only
+          in the <strong>gap between them</strong> — and gaps between
+          specifications are where a surprising share of real security problems
+          live. Reading two documents against each other is a habit worth keeping
+          well beyond this topic.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        One question has been circling since lesson 8 without an answer: how
+        likely is a collision, really?
+        <a href="0012-collisions-and-offline-generation.html">Lesson 12</a> finds
+        that both specifications deliberately refuse to tell you — and then covers
+        the capability that is the honest reason to accept a 128-bit key in the
+        first place.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.rfc-editor.org/rfc/rfc9562.html#section-8"
+              >RFC 9562 §8, “Security Considerations”</a
+            >
+            — the whole section is quoted above and is four paragraphs. Read it in
+            place anyway, then read §6.2 immediately afterwards. Holding both in
+            your head at once is what produces the finding in this lesson, and
+            doing that yourself is worth more than being shown it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A genuinely useful exercise: describe an
+          endpoint in your own system and work through whether its id is doing
+          authorisation work. The answer is uncomfortable more often than people
+          expect, and the fix is never a change of identifier type.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 12, try to state the ULID finding from memory as an
+            argument rather than a conclusion: what each specification says, and
+            why neither of them is at fault.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0010-natural-keys.html">10. Natural keys and the issuing authority</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0012-collisions-and-offline-generation.html">12. Collisions, and generating away from the database</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

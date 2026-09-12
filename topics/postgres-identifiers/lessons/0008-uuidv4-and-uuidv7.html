@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>8. UUIDv4 and UUIDv7 — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0008</span>
+        <h1>UUIDv4 and UUIDv7</h1>
+        <p class="lesson-mission">
+          Two formats, one bit-layout difference, and a trade that maps almost
+          exactly onto lesson 3. This is also where the RFC makes its single
+          quantitative claim — and where you get to apply the evidence grading to
+          a specification rather than to a blog post.
+        </p>
+      </header>
+
+      <p class="lead">
+        Both are 128 bits. Both store in a <code>uuid</code> column at 28 bytes
+        per index entry. Both can be generated anywhere, by anyone, with no
+        coordination. Everything that separates them is which of those 128 bits
+        are random and which are a clock.
+      </p>
+
+      <h2>UUIDv4: no structure at all</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            UUIDv4 is meant for generating UUIDs from truly random or pseudorandom
+            numbers.
+          </p>
+          <p>
+            […] an implementation MAY choose to randomly generate the exact
+            required number of bits for random_a, random_b, and random_c
+            (<strong>122 bits total</strong>) and then concatenate the version and
+            variant in the required position.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9562.html#section-5.4"
+            >RFC 9562 §5.4</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        122 random bits out of 128. The other six are the version nibble
+        (<code>0b0100</code>) and the two variant bits (<code>0b10</code>), both
+        of which <strong>MUST</strong> be set.
+      </p>
+
+      <p>
+        Everything good about v4 follows from having no structure: no timestamp,
+        no node id, nothing to correlate, nothing to leak. Everything bad about
+        it follows from the same property, and the RFC is blunt about it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            UUID versions that are not time ordered, such as UUIDv4 […] have poor
+            database-index locality. This means that new values created in
+            succession are not close to each other in the index; thus, they
+            require inserts to be performed at random locations.
+            <strong
+              >The resulting negative performance effects on the common
+              structures used for this (B-tree and its variants) can be
+              dramatic.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §2.1</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        In PostgreSQL terms, lesson 3 is what “dramatic” means here: about 50%
+        leaf density instead of 90%, a cold leaf page per insert, and the
+        write-amplification inference of lesson 4.
+      </p>
+
+      <h2>UUIDv7: a clock in the leading bits</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            UUIDv7 features a time-ordered value field derived from the widely
+            implemented and well-known Unix Epoch timestamp source, the number of
+            milliseconds since midnight 1 Jan 1970 UTC, leap seconds excluded.
+            […] UUIDv7 values are created by allocating a Unix timestamp in
+            milliseconds in the most significant 48 bits and filling the
+            remaining <strong>74 bits</strong>, excluding the required version and
+            variant bits, with random bits […]
+          </p>
+          <p>
+            Implementations <strong>SHOULD</strong> utilize UUIDv7 instead of
+            UUIDv1 and UUIDv6 if possible.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7"
+            >RFC 9562 §5.7</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>The field layout, verbatim:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>unix_ts_ms:</strong> 48-bit big-endian unsigned number of the
+            Unix Epoch timestamp in milliseconds […] Occupies bits 0 through 47
+            (octets 0-5).<br />
+            <strong>ver:</strong> The 4-bit version field […] set to 0b0111
+            (7).<br />
+            <strong>rand_a:</strong> 12 bits of pseudorandom data […] Occupies
+            bits 52 through 63.<br />
+            <strong>var:</strong> The 2-bit variant field […] set to 0b10.<br />
+            <strong>rand_b:</strong> The final 62 bits of pseudorandom data […]
+            Occupies bits 66 through 127.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9562 §5.7.</figcaption>
+      </figure>
+
+      <p>
+        Worth taking apart by hand once, because the layout explains both the
+        index behaviour and — in lesson 11 — the security posture:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">import uuid
+
+u = uuid.UUID("018570bb-4a7d-7123-8abc-000000000000")
+bits = u.int                                   # 128 bits, big-endian
+
+unix_ts_ms = bits >> 80                        # bits 0..47
+ver        = (bits >> 76) & 0xF                # bits 48..51
+rand_a     = (bits >> 64) & 0xFFF              # bits 52..63
+var        = (bits >> 62) & 0b11               # bits 64..65
+rand_b     = bits & ((1 << 62) - 1)            # bits 66..127
+
+assert ver == 7 and var == 0b10                # both MUST be set
+
+# The timestamp is in plain sight. Anyone holding the value reads it.
+print(unix_ts_ms)                              # -> 1672633600637
+# -> 2023-01-02 04:26:40.637+00, which is exactly the timestamp the
+#    pg_uuidv7 README fed in to produce this prefix (lesson 6).
+
+# 48 + 4 + 12 + 2 + 62 == 128, and 12 + 62 == 74 bits not fixed by format.</code></pre>
+      </div>
+
+      <h2>The RFC's one number, and how to grade it</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Time-ordered monotonic UUIDs benefit from greater database-index
+            locality because the new values are near each other in the index. As
+            a result, objects are more easily clustered together for better
+            performance. <strong>The real-world differences in this approach of
+            index locality versus random data inserts can be one order of
+            magnitude or more.</strong>
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §6.11</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Two cautions on that sentence</span>
+        <p>
+          <strong>It is unattributed and unquantified.</strong> No experiment, no
+          workload, no engine is named. It is the only magnitude claim in any
+          primary source in this entire topic, which is exactly why it gets
+          repeated everywhere.
+        </p>
+        <p>
+          <strong>It is written for engines that cluster.</strong> “Objects are
+          more easily clustered together” describes the mechanism lesson 4 showed
+          PostgreSQL does not have. Treat it as the RFC's
+          <em>motivation for the format</em>, not as a PostgreSQL benchmark.
+        </p>
+      </div>
+
+      <p>
+        This is the topic's evidence grading applied to a standards document, and
+        it is worth noticing that the answer is the same as for a blog post: a
+        confident sentence with no experiment behind it does not become an
+        experiment by appearing in an RFC.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          RFC 9562 §6.11 says index locality can be worth “one order of magnitude
+          or more”. How should that be used?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              As motivation only, since no workload or engine appears
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              As a benchmark, since a standards document published it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              As a floor, since real workloads usually exceed estimates
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              As an error, since the sentence contradicts other sections
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The sentence names no experiment, no workload and no engine, and its
+          stated mechanism — objects “clustered together” — is one PostgreSQL
+          does not implement. It explains why the format was designed, which is a
+          perfectly good thing for an RFC to do. It is not wrong; it is simply
+          not a measurement, and quoting it as one is the single most common
+          sourcing error in this subject.
+        </p>
+      </div>
+
+      <h2>Storage advice you get for free</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            For many applications, such as databases, storing UUIDs as text is
+            unnecessarily verbose, requiring 288 bits to represent 128-bit UUID
+            values. Thus, where feasible, UUIDs <strong>SHOULD</strong> be stored
+            within database applications as the underlying 128-bit binary value.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+            >RFC 9562 §6.13</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The most expensive mistake in this area</span>
+        <p>
+          PostgreSQL's <code>uuid</code> type stores the binary value. Putting
+          UUIDs in a <code>text</code> column instead is
+          <strong>not a UUID decision, it is a storage mistake</strong>: by
+          lesson 2 it takes the index entry from 28 bytes to 44, more than
+          doubling the leaf pages required, for no benefit whatsoever. It is also
+          the single most common thing this topic will let you spot in someone
+          else's schema.
+        </p>
+      </div>
+
+      <h2>The trade, side by side</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Everything that differs, and the lesson that priced it.
+          </caption>
+          <thead>
+            <tr>
+              <th></th>
+              <th>UUIDv4</th>
+              <th>UUIDv7</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Bits not fixed by format</td>
+              <td>122, once</td>
+              <td>74, per millisecond</td>
+            </tr>
+            <tr>
+              <td>Index entry</td>
+              <td>28 bytes</td>
+              <td>28 bytes</td>
+            </tr>
+            <tr>
+              <td>Leaf density it settles at</td>
+              <td>~50% (lesson 3)</td>
+              <td>~90% (lesson 3)</td>
+            </tr>
+            <tr>
+              <td>Entries per leaf, derived</td>
+              <td>~145</td>
+              <td>~262</td>
+            </tr>
+            <tr>
+              <td>Reveals creation time?</td>
+              <td>No</td>
+              <td>Yes, to the millisecond</td>
+            </tr>
+            <tr>
+              <td>RFC's own recommendation</td>
+              <td>
+                “If UUIDs are required for use with any security operation …
+                UUIDv4 SHOULD be utilized” (§8)
+              </td>
+              <td>
+                “SHOULD utilize UUIDv7 instead of UUIDv1 and UUIDv6 if possible”
+                (§5.7)
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Notice that the two recommendations are not in conflict. §5.7 is about
+        which <em>time-ordered</em> version to use; §8 is about what to use when
+        the identifier is security-adjacent. Lesson 11 is where that second one
+        gets its proper treatment.
+      </p>
+
+      <p>One more preference, from §6.13, which cuts against lesson 12:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Applications using a monolithic database may find using
+            database-generated UUIDs (as opposed to client-generated UUIDs)
+            provides the best UUID monotonicity.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9562 §6.13.</figcaption>
+      </figure>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A UUIDv7 and a UUIDv4 occupy the same 16 bytes. Why does the v7 index
+          hold nearly twice as many entries per leaf page?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Its leading timestamp bits compress well inside the pages
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Its inserts hit the right edge, favouring denser splits
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its version nibble lets the planner pack entries tighter
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its random field is smaller, so entries are narrower
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Both entries are 28 bytes — width is identical. The difference is
+          entirely lesson 3: a v7's leading millisecond timestamp means
+          successive values land at the right edge, where a split leaves the left
+          page at fillfactor rather than 50%. Nothing is compressed, and the
+          smaller random field (74 bits against 122) affects collision
+          arithmetic, not storage.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        v7 is not the first identifier to put a millisecond timestamp in front of
+        some random bits. <a href="0009-ulid-snowflake-typeid.html">Lesson 9</a>
+        takes the three designs that got there first or went further — ULID,
+        Snowflake and TypeID — and asks what, if anything, each still offers now
+        that v7 is in the box.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9562.html"
+              >RFC 9562, “Universally Unique IDentifiers (UUIDs)”</a
+            >
+            — read §5.4 and §5.7 in full, which is about three pages, then §6.11
+            and §6.13. This is the single most important reading in the topic,
+            and it is readable: an IETF standards document written after decades
+            of practice, which argues for its choices rather than just stating
+            them.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Good thing to push on: whether ~50% is
+          really the right figure for a v4 index under your write pattern. It is
+          a tendency the split rule produces over many random inserts, not a
+          guarantee, and a table that is written once and then mostly read will
+          not look like that at all.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 9, try to draw the UUIDv7 layout from memory —
+            48 bits, 4, 12, 2, 62 — and then say which of those fields the
+            database uses and which an attacker reads.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0007-identity-columns-and-gaps.html">7. Identity columns and the gap myth</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0009-ulid-snowflake-typeid.html">9. ULID, Snowflake, and TypeID</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

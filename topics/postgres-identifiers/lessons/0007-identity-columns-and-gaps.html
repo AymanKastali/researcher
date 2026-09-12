@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7. Identity columns and the gap myth — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0007</span>
+        <h1>Identity columns and the gap myth</h1>
+        <p class="lesson-mission">
+          The first candidate, and the baseline every other one is measured
+          against. It is the narrowest key available with the best index
+          behaviour available — and its two limits are exactly the two things the
+          rest of this topic is shopping for.
+        </p>
+      </header>
+
+      <p class="lead">
+        <code>BIGINT GENERATED ALWAYS AS IDENTITY</code> is the SQL-standard
+        spelling of an autoincrementing column. By lesson 2 it is the narrowest
+        index entry at 20 bytes; by lesson 3 it is strictly ascending, so the
+        rightmost fastpath applies on every single insert. Nothing else in this
+        topic beats it on either count.
+      </p>
+
+      <h2>What the clause actually does</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This clause creates the column as an <em>identity column</em>. It
+            will have an implicit sequence attached to it and in newly-inserted
+            rows the column will automatically have values from the sequence
+            assigned to it. Such a column is implicitly <code>NOT NULL</code>.
+          </p>
+          <p>
+            In an <code>INSERT</code> command, if <code>ALWAYS</code> is
+            selected, a user-specified value is only accepted if the
+            <code>INSERT</code> statement specifies
+            <code>OVERRIDING SYSTEM VALUE</code>. If <code>BY DEFAULT</code> is
+            selected, then the user-specified value takes precedence.
+          </p>
+          <p>
+            In an <code>UPDATE</code> command, if <code>ALWAYS</code> is
+            selected, any update of the column to any value other than
+            <code>DEFAULT</code> will be rejected. If <code>BY DEFAULT</code> is
+            selected, the column can be updated normally.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/sql-createtable.html"
+            >CREATE TABLE</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Why <code>ALWAYS</code> and not <code>BY DEFAULT</code></span>
+        <p>
+          Read the <code>UPDATE</code> paragraph again. <code>ALWAYS</code> makes
+          the key <strong>immutable at the schema level</strong> — the engine
+          refuses the update rather than trusting you not to write it. Lesson 5
+          showed exactly what a mutable key costs; this is the one-word
+          declaration that makes that cost unpayable.
+        </p>
+        <p class="small-print">
+          The docs describe the <code>INSERT</code> half as “protection against
+          accidentally inserting an explicit value”. The <code>UPDATE</code> half
+          is the part worth choosing it for.
+        </p>
+      </div>
+
+      <p>And a trap, stated outright by the manual:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            An identity column does not guarantee uniqueness; a
+            <code>PRIMARY KEY</code> or <code>UNIQUE</code> constraint is needed
+            for that
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/ddl-identity-columns.html"
+            >§5.3</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Also worth knowing for partitioned schemas, from the same page:
+        “Partitions inherit identity columns from the partitioned table; they
+        cannot have their own.”
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE orders (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    placed_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- Rejected: the column is ALWAYS, and no override was requested.
+INSERT INTO orders (id) VALUES (42);
+
+-- Accepted, and this is the escape hatch a data migration needs.
+INSERT INTO orders (id) OVERRIDING SYSTEM VALUE VALUES (42);
+
+-- Rejected: ALWAYS refuses any UPDATE to a value other than DEFAULT.
+UPDATE orders SET id = 43 WHERE id = 42;</code></pre>
+      </div>
+
+      <h2>Gaps are guaranteed, and are not a security feature</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            To avoid blocking concurrent transactions that obtain numbers from
+            the same sequence, the value obtained by <code>nextval</code> is not
+            reclaimed for re-use if the calling transaction later aborts. This
+            means that transaction aborts or database crashes can result in gaps
+            in the sequence of assigned values. That can happen without a
+            transaction abort, too. For example an <code>INSERT</code> with an
+            <code>ON CONFLICT</code> clause will compute the to-be-inserted
+            tuple, including doing any required <code>nextval</code> calls,
+            before detecting any conflict […]
+            <strong
+              >Thus, PostgreSQL sequence objects cannot be used to obtain
+              “gapless” sequences.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/functions-sequence.html"
+            >§9.17</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        With <code>CACHE &gt; 1</code>, values additionally go
+        <em>out of order</em> across sessions:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            although multiple sessions are guaranteed to allocate distinct
+            sequence values, the values might be generated out of sequence when
+            all the sessions are considered. For example, with a <em>cache</em>
+            setting of 10, session A might reserve values 1..10 and return
+            <code>nextval</code>=1, then session B might reserve values 11..20 and
+            return <code>nextval</code>=11 before session A has generated
+            <code>nextval</code>=2.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/sql-createsequence.html"
+            >CREATE SEQUENCE</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The default is <code>CACHE 1</code>, at which “it is safe to assume that
+        <code>nextval</code> values are generated sequentially”.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The myth, and the honest summary</span>
+        <p>
+          Gaps are sometimes offered as a reason sequential ids are “not really
+          enumerable”. They are not that. A <code>bigint</code> identity column
+          is <strong>sequential by default</strong>; gaps exist but are
+          incidental, unpredictable in the wrong direction, and nothing in this
+          design is intended to make the next value hard to guess. If you need
+          unguessability, you need a different column — not a hopeful reading of
+          this one.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can a PostgreSQL sequence never produce a gapless run of values?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because caching reserves blocks of values per session
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because vacuum discards unused values from the sequence
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because replication can reorder these values on standbys
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because an aborted transaction never returns its value
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>nextval</code> deliberately does not reclaim a value when the
+          calling transaction aborts, precisely so that it never has to block
+          concurrent transactions — the gap is the price of the concurrency.
+          Caching does widen gaps and reorder values across sessions, but it is
+          off by default at <code>CACHE 1</code> and is not the root cause.
+          Vacuum and replication have nothing to do with it.
+        </p>
+      </div>
+
+      <h2>The two real limits</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Where the baseline stops, and which later lesson goes shopping for
+            each.
+          </caption>
+          <thead>
+            <tr>
+              <th>Limit</th>
+              <th>Why it holds</th>
+              <th>Taken up in</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>No offline generation</strong></td>
+              <td>
+                <code>nextval()</code> is a call into one database. Nothing
+                client-side, offline, or on another shard can mint a value, at
+                any price.
+              </td>
+              <td>Lesson 12</td>
+            </tr>
+            <tr>
+              <td><strong>It leaks when exposed</strong></td>
+              <td>
+                <code>/orders/1247</code> tells any customer roughly how many
+                orders you have taken, and <code>/orders/1248</code> is very
+                likely somebody else's.
+              </td>
+              <td>Lesson 11</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        There is a third hazard that is not a limit of the type but of how you
+        serialise it. A <code>bigint</code> does not survive JavaScript's number
+        type, which is the same problem Twitter documented for Snowflake in
+        lesson 9 — and the fix is the same: <strong>serialise it as a
+        string</strong>.
+      </p>
+
+      <p>
+        Range, for completeness: −9223372036854775808 to +9223372036854775807.
+        The docs note that <code>bigserial</code> “should be used if you
+        anticipate the use of more than 2³¹ identifiers over the lifetime of the
+        table”, which is the reason to skip <code>integer</code> entirely for
+        anything that grows.
+      </p>
+
+      <h2>A note on <code>bigserial</code></h2>
+
+      <p>
+        The docs are more neutral about <code>serial</code> versus identity than
+        is usually claimed. §8.1.4 says only: “This section describes a
+        PostgreSQL-specific way to create an autoincrementing column. Another way
+        is to use the SQL-standard identity column feature.”
+      </p>
+
+      <p>
+        There is no documented recommendation of one over the other. The
+        documented advantages of identity are the PG10 release note's “SQL
+        standard compliant”, plus the <code>ALWAYS</code> immutability above —
+        and that second one is the reason to prefer it.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which property does <code>GENERATED ALWAYS</code> add that
+          <code>GENERATED BY DEFAULT</code> lacks?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A uniqueness promise, needing no extra constraint
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A gapless sequence, since aborts reclaim values
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A schema-level refusal of every later update
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A narrower column, holding eight bytes fewer
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Under <code>ALWAYS</code>, “any update of the column to any value other
+          than <code>DEFAULT</code> will be rejected”, which makes the key
+          immutable without relying on discipline. Uniqueness still needs its own
+          constraint — the manual says so explicitly. Gaps are guaranteed under
+          either spelling, and the storage width is identical.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        The baseline is set: narrowest, fastest, immutable if you ask for it, and
+        unable to do either of the two things lessons 11 and 12 will want.
+      </p>
+
+      <p>
+        <a href="0008-uuidv4-and-uuidv7.html">Lesson 8</a> takes the two
+        candidates that can do them — and shows that the choice between v4 and v7
+        is, almost exactly, the choice between the two halves of lesson 3.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/ddl-identity-columns.html"
+              >PostgreSQL 18 manual, §5.3 “Identity Columns”</a
+            >
+            — a short page, and worth reading alongside
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/current/functions-sequence.html"
+              >§9.17</a
+            >, whose paragraph on gaps is one of the more quietly opinionated
+            things in the manual. Note that it explains <em>why</em> gaps happen
+            rather than apologising for them.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A worthwhile exercise: ask it to walk you
+          through what actually happens to the sequence when an
+          <code>INSERT … ON CONFLICT DO NOTHING</code> conflicts. The manual names
+          this case specifically, and it surprises most people who assume a
+          no-op statement consumes nothing.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 8, try to state the two real limits of a
+            <code>bigint</code> identity column from memory, and — harder — why
+            gaps do not soften the second one.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0006-what-postgres-can-generate.html">6. What PostgreSQL can generate</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0008-uuidv4-and-uuidv7.html">8. UUIDv4 and UUIDv7</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Index arithmetic — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Index arithmetic</h1>
+        <p class="page-blurb">
+          The quoted constants, the per-entry model built from them, the
+          validation against a real page, and the commands that make the whole
+          thing unnecessary for a database you actually have.
+        </p>
+      </header>
+
+      <h2>Quoted constants — grade one</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Constant</th>
+              <th>Value, as worded</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Page size</td>
+              <td>“usually 8 kB”</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/storage-page-layout.html">§66.6</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>PageHeaderData</code></td>
+              <td>“24 bytes long”</td>
+              <td>§66.6, Table 66.2</td>
+            </tr>
+            <tr>
+              <td><code>ItemIdData</code> (line pointer)</td>
+              <td>“4 bytes per item”</td>
+              <td>§66.6, Table 66.2</td>
+            </tr>
+            <tr>
+              <td>Heap tuple header</td>
+              <td>“occupying 23 bytes on most machines”</td>
+              <td>§66.6.1</td>
+            </tr>
+            <tr>
+              <td><code>bigint</code></td>
+              <td>“8 bytes”</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/datatype-numeric.html">§8.1, Table 8.2</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>uuid</code></td>
+              <td>“128-bit quantity” — <em>no byte count given</em></td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/datatype-uuid.html">§8.12</a>
+              </td>
+            </tr>
+            <tr>
+              <td>Short string ≤126 bytes</td>
+              <td>“1 byte plus the actual string”</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/datatype-character.html">§8.3</a>
+              </td>
+            </tr>
+            <tr>
+              <td>Max index entry</td>
+              <td>“approximately one-third of a page” — <em>2704 not stated</em></td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/btree.html">§65.1.1</a>
+              </td>
+            </tr>
+            <tr>
+              <td>B-tree default fillfactor</td>
+              <td>“90”</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/sql-createindex.html">CREATE INDEX</a>
+              </td>
+            </tr>
+            <tr>
+              <td>TOAST threshold</td>
+              <td>“normally 2 kB”</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/storage-toast.html">§66.2</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>shared_buffers</code> default</td>
+              <td>“typically 128 megabytes”; start at “25% of the memory”</td>
+              <td>
+                <a class="citation" href="https://www.postgresql.org/docs/current/runtime-config-resource.html">§20.4.1</a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>From source — grade two</h2>
+
+      <p class="small-print">
+        <code>REL_18_STABLE</code>. Used only where the manual is silent; §65.1.4
+        explicitly sends readers to the <code>nbtree</code> README. These could
+        change without a release note.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Fact</th>
+              <th>File</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>#define UUID_LEN 16</code></td>
+              <td><code>src/include/utils/uuid.h</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>IndexTupleData</code> = <code>ItemPointerData</code> (6) +
+                <code>unsigned short</code> (2) = <strong>8 bytes</strong>
+              </td>
+              <td><code>src/include/access/itup.h</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>BTMaxItemSize</code> = <strong>2704</strong> at 8 kB pages;
+                <code>BTPageOpaqueData</code> = 16 bytes
+              </td>
+              <td><code>src/include/access/nbtree.h</code></td>
+            </tr>
+            <tr>
+              <td>
+                Rightmost-page split leaves the left page
+                <em>fillfactor</em>% full “instead of the 50% full result”
+              </td>
+              <td>
+                <code>src/backend/access/nbtree/nbtsplitloc.c</code>,
+                <code>_bt_findsplitloc()</code>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                Cached rightmost leaf page lets an insert “avoid the cost of
+                walking down the tree”
+              </td>
+              <td>
+                <code>src/backend/access/nbtree/README</code>, “Fastpath For
+                Index Insertion”
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        MAXALIGN is <strong>8 on 64-bit</strong>. The manual never states the
+        value, only that <code>t_hoff</code> “must always be a multiple of the
+        MAXALIGN distance for the platform”. Treat it as a platform fact.
+      </p>
+
+      <h2>The model — grade three</h2>
+
+      <p class="small-print">
+        Assumptions: 8 kB pages, MAXALIGN 8, single-column <code>NOT NULL</code>
+        key, no <code>INCLUDE</code> columns, ASCII text.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-python">PAGE = 8192
+USABLE = PAGE - 24 - 16      # page header, BTPageOpaqueData  -> 8152
+TUPLE_HEADER = 8             # IndexTupleData, from itup.h
+LINE_POINTER = 4             # ItemIdData, from the manual
+MAXALIGN = 8                 # 64-bit platform assumption
+
+
+def per_entry(key_bytes: int) -> int:
+    body = TUPLE_HEADER + key_bytes
+    padded = -(-body // MAXALIGN) * MAXALIGN
+    return padded + LINE_POINTER
+
+
+def entries_per_leaf(key_bytes: int, fillfactor: int = 100) -> int:
+    return (USABLE * fillfactor // 100) // per_entry(key_bytes)</code></pre>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Header</th>
+              <th>+ key</th>
+              <th>MAXALIGNed</th>
+              <th>+ line ptr</th>
+              <th>Per entry</th>
+              <th>Per leaf @ ff 90</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>oid</code> (4 B)</td>
+              <td>8</td>
+              <td>4</td>
+              <td>16</td>
+              <td>4</td>
+              <td>20 B</td>
+              <td>~366</td>
+            </tr>
+            <tr>
+              <td><code>bigint</code></td>
+              <td>8</td>
+              <td>8</td>
+              <td>16</td>
+              <td>4</td>
+              <td><strong>20 B</strong></td>
+              <td>~366</td>
+            </tr>
+            <tr>
+              <td><code>uuid</code></td>
+              <td>8</td>
+              <td>16</td>
+              <td>24</td>
+              <td>4</td>
+              <td><strong>28 B</strong></td>
+              <td>~262</td>
+            </tr>
+            <tr>
+              <td><code>text</code>, 26 chars</td>
+              <td>8</td>
+              <td>27</td>
+              <td>40</td>
+              <td>4</td>
+              <td><strong>44 B</strong></td>
+              <td>~166</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The validation</h2>
+
+      <p>
+        The <code>pageinspect</code> docs print two real leaf pages
+        (<a class="citation" href="https://www.postgresql.org/docs/current/pageinspect.html">§F.23.3</a>),
+        both on <code>oid</code> keys:
+        <code>bt_multi_page_stats('pg_proc_oid_index', 5, 2)</code> gives
+        <code>live_items | 367</code>, <code>free_size | 808</code>; and
+        <code>bt_page_stats('pg_cast_oid_index', 1)</code> gives
+        <code>live_items | 224</code>, <code>free_size | 3668</code>. Both print
+        <code>avg_item_size | 16</code>.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-python">>>> per_entry(4)              # oid: 8 + 4 -> 16, matching avg_item_size
+20
+>>> USABLE - 367 * 20         # pg_proc_oid_index, a full page
+812                           # PageGetFreeSpace withholds one more line
+                              # pointer: 812 - 4 = 808. Exact.
+>>> USABLE - 224 * 20         # pg_cast_oid_index, about half full
+3672                          # 3672 - 4 = 3668. Exact again.
+>>> 367 / entries_per_leaf(4)
+0.9017...                     # the documented fillfactor, unprompted</code></pre>
+      </div>
+
+      <p>
+        The free-space prediction lands to the byte on two different indexes —
+        one packed at ~90%, one barely half full — and on the packed one the
+        documented fillfactor falls out unprompted. None of those numbers was
+        used to build the model. That is what licenses the <code>uuid</code> and
+        <code>text</code> rows, which no manual page prints.
+      </p>
+
+      <h2>Depth</h2>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Rows</th>
+              <th><code>bigint</code></th>
+              <th><code>uuid</code></th>
+              <th><code>text</code>(26)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>10⁶</td><td>3</td><td>3</td><td>3</td></tr>
+            <tr><td>10⁸</td><td>4</td><td>4</td><td>4</td></tr>
+            <tr><td>10¹⁰</td><td>4</td><td>5</td><td>5</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <strong>Key width is a size problem, not a depth problem.</strong> A 28%
+        fan-out reduction usually buys zero extra levels. The real consequence of
+        size is cache pressure against <code>shared_buffers</code>.
+      </p>
+
+      <h2>Measure instead</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this topic</span>
+        </div>
+        <pre><code class="language-sql">-- How wide is my index entry, really? Per-leaf, empirical.
+CREATE EXTENSION IF NOT EXISTS pageinspect;   -- superuser only
+SELECT blkno, live_items, avg_item_size, free_size
+FROM bt_multi_page_stats('orders_pkey', 1, -1)
+LIMIT 20;
+
+-- Whole-index summary.
+CREATE EXTENSION IF NOT EXISTS pgstattuple;   -- pg_stat_scan_tables role
+SELECT * FROM pgstatindex('orders_pkey');
+
+-- On-disk size, no extension needed.
+SELECT pg_size_pretty(pg_relation_size('orders_pkey'));</code></pre>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Two cautions</span>
+        <p>
+          <strong>Access is restricted.</strong> <code>pgstattuple</code> defaults
+          to the <code>pg_stat_scan_tables</code> role; of
+          <code>pageinspect</code> the manual says “All of these functions may be
+          used only by superusers.”
+        </p>
+        <p>
+          <strong><code>avg_leaf_density</code> and
+          <code>leaf_fragmentation</code> are undefined by the manual.</strong>
+          “Average density of leaf pages” and “Leaf page fragmentation” are the
+          <em>complete</em> documented descriptions — no computation, no units, no
+          threshold for “bad”. Anyone quoting a target number for these is not
+          quoting PostgreSQL. Use <code>live_items</code>,
+          <code>avg_item_size</code> and <code>free_size</code> instead, which
+          mean exactly what they say.
+        </p>
+      </div>
+
+      <h2>Related mechanics, in one place</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Fact</th><th>Consequence</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                “All indexes in PostgreSQL are secondary indexes” (§11.9); each
+                relation is its own file (§66.1); <code>CLUSTER</code> is
+                one-time.
+              </td>
+              <td>
+                <strong>No clustered index.</strong> A random key's cost is
+                confined to the B-tree on that key; it does not fragment the
+                table.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                HOT requires that “the update does not modify any columns
+                referenced by the table's indexes” (§66.7).
+              </td>
+              <td>
+                A mutable key forfeits HOT <em>and</em> forces a new entry in
+                <strong>every</strong> index on the table.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>full_page_writes</code> costs one ~8 kB image per distinct
+                page first dirtied after a checkpoint (§20.5.1).
+              </td>
+              <td>
+                More scattered inserts plausibly mean more WAL.
+                <strong>Inference</strong> — no PostgreSQL page connects this to
+                key ordering. <code>wal_compression</code> (default
+                <code>off</code>) targets these images.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>INCLUDE</code> indexes “can never use deduplication”
+                (§65.1.4.3).
+              </td>
+              <td>
+                A covering index forfeits the absorb-version-churn benefit. Nil
+                cost on a static table, a real trade on a hot one.
+              </td>
+            </tr>
+            <tr>
+              <td>TOAST triggers above ~2 kB (§66.2).</td>
+              <td>
+                <code>bigint</code> and <code>uuid</code> are not TOAST-able at
+                all; a 36-char text id is two orders of magnitude below the
+                trigger. TOAST never enters this decision.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                The docs make no claim that join-key width affects join
+                performance.
+              </td>
+              <td>
+                Argue narrow keys from <strong>cache residency</strong>, not join
+                speed. The <code>work_mem</code> spill argument is inference and
+                is a step function, not a per-row tax.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        Taught across
+        <a href="../lessons/0002-inside-a-leaf-page.html">lesson 2</a>,
+        <a href="../lessons/0003-the-rightmost-page.html">lesson 3</a>,
+        <a href="../lessons/0004-no-clustered-index.html">lesson 4</a> and
+        <a href="../lessons/0005-churn-and-immutability.html">lesson 5</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

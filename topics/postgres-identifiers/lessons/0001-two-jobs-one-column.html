@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>1. Two jobs, one column — PostgreSQL Identifiers</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0001</span>
+        <h1>Two jobs, one column</h1>
+        <p class="lesson-mission">
+          The mission is to choose from evidence rather than folklore. This
+          lesson establishes what is actually being chosen — which turns out not
+          to be a data type, and turns out not to be settled by the relational
+          model either.
+        </p>
+      </header>
+
+      <p class="lead">
+        Most arguments about primary keys go badly because the participants are
+        optimising different things without saying so. Before any candidate is
+        named, it is worth being precise about what a key column is being asked
+        to do, and about how little authority the usual appeals to authority
+        actually carry.
+      </p>
+
+      <h2>The two jobs</h2>
+
+      <p>
+        A key column is asked to do two things that have almost nothing in
+        common:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Two jobs, judged on disjoint criteria.
+          </caption>
+          <thead>
+            <tr>
+              <th>Job</th>
+              <th>What it involves</th>
+              <th>Judged on</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Internal identity</strong></td>
+              <td>
+                Join children to parents, anchor indexes, survive physical
+                reorganisation of the table.
+              </td>
+              <td>Width, ordering, immutability.</td>
+            </tr>
+            <tr>
+              <td><strong>External reference</strong></td>
+              <td>
+                Appear in URLs, API payloads, support tickets, webhook bodies —
+                anywhere outside your database.
+              </td>
+              <td>
+                Opacity, portability, and whether a client can mint one before
+                the database has seen the row.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        A single column can do both, and for most systems it should. But notice
+        that no criterion appears in both rows. Nothing that makes a key good at
+        joining makes it good at appearing in a URL, and nothing that makes it
+        good in a URL makes it good at joining.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The framing this topic rests on</span>
+        <p>
+          The moment the two sets of requirements conflict, you are no longer
+          choosing a key type. You are choosing
+          <strong>which job to sacrifice</strong>. Every lesson from here is
+          either about measuring one of those sacrifices, or — in lesson 13 —
+          about refusing to make it.
+        </p>
+      </div>
+
+      <h2>What the relational model actually says</h2>
+
+      <p>
+        The term comes from Codd's 1970 paper, and it is worth reading what he
+        wrote rather than what is usually attributed to him.
+      </p>
+
+      <div class="definition">
+        <span class="term">primary key</span>
+        <p>
+          Normally, one domain (or combination of domains) of a given relation
+          has values which uniquely identify each element (n-tuple) of that
+          relation. Such a domain (or combination) is called a primary key. In
+          the example above, part number would be a primary key, while part
+          colour would not be. A primary key is nonredundant if it is either a
+          simple domain (not a combination) or a combination such that none of
+          the participating simple domains is superfluous in uniquely
+          identifying each element. A relation may possess more than one
+          nonredundant primary key. […] Whenever a relation has two or more
+          nonredundant primary keys,
+          <strong
+            >one of them is arbitrarily selected and called the primary key of
+            that relation.</strong
+          >
+        </p>
+        <span class="attribution">
+          E. F. Codd, “A Relational Model of Data for Large Shared Data Banks”,
+          <em>Communications of the ACM</em> 13(6), June 1970, p. 379. Quoted
+          from the
+          <a
+            class="citation"
+            href="https://www.seas.upenn.edu/~zives/03f/cis550/codd.pdf"
+            >University of Pennsylvania scan</a
+          >
+          of the original; canonical record at
+          <a class="citation" href="https://dl.acm.org/doi/10.1145/362384.362685"
+            >dl.acm.org</a
+          >
+          (paywalled).
+        </span>
+      </div>
+
+      <p>Two things in that passage are routinely misremembered.</p>
+
+      <p>
+        <strong>First, the choice among candidates is arbitrary.</strong> Codd
+        attaches no significance whatever to which one you pick. That single
+        clause disarms every appeal to “the relational model” made in defence of
+        a particular key style — the model has no opinion, and says so.
+      </p>
+
+      <p>
+        <strong>Second, Codd's own worked example is a natural key.</strong>
+        <code>part number</code> is data that means something to someone outside
+        the database. Codd is not the authority for surrogate keys; the word
+        “surrogate” does not appear in the 1970 paper at all.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">A citation to stop making</span>
+        <p>
+          “Codd said to use surrogate keys” is false. He did not use the term,
+          and his example is a natural key. If you want an authority for
+          surrogate keys you will have to find a different one — and a good part
+          of this topic is discovering how few load-bearing claims in this area
+          have an authority behind them at all.
+        </p>
+      </div>
+
+      <p>
+        His definition of a foreign key, from the same page, is the one that
+        makes lesson 13 coherent:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We shall call a domain (or domain combination) of relation R a
+            foreign key if it is not the primary key of R but its elements are
+            values of the primary key of some relation S
+          </p>
+        </blockquote>
+        <figcaption>
+          Codd 1970, p. 379. Note that the referenced side is defined as
+          <em>the primary key</em> of S — a constraint PostgreSQL relaxes, as
+          lesson 13 shows.
+        </figcaption>
+      </figure>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          In Codd's 1970 paper, how is the primary key chosen when a relation
+          has several nonredundant candidates?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Arbitrarily, by the designer's own choice
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Automatically, by taking the narrowest domain
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Deliberately, by picking a surrogate value
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Formally, by running the normalisation rules
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          “Arbitrarily selected” are Codd's own words. The paper attaches no
+          significance to which candidate becomes the primary key, which is
+          exactly why the relational model cannot be cited in support of any
+          particular key style. The other three answers all describe criteria
+          that came later, from practice rather than from the model.
+        </p>
+      </div>
+
+      <h2>What PostgreSQL enforces</h2>
+
+      <p>
+        Now the engine, whose position is narrower and more interesting than the
+        theory's.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A primary key constraint indicates that a column, or group of
+            columns, can be used as a unique identifier for rows in the table.
+            This requires that the values be both unique and not null.
+          </p>
+          <p>
+            Adding a primary key will automatically create a unique B-tree index
+            on the column or group of columns listed in the primary key, and
+            will force the column(s) to be marked <code>NOT NULL</code>.
+          </p>
+          <p>
+            A table can have at most one primary key. (There can be any number
+            of unique constraints, which combined with not-null constraints are
+            functionally almost the same thing, but only one can be identified
+            as the primary key.) <strong>Relational database theory dictates
+            that every table must have a primary key. This rule is not enforced
+            by PostgreSQL</strong>, but it is usually best to follow it.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 18 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-PRIMARY-KEYS"
+            >§5.5.4, Primary Keys</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The parenthesis is the sentence to carry forward. A
+        <code>UNIQUE</code> constraint plus <code>NOT NULL</code> is
+        “functionally almost the same thing” as a primary key. Both produce the
+        same unique B-tree index. In PostgreSQL, <strong>the primary key is a
+        designation, not a distinct physical structure.</strong>
+      </p>
+
+      <p>
+        The one privilege the designation carries is documented on the same
+        page: “the primary key defines the default target column(s) for foreign
+        keys referencing its table.” That is a convenience about what
+        <code>REFERENCES orders</code> means when you do not name a column — not
+        a performance property.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Why this matters more than it sounds</span>
+        <p>
+          Almost every sentence of the form “the primary key is faster” is
+          really a claim about a B-tree index, and becomes checkable the moment
+          it is restated that way. Lessons 2 to 5 are entirely about that index,
+          and none of them will need the phrase “primary key” to make their
+          argument.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          In PostgreSQL, what does the <code>PRIMARY KEY</code> designation give
+          you that <code>UNIQUE NOT NULL</code> does not?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A faster and denser physical index structure
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A guarantee that inserted rows stay ordered
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A default target for incoming foreign keys
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A guaranteed rejection of every later update
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Being the default foreign-key target is the only privilege the manual
+          attaches to the designation. Both constructions build the same unique
+          B-tree index, so there is no density or speed difference. Physical row
+          order is not a PostgreSQL concept at all — lesson 4 is about why.
+          Immutability comes from <code>GENERATED ALWAYS AS IDENTITY</code>, not
+          from <code>PRIMARY KEY</code>, and is lesson 7.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now know what the decision is — a trade between two jobs — and that
+        neither Codd nor PostgreSQL will make it for you. What you do not yet
+        have is any way to price either job.
+      </p>
+
+      <p>
+        That pricing is physical, and it happens inside a B-tree leaf page.
+        <a href="0002-inside-a-leaf-page.html">Lesson 2</a> opens one up and
+        counts the bytes — including a demonstration that the arithmetic is
+        right, which matters more than usual here, because most of the numbers
+        this subject circulates are not in any specification.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.seas.upenn.edu/~zives/03f/cis550/codd.pdf"
+              >E. F. Codd, “A Relational Model of Data for Large Shared Data
+              Banks” (1970)</a
+            >
+            — read pages 377–380, which is where the definitions live. It is a
+            scanned PDF of a 1970 journal and it reads nothing like a modern
+            database text, which is the point: you will remember that the
+            “arbitrarily selected” clause is really there, because you will have
+            seen it in the original typesetting.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If the two-jobs framing feels like an
+          artificial split — “it's just an id, it does one thing” — say so. That
+          objection is reasonable and it is worth taking apart now, because
+          lesson 13 exists entirely to resolve it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The goal is retention in a year, not comprehension today, and
+            retention is built by recalling things once you have started to
+            forget them. Leave a day before lesson 2 if you can, and before you
+            open it, try to state the two jobs and their criteria out loud from
+            memory.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0002-inside-a-leaf-page.html">2. Inside a leaf page</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>
