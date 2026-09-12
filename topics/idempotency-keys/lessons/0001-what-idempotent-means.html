@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>1. What “idempotent” actually means — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0001</span>
+        <h1>What “idempotent” actually means</h1>
+        <p class="lesson-mission">
+          The mission is to own the reasoning, not the header. Everything later
+          rests on one distinction made in this lesson: idempotence of a
+          function is checkable, idempotence of an effect has to be engineered.
+        </p>
+      </header>
+
+      <p class="lead">
+        The word is a century older than computing, and it did not originally
+        describe functions at all. Starting where it started is worth ten minutes,
+        because the modern misuses of the word are all recoverable from the
+        original definition.
+      </p>
+
+      <h2>The algebraic origin</h2>
+
+      <p>
+        It was coined by Benjamin Peirce, Perkins Professor of Astronomy and
+        Mathematics at Harvard, to name a class of expressions in a hypercomplex
+        algebra.
+      </p>
+
+      <div class="definition">
+        <span class="term">idempotent</span>
+        <p>
+          25. When an expression raised to the square or any higher power
+          vanishes, it may be called nilpotent; but when, raised to a square or
+          higher power, it gives itself as the result, it may be called
+          idempotent.
+        </p>
+        <p>
+          The defining equation of nilpotent and idempotent expressions are
+          respectively A<sup>n</sup> = 0, and A<sup>n</sup> = A; but with
+          reference to idempotent expressions, it will always be assumed that
+          they are of the form A² = A, unless it be otherwise distinctly stated.
+        </p>
+        <span class="attribution">
+          Benjamin Peirce, <em>Linear Associative Algebra</em>, §25, p. 8.
+          Lithographed and privately circulated 1870; quoted here from the 1882
+          D. Van Nostrand printing,
+          <a
+            class="citation"
+            href="https://archive.org/details/linearassocalgeb00pierrich"
+            >scanned at the Internet Archive</a
+          >.
+        </span>
+      </div>
+
+      <p>
+        The 1870 date is usually passed around without evidence, so it is worth
+        pinning down. The same 1882 volume says in its preface:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Lithographed copies of this book were distributed by Professor
+            Peirce among his friends in 1870. The present issue consists of
+            separate copies extracted from The American Journal of Mathematics,
+            where the work has at length been published.
+          </p>
+          <p>
+            The body of the text has been printed directly from the lithograph
+            with only slight verbal changes.
+          </p>
+        </blockquote>
+        <figcaption>
+          <em>Linear Associative Algebra</em>, 1882 edition, preface.
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">On the sourcing</span>
+        <p>
+          The 1870 lithograph is scanned too, but it is a handwritten facsimile
+          whose OCR is unusable. The wording above is therefore verified against
+          the 1882 printing, which the preface says follows the lithograph “with
+          only slight verbal changes” — good evidence, but not the same as having
+          read the 1870 text. This workspace says so rather than quietly citing
+          1870.
+        </p>
+      </div>
+
+      <h2>Transposed to functions</h2>
+
+      <p>
+        Notice what Peirce is <em>not</em> saying. He defines a property of an
+        <strong>element</strong> under multiplication — <code>A² = A</code> — not
+        a property of a function. The form programmers recite is the same idea
+        moved to function composition:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">notation</span>
+        </div>
+        <pre><code>f(f(x)) = f(x)</code></pre>
+      </div>
+
+      <p>
+        Applying <code>f</code> to an already-<code>f</code>’d value changes
+        nothing further. That is a property you can check by reading the
+        function.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">abs(abs(-5)) == abs(-5)                 # idempotent
+sorted(sorted([3, 1])) == sorted([3, 1])  # idempotent
+max(max(2, 5), 5) == max(2, 5)            # idempotent — clamping to a floor
+set(set("aab")) == set("aab")             # idempotent
+
+total = 0
+total += 1        # NOT idempotent: each application moves the value
+items = []
+items.append("x") # NOT idempotent: each application grows the list</code></pre>
+      </div>
+
+      <p>
+        The pattern separating the two groups: the idempotent operations name a
+        <strong>destination</strong>, and the others name a
+        <strong>delta</strong>. “Make this non-negative” has a fixed answer you
+        can arrive at twice. “Add one” does not.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which of these functions is idempotent under
+          <code>f(f(x)) = f(x)</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Appending a value onto an existing list
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Adding a tax charge onto a subtotal
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Rounding a number down to nearest ten
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Shifting a letter along by one place
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Rounding down to the nearest ten is idempotent: 41 becomes 40, and 40
+          is already a whole ten, so it stays 40. The other three each move the
+          value further every time they are applied — they name a delta rather
+          than a destination. Note how narrow the property is: rounding
+          <em>up to the next</em> ten in the strict sense, where 50 becomes 60,
+          would <em>not</em> be idempotent. Idempotence lives in the exact
+          definition, never in the general shape of the operation.
+        </p>
+      </div>
+
+      <h2>The distinction the rest of the topic turns on</h2>
+
+      <p>
+        Everything above is <strong>idempotence of a function</strong>: a
+        property of a pure mapping from input to output. It is checkable by
+        inspection, it holds for all time, and no world outside the function is
+        involved.
+      </p>
+
+      <p>
+        What you actually need from an API is a different thing wearing the same
+        word. <strong>Idempotence of an effect over a network</strong> is a
+        property of a <em>system’s state</em> after a <em>message</em> is
+        processed, possibly more than once, by a <em>remote party</em>, across a
+        channel that can lose, delay, duplicate and reorder. Nothing about it is
+        checkable by inspection. It is a property you have to
+        <strong>engineer</strong>.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The load-bearing sentence</span>
+        <p>
+          A function is idempotent or it is not, and you can tell by looking. An
+          effect is idempotent only because somebody built the machinery that
+          makes it so. The rest of this topic is about that machinery.
+        </p>
+      </div>
+
+      <h2>Three objects, and only one of them is interesting</h2>
+
+      <p>
+        Analogies are not definitions — the definitions are quoted above and in
+        the next lesson — but these three fix the shape of the problem.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The same word covering three genuinely different situations.
+          </caption>
+          <thead>
+            <tr>
+              <th>Object</th>
+              <th>Idempotent?</th>
+              <th>Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Light switch</td>
+              <td>Yes, inherently</td>
+              <td>
+                “Set the switch to <code>on</code>” leaves the room lit whether
+                you do it once or ten times. The operation names a destination
+                state, so repeating it is free.
+              </td>
+            </tr>
+            <tr>
+              <td>Doorbell</td>
+              <td>No</td>
+              <td>
+                Each press produces another ring. The operation is a delta.
+                “Charge this card $20” is a doorbell.
+              </td>
+            </tr>
+            <tr>
+              <td>Elevator call button</td>
+              <td>Yes, but only by construction</td>
+              <td>
+                Physically a doorbell — you can press it repeatedly. The
+                controller keeps a record that a call for this floor in this
+                direction is already outstanding, and drops the duplicate.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The elevator is the accurate analogy for this entire topic, and the
+        reason is worth stating flatly:
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The most common misconception</span>
+        <p>
+          An idempotency key <strong>does not make a non-idempotent operation
+          idempotent</strong>. It adds a deduplication record in front of the
+          operation. The record is what makes the <em>observable effect</em>
+          idempotent, while the underlying operation stays exactly as
+          non-idempotent as it always was. Charging a card is a doorbell before
+          and after you add a key.
+        </p>
+      </div>
+
+      <p>
+        That record — the elevator controller’s note that this floor is already
+        called — is the idempotency key. You now know what it is for before
+        knowing anything about its syntax, which is the right order.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does adding an idempotency key to a “charge this card” endpoint
+          actually change?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The charge itself becomes safe to repeat twice
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A record ahead of it absorbs the duplicate
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The network drops the duplicate before it arrives
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The client is blocked from sending it again
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The operation is unchanged — it is still a delta, still a doorbell, and
+          running it twice still produces two charges. What the key adds is a
+          deduplication record consulted before the operation runs, so the second
+          request never reaches it. The client is very much still allowed to send
+          the second request; in fact the whole design assumes it will.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now have the distinction and the shape of the fix. What you do not
+        yet have is a reason to believe the fix is necessary — after all, if
+        <code>PUT</code> is idempotent, why not simply choose idempotent methods
+        and be done? That is
+        <a href="0002-what-http-promises.html">lesson 2</a>, and the answer
+        turns out to be that HTTP’s promise is both narrower and stranger than it
+        first looks.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://archive.org/details/linearassocalgeb00pierrich"
+              >Benjamin Peirce, <em>Linear Associative Algebra</em></a
+            >
+            — §25 is on page 8, and it is four lines long. Read the preface too
+            (it is the paragraph quoted above). Ten minutes with a 140-year-old
+            algebra text is a surprisingly good way to make a definition stick,
+            because you will remember where you got it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If the function-versus-effect distinction
+          feels like a word game rather than a real difference, say so — that
+          reaction is common and worth taking apart before moving on, because
+          every later lesson leans on it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The goal here is long-term retention, which is built by recalling
+            things after you have started to forget them — not by reading
+            further while it still feels fresh. Leave a day before lesson 2 if
+            you can, and before you open it, try to state the elevator argument
+            out loud from memory.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0002-what-http-promises.html"
+              >2. What HTTP actually promises</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

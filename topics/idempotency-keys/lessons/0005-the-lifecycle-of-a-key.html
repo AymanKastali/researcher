@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>5. The lifecycle of a key — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0005</span>
+        <h1>The lifecycle of a key</h1>
+        <p class="lesson-mission">
+          A mission success criterion: draw the eleven-step lifecycle from
+          memory, and name which two steps must be atomic and what breaks if
+          either is not. This lesson builds the drawing.
+        </p>
+      </header>
+
+      <p class="lead">
+        Here is the case the entire mechanism exists for. The operation
+        <em>succeeds</em>. The <em>response</em> is lost. The client retries. The
+        server replays. Nothing goes wrong anywhere, and without a key the
+        customer is charged twice.
+      </p>
+
+      <h2>Fix the vocabulary first</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Three of these terms are Brandur Leach’s — practitioner vocabulary,
+            not normative, but widely borrowed and worth using.
+          </caption>
+          <thead>
+            <tr>
+              <th>Term</th>
+              <th>Meaning</th>
+              <th>Weight</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Idempotency key</td>
+              <td>
+                The client-generated value the resource uses to recognise
+                retries.
+              </td>
+              <td>Specification (draft-07 §2)</td>
+            </tr>
+            <tr>
+              <td>Idempotency fingerprint</td>
+              <td>
+                A checksum or field match over the payload, generated
+                <em>by the resource</em>.
+              </td>
+              <td>Specification (draft-07 §2.4)</td>
+            </tr>
+            <tr>
+              <td>Key record</td>
+              <td>
+                The server-side row holding key, fingerprint, state and the
+                stored response.
+              </td>
+              <td>Implied by draft-07 §2.6; schema from Brandur</td>
+            </tr>
+            <tr>
+              <td>Foreign state mutation</td>
+              <td>
+                “Calling out and manipulating data on another system” — a side
+                effect you cannot roll back.
+              </td>
+              <td>Practitioner</td>
+            </tr>
+            <tr>
+              <td>Atomic phase</td>
+              <td>
+                “A set of local state mutations that occur in transactions
+                between foreign state mutations.”
+              </td>
+              <td>Practitioner</td>
+            </tr>
+            <tr>
+              <td>Recovery point</td>
+              <td>
+                A checkpoint reached after an atomic phase or foreign state
+                mutation succeeds.
+              </td>
+              <td>Practitioner</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Keep two of these apart</span>
+        <p>
+          The <strong>idempotency key</strong> is the client’s value. The
+          <strong>key record</strong> is the server’s row. The client never sees
+          the record, and the server never invents the key. Conflating them makes
+          the lifecycle impossible to describe.
+        </p>
+      </div>
+
+      <h2>The happy path, with a lost response</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code> CLIENT                      API / HANDLER                 KEY STORE           EFFECT STORE
+   │                              │                            │                    │
+   │ (0) generate key             │                            │                    │
+   │     k = uuid4()              │                            │                    │
+   │     store k with the         │                            │                    │
+   │     *intent*, before         │                            │                    │
+   │     any request              │                            │                    │
+   │                              │                            │                    │
+   │ (1) POST /charges            │                            │                    │
+   │     Idempotency-Key: k       │                            │                    │
+   │     {amount: 2000, ...}      │                            │                    │
+   ├─────────────────────────────>│                            │                    │
+   │                              │ (2) fingerprint = H(body)  │                    │
+   │                              │                            │                    │
+   │                              │ (3) ATOMIC CLAIM           │                    │
+   │                              │     insert (k, fp,         │                    │
+   │                              │       state=IN_FLIGHT)     │                    │
+   │                              │     IF NOT EXISTS          │                    │
+   │                              ├───────────────────────────>│                    │
+   │                              │&lt;─── claimed (row created) ─┤                    │
+   │                              │                            │                    │
+   │                              │ (4) execute the operation  │                    │
+   │                              ├────────────────────────────┼───────────────────>│
+   │                              │&lt;───────── charge ch_1 ─────┼────────────────────┤
+   │                              │                            │                    │
+   │                              │ (5) COMMIT: effect + key record together        │
+   │                              │     state=COMPLETE, status=200, body={ch_1}     │
+   │                              ├═══════════════════════════>│═══════════════════>│
+   │                              │                            │                    │
+   │ (6) 200 OK {ch_1}            │                            │                    │
+   │&lt;─ ─ ─ ─ ─ ─ ─ ─ X            │      ✗ RESPONSE LOST       │                    │
+   │   (never arrives)            │                            │                    │
+   │                              │                            │                    │
+   │ ── timeout ──                │                            │                    │
+   │ ── backoff + jitter ──       │                            │                    │
+   │                              │                            │                    │
+   │ (7) POST /charges            │                            │                    │
+   │     Idempotency-Key: k       │   ← SAME key, SAME body    │                    │
+   │     {amount: 2000, ...}      │                            │                    │
+   ├─────────────────────────────>│                            │                    │
+   │                              │ (8) lookup k               │                    │
+   │                              ├───────────────────────────>│                    │
+   │                              │&lt;── found, state=COMPLETE ──┤                    │
+   │                              │                            │                    │
+   │                              │ (9) fingerprint matches?   │                    │
+   │                              │     yes → replay           │                    │
+   │                              │                            │                    │
+   │                              │     NO CALL TO EFFECT STORE ─────────── ✗       │
+   │                              │                            │                    │
+   │ (10) 200 OK {ch_1}           │                            │                    │
+   │      Idempotent-Replayed: true                            │                    │
+   │&lt;─────────────────────────────┤                            │                    │
+   │                              │                            │                    │
+   │  ── one charge exists ──     │                            │                    │
+   │                              │                            │                    │
+   │  ... later ...               │                            │                    │
+   │                              │ (11) reaper deletes k after retention window    │
+   │                              │                            │                    │
+</code></pre>
+        </div>
+        <figcaption>
+          The lifecycle. <code>───&gt;</code> request or read,
+          <code>═══&gt;</code> transactional commit, <code>─ ─&gt;</code>
+          response, <code>✗</code> failure or omission. Scroll the figure
+          sideways on a narrow screen.
+        </figcaption>
+      </figure>
+
+      <h2>The steps that carry weight</h2>
+
+      <h3>(2) The server computes the fingerprint</h3>
+
+      <p>
+        This is done <em>by the resource</em>, never by the client, and the draft
+        deliberately leaves the algorithm open:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            An idempotency fingerprint MAY be used in conjunction with an
+            idempotency key to determine the uniqueness of a request. Such a
+            fingerprint is generated from request payload data by the resource.
+            An idempotency fingerprint generation algorithm MAY use one of the
+            following or similar approaches to create a fingerprint.
+          </p>
+          <p>
+            • Checksum of the entire request payload.<br />
+            • Checksum of selected element(s) in the request payload.<br />
+            • Field value match for each field in the request payload.<br />
+            • Field value match for selected element(s) in the request
+            payload.<br />
+            • Request digest/signature.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2.4"
+            >draft-07 §2.4</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Because it may be “selected element(s)” rather than the whole payload,
+        two conforming implementations can legitimately disagree about whether a
+        given retry is “the same request”. That is a real consequence, and
+        <a href="0008-the-edges-that-bite.html">lesson 8</a> returns to it.
+      </p>
+
+      <h3>(3) The atomic claim</h3>
+
+      <p>
+        Conceptually: <em>insert a record for this key in the</em>
+        <code>IN_FLIGHT</code> <em>state, but only if no record for this key
+        exists, and do the existence check and the insert as one indivisible
+        operation.</em> Win and you proceed; lose and you are a duplicate.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The step the whole design lives or dies on</span>
+        <p>
+          “Check whether it exists” and “create it” must be
+          <strong>one operation</strong>, not two. A read followed by a write is
+          a race, and it loses in a way that produces exactly the double charge
+          the key was added to prevent.
+          <a href="0006-the-atomic-claim.html">Lesson 6</a> is entirely about
+          this one step.
+        </p>
+      </div>
+
+      <h3>(5) Persist the response atomically with the effect</h3>
+
+      <p>
+        The effect — the charge row — and the key record’s transition to
+        <code>COMPLETE</code> with its stored status and body must commit
+        <strong>together</strong>. If they commit separately there is a window in
+        which the effect exists but the key record does not say so, and a retry
+        landing in that window executes the effect a second time.
+      </p>
+
+      <p>Stripe describes what gets stored:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Stripe’s idempotency works by saving the resulting status code and
+            body of the first request made for any given idempotency key,
+            regardless of whether it succeeds or fails. Subsequent requests with
+            the same key return the same result, including 500 errors.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.stripe.com/api/idempotent_requests"
+            >Stripe API reference, “Idempotent requests”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        “Regardless of whether it succeeds or fails”, including 500s, is a
+        deliberate and contestable choice —
+        <a href="0008-the-edges-that-bite.html">lesson 8</a> takes it apart. In
+        one relational database, committing the two together is one transaction.
+        Across a database and a third party it is
+        <strong>not possible at all</strong>, which is also lesson 8.
+      </p>
+
+      <h3>(6) The response is lost</h3>
+
+      <p>
+        Everything so far was correct, and the client still does not know it.
+        Brandur Leach’s taxonomy of where this can happen:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Consider a call between any two nodes. There are a variety of
+            failures that can occur:
+          </p>
+          <p>
+            The initial connection could fail as the client tries to connect to a
+            server. The call could fail midway while the server is fulfilling the
+            operation, leaving the work in limbo. The call could succeed, but the
+            connection break before the server can tell its client about it.
+          </p>
+        </blockquote>
+        <figcaption>
+          Brandur Leach,
+          <a class="citation" href="https://stripe.com/blog/idempotency"
+            >“Designing robust and predictable APIs with idempotency”</a
+          >, Stripe blog, 22 February 2017. <strong>Practitioner writing.</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        That is Birrell and Nelson’s “either once or not at all”, restated for
+        HTTP thirty-four years later.
+      </p>
+
+      <h3>(7) The client retries — same key, same body, after backoff</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Furthermore, it’s also a good idea to mix in an element of
+            randomness. If a problem with a server causes a large number of
+            clients to fail at close to the same time, then even with back off,
+            their retry schedules could be aligned closely enough that the
+            retries will hammer the troubled server. This is known as the
+            thundering herd problem.
+          </p>
+          <p>
+            We can address thundering herd by adding some amount of random
+            “jitter” to each client’s wait time.
+          </p>
+        </blockquote>
+        <figcaption>Brandur Leach, as above. Practitioner writing.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Why jitter matters more here than usual</span>
+        <p>
+          Idempotency-key retries are <strong>correlated by
+          construction</strong>: every client that lost a response to the same
+          incident will retry on the same schedule. Without jitter, the recovery
+          is itself a synchronised stampede.
+        </p>
+      </div>
+
+      <h3>(10) Replay, without touching the effect store</h3>
+
+      <p>
+        The handler does not run. This is the entire point — the second request
+        produces no second effect. Stripe marks replays so a client can tell:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            To identify a previously executed response that’s being replayed from
+            the server, look for the header
+            <code>Idempotent-Replayed: true</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://docs.stripe.com/error-low-level"
+            >Stripe, “Advanced error handling”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Note that this header is a <strong>Stripe extension</strong>. It appears
+        on Stripe’s error-handling page but not on its own API reference for
+        idempotent requests, and it is absent from the IETF draft entirely. It is
+        also the only way a client can distinguish “this ran now” from “this ran
+        earlier”, which is a genuine gap in the draft.
+      </p>
+
+      <h2>The key record as a state machine</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code>                       (3) atomic claim SUCCEEDS
+    ┌───────────────┐ ─────────────────────────────> ┌──────────────┐
+    │   no record   │                                │  IN_FLIGHT   │
+    └───────────────┘ &lt;───────────────────────────── └──────────────┘
+            ▲            lease expires, record                │
+            │            reclaimed                            │ (5) handler returns;
+            │                                                 │     effect + response
+            │ retention window elapses;                       │     commit together
+            │ reaper deletes the record                       ▼
+            │                                         ┌──────────────┐
+            └──────────────────────────────────────── │   COMPLETE   │
+                                                      └──────────────┘
+</code></pre>
+        </div>
+        <figcaption>
+          Two states, three transitions. The draft implies the states without
+          naming them; AWS Lambda Powertools names them in its source constants.
+        </figcaption>
+      </figure>
+
+      <p>
+        And the read path — what happens to a request whose atomic claim
+        <em>failed</em> because a record already exists:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The three-way branch, which draft-07 §2.6 sets out and the vendors
+            then disagree about.
+          </caption>
+          <thead>
+            <tr>
+              <th>Existing state</th>
+              <th>Fingerprint</th>
+              <th>Server does</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>IN_FLIGHT</code></td>
+              <td>not checked</td>
+              <td>refuse; tell the client to retry later</td>
+              <td><code>409</code> (draft-07, Stripe)</td>
+            </tr>
+            <tr>
+              <td><code>COMPLETE</code></td>
+              <td>matches</td>
+              <td>
+                replay the stored status and body;
+                <strong>do not run the handler</strong>
+              </td>
+              <td>the stored status</td>
+            </tr>
+            <tr>
+              <td><code>COMPLETE</code></td>
+              <td>differs</td>
+              <td>refuse; the client has a key-reuse bug</td>
+              <td><code>422</code> (draft-07) / <code>400</code> (AWS)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">“Expired” is not a fourth case</span>
+        <p>
+          An expired record is <em>deleted</em>. So the atomic claim in step (3)
+          succeeds and the operation runs again as if the key had never been
+          seen. This is the most dangerous property of the entire mechanism and
+          it gets its own section in
+          <a href="0008-the-edges-that-bite.html">lesson 8</a>.
+        </p>
+      </div>
+
+      <p>
+        The <code>IN_FLIGHT</code> state is the whole reason this is hard. If
+        operations were instantaneous it would not exist, and an idempotency key
+        would be nothing more than a cache lookup.
+      </p>
+
+      <h2>The whole thing, in one sketch</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">import hashlib
+import json
+
+CONFLICT = "another request with this key is in flight"
+MISMATCH = "this key was used with a different payload"
+
+
+def fingerprint(body: dict) -> str:
+    """The resource computes this; the client never sends it.
+    draft-07 §2.4 permits a checksum over the whole payload."""
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def handle(db, account_id, key, body, operation):
+    scope = (account_id, key)          # keys are scoped, never global
+    fp = fingerprint(body)
+
+    # --- Step 3: the atomic claim. -----------------------------------------
+    # One statement. The existence check and the insert cannot be separated,
+    # or two concurrent requests can both observe "absent" and both proceed.
+    claimed = db.insert_if_absent(
+        scope, {"fingerprint": fp, "state": "IN_FLIGHT"}
+    )
+
+    if not claimed:
+        record = db.get(scope)
+
+        if record["fingerprint"] != fp:
+            return 422, {"error": MISMATCH}          # draft-07 §2.7
+
+        if record["state"] == "IN_FLIGHT":
+            return 409, {"error": CONFLICT}          # draft-07 §2.7
+
+        # Replay. The handler is NOT invoked.
+        return record["status"], record["body"]
+
+    # --- Steps 4 and 5: execute, then commit effect and record TOGETHER. ---
+    # If these two commits can be separated, a retry landing in the gap
+    # executes the operation a second time.
+    with db.transaction() as tx:
+        status, response = operation(tx, body)
+        tx.update(scope, {
+            "state": "COMPLETE", "status": status, "body": response,
+        })
+
+    return status, response</code></pre>
+      </div>
+
+      <p>
+        This omits error handling, transaction retry, observability and expiry.
+        Everything genuinely interesting is in two places:
+        <code>insert_if_absent</code>, and the single
+        <code>with db.transaction()</code> block.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why must the effect and the key record commit in one transaction?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Two separate commits would be much slower to complete
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The database is unable to write two tables separately
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The specification requires this to be one single transaction
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A retry arriving between them executes the operation twice
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Separate commits leave a window where the charge exists but the key
+          record does not yet say <code>COMPLETE</code>. A retry arriving in that
+          window finds nothing to replay and runs the handler again. Note that
+          the draft does <em>not</em> require one transaction — it says nothing
+          about storage at all — and performance is beside the point.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Who computes the idempotency fingerprint, and from what?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The client, from the payload just before it sends
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The server, from the request payload that it received
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The server, from the key and the account together
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The client, from a secret shared with the server
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          draft-07 §2.4: the fingerprint “is generated from request payload data
+          by the resource”. The client never sends it and never computes it —
+          which matters, because a client-supplied fingerprint could be forged to
+          make a different payload look like the original.
+        </p>
+      </div>
+
+      <h2>Next</h2>
+
+      <p>
+        One step in this lifecycle was waved at rather than explained: step (3).
+        It is where two simultaneous requests meet, and getting it wrong is the
+        difference between a correct system and a system that looks correct.
+        <a href="0006-the-atomic-claim.html">Lesson 6</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://docs.stripe.com/api/idempotent_requests"
+              >Stripe API reference, “Idempotent requests”</a
+            >
+            — short, first-party, and the most widely copied design in the
+            industry. Read it now that you know what the lifecycle is, and notice
+            how much it leaves unstated: nothing about concurrency mechanism,
+            nothing about storage. That silence is where lesson 6 lives.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If any arrow in the sequence diagram is
+          unclear — particularly why step (5) is drawn as a double line into
+          <em>both</em> stores — ask. That notation is carrying the single most
+          important constraint on the page.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This lesson is denser than the ones before it. Rather than reading it
+            twice, wait a day and redraw the sequence diagram from memory on
+            paper — you will not get all eleven steps, and the ones you miss are
+            exactly the ones to re-read. Then check the
+            <a href="../reference/key-record-lifecycle.html"
+              >lifecycle reference</a
+            >, which is the compressed version you will come back to.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0004-why-the-client-generates-the-key.html"
+              >4. Why the client generates the key</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0006-the-atomic-claim.html">6. The atomic claim</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

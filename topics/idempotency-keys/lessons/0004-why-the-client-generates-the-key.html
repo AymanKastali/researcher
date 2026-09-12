@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4. Why the client generates the key — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0004</span>
+        <h1>Why the client generates the key</h1>
+        <p class="lesson-mission">
+          The mission is the reasoning, and this is the step most people skip:
+          not <em>what</em> the key is, but why it can only come from the client
+          and from nowhere else in the stack.
+        </p>
+      </header>
+
+      <p class="lead">
+        Deduplication at the receiver needs an identifier. The obvious question
+        is why that identifier is the application’s problem — surely the network,
+        the framework, or the load balancer could suppress duplicates on your
+        behalf. The answer is one of the most-cited arguments in systems design,
+        and it settles the matter.
+      </p>
+
+      <h2>The end-to-end argument</h2>
+
+      <p>
+        Saltzer, Reed and Clark address this case directly — by name, as one of
+        their worked examples:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A property of some communication network designs is that a message or
+            a part of a message may be delivered twice, typically as a result of
+            time-out-triggered failure detection and retry mechanisms operating
+            within the network. The network can provide the function of watching
+            for and suppressing any such duplicate messages, or it can simply
+            deliver them. One might expect that an application would find it very
+            troublesome to cope with a network that may deliver the same message
+            twice; indeed it is troublesome. Unfortunately, even if the network
+            suppresses duplicates, the application itself may accidentally
+            originate duplicate requests, in its own failure/retry procedures.
+            These application level duplications look like different messages to
+            the communication system, so it cannot suppress them; suppression
+            must be accomplished by the application itself with knowledge of how
+            to detect its own duplicates.
+          </p>
+        </blockquote>
+        <figcaption>
+          J. H. Saltzer, D. P. Reed and D. D. Clark,
+          <a
+            class="citation"
+            href="https://web.mit.edu/Saltzer/www/publications/endtoend/endtoend.txt"
+            >“End-to-End Arguments in System Design”</a
+          >, ACM <em>TOCS</em> 2(4), November 1984, pp. 277–288; revised from the
+          Second International Conference on Distributed Computing Systems,
+          Paris, 1981.
+        </figcaption>
+      </figure>
+
+      <p>And then the conclusion that decides ownership of the key:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Thus the end-to-end argument again: if the application level has to
+            have a duplicate-suppressing mechanism anyway, that mechanism can
+            also suppress any duplicates generated inside the communication
+            network, so the function can be omitted from that lower level.
+          </p>
+        </blockquote>
+        <figcaption>Saltzer, Reed and Clark, as above.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence that explains the whole design</span>
+        <p>
+          <strong>TCP already deduplicates segments. It cannot deduplicate
+          intentions.</strong>
+        </p>
+        <p>
+          Only the client knows that the <code>POST /charges</code> it is sending
+          now is a <em>retry</em> of the one it sent thirty seconds ago rather
+          than a genuine second charge. The two are byte-identical, and no layer
+          beneath the application has any way to tell them apart. So the client
+          must say so — and the way it says so is by attaching a stable
+          identifier it chose before the first attempt.
+        </p>
+      </div>
+
+      <p>
+        Notice that the argument cuts both ways. It is not just that lower layers
+        <em>need not</em> suppress duplicates; it is that they
+        <em>cannot</em>, for the class of duplicate that matters most. A retry
+        the application generated is, to the network, a new message that happens
+        to look like an old one.
+      </p>
+
+      <h2>1983 again: the key already existed</h2>
+
+      <p>
+        Birrell and Nelson’s <strong>call identifier</strong> is the direct
+        ancestor of the header. Read this knowing what an idempotency key is, and
+        it is uncanny:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The call identifier serves two purposes. It allows the caller to
+            determine that the result packet is truly the result of his current
+            call (not, for example, a much delayed result of some previous call),
+            and it allows the callee to eliminate duplicate call packets (caused
+            by retransmissions, for example). The call identifier consists of the
+            calling machine identifier (which is permanent and globally unique),
+            a machine-relative identifier of the calling process, and a sequence
+            number.
+          </p>
+        </blockquote>
+        <figcaption>
+          Birrell &amp; Nelson,
+          <a
+            class="citation"
+            href="http://www.bitsavers.org/pdf/xerox/parc/techReports/CSL-83-7_Implementing_Remote_Procedure_Calls.pdf"
+            ><em>Implementing Remote Procedure Calls</em></a
+          >, CSL-83-7, 1983.
+        </figcaption>
+      </figure>
+
+      <p>The deduplication table is in the very next paragraph:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The RPCRuntime on a callee machine maintains a table giving the
+            sequence number of the last call invoked by each calling activity.
+            When a call packet is received, its call identifier is looked up in
+            this table. The call packet can be discarded as a duplicate (possibly
+            after acknowledgement) unless its sequence number is greater than
+            that given in this table.
+          </p>
+        </blockquote>
+        <figcaption>Birrell &amp; Nelson, as above.</figcaption>
+      </figure>
+
+      <p>And so is the retention window — the first one ever specified:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If a connection is idle, the server machine may discard its state
+            information after an interval, when there is no longer any danger of
+            receiving retransmitted call packets (say, after five minutes), and
+            it can do so without interacting with the caller machine.
+          </p>
+        </blockquote>
+        <figcaption>Birrell &amp; Nelson, as above.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Five names, one mechanism</span>
+        <p>
+          Birrell &amp; Nelson’s <em>call identifier</em>, Kafka’s
+          <em>producer ID + sequence number</em>, Stripe’s
+          <code>Idempotency-Key</code>, AWS’s <code>ClientRequestToken</code>,
+          PayPal’s <code>PayPal-Request-Id</code> and Google’s
+          <code>request_id</code>. The mechanism has not changed since 1983 — a
+          client-chosen identifier, a table at the receiver, and an expiry.
+        </p>
+      </div>
+
+      <h2>The header itself</h2>
+
+      <p>
+        Only now, with the reasoning in place, is the syntax worth looking at.
+        The header is being standardised but
+        <strong>is not yet an RFC</strong>. The current revision is
+        <a
+          class="citation"
+          href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07"
+          >draft-ietf-httpapi-idempotency-key-header-07</a
+        >, Jena &amp; Dalal, IETF HTTPAPI Working Group, dated 15 October 2025.
+        Its own boilerplate insists on how it may be cited:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Internet-Drafts are draft documents valid for a maximum of six months
+            and may be updated, replaced, or obsoleted by other documents at any
+            time. It is inappropriate to use Internet-Drafts as reference
+            material or to cite them other than as “work in progress.”
+          </p>
+        </blockquote>
+        <figcaption>draft-07, boilerplate.</figcaption>
+      </figure>
+
+      <div class="definition">
+        <span class="term">idempotency key</span>
+        <p>
+          An idempotency key is a unique value generated by the client which the
+          resource uses to recognize subsequent retries of the same request. The
+          Idempotency-Key HTTP request header field carries this value.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2"
+            >draft-ietf-httpapi-idempotency-key-header-07 §2</a
+          >. Work in progress, not an RFC.
+        </span>
+      </div>
+
+      <p>On the wire, §2.1 makes it a Structured Field String:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Idempotency-Key is an Item Structured Header [RFC8941]. Its value
+            MUST be a String (Section 3.3.3 of [RFC8941]).
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2.1"
+            >draft-07 §2.1</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>Being a Structured Field String means the value is quoted:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">HTTP</span>
+        </div>
+        <pre><code>Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"</code></pre>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The draft describes where the WG wants to go</span>
+        <p>
+          Almost no production deployment quotes the value. Stripe’s own
+          documented example is
+          <code>Idempotency-Key: KG5LxwFBepaKHyUD</code> — unquoted. Every real
+          deployment is older than the draft, and this is one of several places
+          where the two diverge. Do not read the draft as a description of
+          current practice.
+        </p>
+      </div>
+
+      <p>Uniqueness is the one place the draft uses MUST:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The idempotency key MUST be unique and MUST NOT be reused with
+            another request with a different request payload.
+          </p>
+          <p>
+            Uniqueness of the key MUST be defined by the resource owner and MUST
+            be implemented by the clients of the resource. It is RECOMMENDED that
+            a UUID [RFC4122] or a similar random identifier be used as an
+            idempotency key.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2.2"
+            >draft-07 §2.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>Two ways to generate one, and the trade between them</h2>
+
+      <p>Stripe names both strategies and, importantly, licenses the second:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>There are two common strategies for generating idempotency keys:</p>
+          <p>
+            • Use an algorithm that generates a token with enough randomness,
+            like UUID v4.<br />
+            • Derive the key from a user-attached object, like the ID of a
+            shopping cart. This provides a relatively straightforward way to
+            protect against double submissions.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://docs.stripe.com/error-low-level"
+            >Stripe, “Advanced error handling”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Neither strategy dominates. The trade is about surviving a restart.
+          </caption>
+          <thead>
+            <tr>
+              <th>Strategy</th>
+              <th>Stronger because</th>
+              <th>Weaker because</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Random UUIDv4</td>
+              <td>
+                Collisions are effectively impossible, and two genuine requests
+                never share a key.
+              </td>
+              <td>
+                A UUID held only in the retrying process’s memory is lost if that
+                process dies.
+              </td>
+            </tr>
+            <tr>
+              <td>Derived from a cart ID</td>
+              <td>
+                Reconstructible by <em>any</em> process, so it survives a
+                restart — nothing has to be remembered.
+              </td>
+              <td>
+                The same cart legitimately checked out twice collides, and the
+                second checkout silently replays the first.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The mistake that silently disables the whole mechanism</h2>
+
+      <p>
+        There is one error here that is worth more attention than everything else
+        in this lesson, because it produces a system that looks correct, passes
+        review, and provides no protection whatsoever.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python"># WRONG. A fresh key per attempt means every attempt is a new operation,
+# and the server has no way to connect them. This has no idempotency at all.
+for attempt in range(3):
+    post("/charges", key=uuid4(), body=body)
+
+# RIGHT. The key is bound to the intent, generated once, before the first
+# attempt, and reused unchanged by every retry.
+key = uuid4()
+for attempt in range(3):
+    post("/charges", key=key, body=body)</code></pre>
+      </div>
+
+      <p>
+        The key must be bound to the <strong>user’s intent</strong> — one
+        checkout, one key — rather than to an attempt. And if the client can
+        restart, the key has to survive the restart, which is precisely the
+        argument for deriving it from something durable rather than generating it
+        in memory.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can’t the network layer suppress duplicate requests for you?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Encrypted payloads hide the content from lower layers
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Retransmission happens too quickly for it to notice
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Application retries look like new messages to it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Most load balancers deliberately turn that feature off
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Saltzer, Reed and Clark put it exactly this way: “These application
+          level duplications look like different messages to the communication
+          system, so it cannot suppress them.” TCP does deduplicate its own
+          segments perfectly well — that is not the gap. The gap is that a retry
+          your code decided to issue is a genuinely new message, and only your
+          code knows it represents the same intent.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Where in a retry loop should the idempotency key be generated?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Once before the loop, then reused every attempt
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Freshly inside the loop, once per separate attempt
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Only on the second attempt, marking a retry
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              By the server, returned on the first response
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The key identifies the intent, not the attempt, so it is generated once
+          and reused unchanged. Generating inside the loop is the classic silent
+          failure: every attempt carries a different key, so the server sees
+          several unrelated first-time requests. Sending it only on retries fails
+          because there is then no record from the first attempt to match
+          against, and a server-issued key cannot work at all — the client needs
+          it before it makes the request whose response it may never see.
+        </p>
+      </div>
+
+      <h2>Where this goes next</h2>
+
+      <p>
+        You have the problem, the argument, and the identifier. What you have not
+        seen is what the server does with it — which turns out to be eleven
+        steps, two of which must be atomic.
+        <a href="0005-the-lifecycle-of-a-key.html">Lesson 5</a> walks the whole
+        path.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://web.mit.edu/Saltzer/www/publications/endtoend/endtoend.txt"
+              >Saltzer, Reed &amp; Clark, “End-to-End Arguments in System
+              Design”</a
+            >
+            — the whole paper is worth it, but §3 is where the duplicate-message
+            case sits. It is a plain-text file, about forty minutes to read
+            properly, and it will change how you think about far more than
+            idempotency. This is the most broadly useful primary source in the
+            topic.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth bringing back: if you derive a key
+          from a cart ID, what should happen the second time a customer
+          deliberately buys the same cart? There is a real design answer and it
+          is not obvious.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Lessons 1–4 are the “why”. Before starting the “how” in lesson 5,
+            leave a longer gap than usual — two or three days — and then try to
+            tell the whole story from the top: what idempotent means, what HTTP
+            promises, why that is not enough, and why the key is the client’s.
+            If any link in that chain is missing, go back to that lesson rather
+            than forward.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0003-the-ambiguous-failure.html"
+              >3. The ambiguous failure</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0005-the-lifecycle-of-a-key.html"
+              >5. The lifecycle of a key</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

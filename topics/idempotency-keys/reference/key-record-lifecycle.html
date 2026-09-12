@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Key record lifecycle — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Key record lifecycle</h1>
+        <p class="page-blurb">
+          The eleven steps, the state machine, the read-path decision table, and
+          the one-statement atomic claim idiom in each major store. Built for
+          looking things up, not for reading through.
+        </p>
+      </header>
+
+      <h2>The eleven steps</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Step</th>
+              <th>The thing to get right</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>0</td>
+              <td>Client generates the key</td>
+              <td>
+                Before the <em>first</em> attempt, bound to the intent. Must
+                survive a client restart.
+              </td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>Request carries the key in a header</td>
+              <td>Request header. Not the body, not the URL, not on the resource.</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Server computes the fingerprint</td>
+              <td>By the resource, over the payload. The client never sends it.</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td><strong>Atomic claim</strong></td>
+              <td>
+                <strong>Check and insert as one operation.</strong> A read then a
+                write is a race.
+              </td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Execute the operation</td>
+              <td>The only slow step, so the only one a duplicate can land during.</td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td><strong>Commit effect + key record together</strong></td>
+              <td>
+                <strong>One transaction.</strong> Separate commits leave a window
+                that re-executes.
+              </td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>Response is lost</td>
+              <td>Everything was correct. The client still does not know.</td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>Client retries</td>
+              <td>
+                Same key, same body, exponential backoff <em>with jitter</em>.
+              </td>
+            </tr>
+            <tr>
+              <td>8–9</td>
+              <td>Lookup, then fingerprint check</td>
+              <td>Match → replay. Mismatch → refuse.</td>
+            </tr>
+            <tr>
+              <td>10</td>
+              <td>Replay the stored response</td>
+              <td>
+                The handler does <strong>not</strong> run. No second effect.
+              </td>
+            </tr>
+            <tr>
+              <td>11</td>
+              <td>Expiry</td>
+              <td>
+                Record deleted. After this the key is indistinguishable from new.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The two steps that must be atomic</span>
+        <p>
+          <strong>Step 3</strong> — or two concurrent requests both observe
+          “absent” and both execute.
+        </p>
+        <p>
+          <strong>Step 5</strong> — or a retry arriving between the effect’s commit
+          and the record’s commit executes the effect a second time.
+        </p>
+      </div>
+
+      <h2>State machine</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code>                       (3) atomic claim SUCCEEDS
+    ┌───────────────┐ ─────────────────────────────> ┌──────────────┐
+    │   no record   │                                │  IN_FLIGHT   │
+    └───────────────┘ &lt;───────────────────────────── └──────────────┘
+            ▲            lease expires, record                │
+            │            reclaimed                            │ (5) handler returns;
+            │                                                 │     effect + response
+            │ retention window elapses;                       │     commit together
+            │ reaper deletes the record                       ▼
+            │                                         ┌──────────────┐
+            └──────────────────────────────────────── │   COMPLETE   │
+                                                      └──────────────┘
+</code></pre>
+        </div>
+        <figcaption>
+          Two states. <code>EXPIRED</code> is not a third — an expired record is
+          deleted, so the next claim succeeds and the operation runs again.
+        </figcaption>
+      </figure>
+
+      <h2>Read path: the claim failed, a record exists</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Fingerprint</th>
+              <th>Do</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>IN_FLIGHT</code></td>
+              <td>not checked</td>
+              <td>refuse; client retries later</td>
+              <td>
+                <code>409</code> (draft-07, Stripe) / <code>422</code> or
+                <code>409</code> (Adyen)
+              </td>
+            </tr>
+            <tr>
+              <td><code>COMPLETE</code></td>
+              <td>matches</td>
+              <td>
+                replay stored status and body; <strong>do not run the
+                handler</strong>
+              </td>
+              <td>the stored status</td>
+            </tr>
+            <tr>
+              <td><code>COMPLETE</code></td>
+              <td>differs</td>
+              <td>refuse; the client has a key-reuse bug</td>
+              <td><code>422</code> (draft-07) / <code>400</code> (AWS)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The atomic claim, per store</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            One statement each. The loser is told it lost by the mechanism in the
+            last column.
+          </caption>
+          <thead>
+            <tr>
+              <th>Store</th>
+              <th>Idiom</th>
+              <th>Loser learns via</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PostgreSQL</td>
+              <td>
+                <code>INSERT ... ON CONFLICT DO NOTHING RETURNING</code>, over a
+                <code>UNIQUE</code> index
+              </td>
+              <td>Empty <code>RETURNING</code> result</td>
+            </tr>
+            <tr>
+              <td>PostgreSQL (alt.)</td>
+              <td><code>SERIALIZABLE</code> transaction</td>
+              <td>Serialisation failure, transaction aborted</td>
+            </tr>
+            <tr>
+              <td>DynamoDB</td>
+              <td>
+                <code>PutItem</code> with
+                <code>attribute_not_exists(&lt;partition key&gt;)</code>
+              </td>
+              <td><code>ConditionalCheckFailedException</code></td>
+            </tr>
+            <tr>
+              <td>Redis</td>
+              <td><code>SET key value NX</code></td>
+              <td>Null reply</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Sourcing note on Redis</span>
+        <p>
+          The <code>SET</code> page makes no explicit atomicity claim — this is
+          widely misquoted. The guarantee comes from the
+          <a
+            class="citation"
+            href="https://redis.io/docs/latest/develop/using-commands/transactions/"
+            >transactions page</a
+          >: commands “are serialized and executed sequentially”, and another
+          client “will never be served in the middle”.
+        </p>
+      </div>
+
+      <h2>The design rule</h2>
+
+      <div class="aside insight">
+        <span class="label">Prefer a compare-and-set in the store that holds the effect</span>
+        <p>
+          <strong>Do not take a lock. Make the key’s creation itself the atomic
+          operation, in the same store that holds the effect, so that winning the
+          race and recording the effect are the same commit.</strong>
+        </p>
+        <p>
+          No lease to expire · no second system to be partitioned from · it is a
+          fencing token for free, in the only place that matters · it composes with
+          the commit of the effect.
+        </p>
+      </div>
+
+      <h2>Reference implementation sketch</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this workspace</span>
+        </div>
+        <pre><code class="language-python">import hashlib
+import json
+
+CONFLICT = "another request with this key is in flight"
+MISMATCH = "this key was used with a different payload"
+
+
+def fingerprint(body: dict) -> str:
+    """The resource computes this; the client never sends it."""
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def handle(db, account_id, key, body, operation):
+    scope = (account_id, key)          # keys are scoped, never global
+    fp = fingerprint(body)
+
+    # Step 3: the atomic claim. One statement — the existence check and the
+    # insert cannot be separated, or two requests both observe "absent".
+    claimed = db.insert_if_absent(
+        scope, {"fingerprint": fp, "state": "IN_FLIGHT"}
+    )
+
+    if not claimed:
+        record = db.get(scope)
+
+        if record["fingerprint"] != fp:
+            return 422, {"error": MISMATCH}
+
+        if record["state"] == "IN_FLIGHT":
+            return 409, {"error": CONFLICT}
+
+        # Replay. The handler is NOT invoked.
+        return record["status"], record["body"]
+
+    # Steps 4 and 5: execute, then commit effect and record TOGETHER.
+    with db.transaction() as tx:
+        status, response = operation(tx, body)
+        tx.update(scope, {
+            "state": "COMPLETE", "status": status, "body": response,
+        })
+
+    return status, response</code></pre>
+      </div>
+
+      <p class="small-print">
+        Omits error handling, transaction retry, observability, leases and expiry.
+        Its only job is to make the atomicity of steps 3 and 5 concrete.
+      </p>
+
+      <h2>Checklist</h2>
+
+      <ul>
+        <li>Key generated before the first attempt, not inside the retry loop.</li>
+        <li>Key scoped by account — never a global namespace.</li>
+        <li>Claim is one statement, in the store that holds the effect.</li>
+        <li>Effect and key record commit in one transaction.</li>
+        <li>Fingerprint computed server-side; mismatch refused, not replayed.</li>
+        <li>In-flight claims carry a lease, and the final commit is conditional.</li>
+        <li>Retention window exceeds the client’s maximum retry horizon.</li>
+        <li>
+          Outcomes stored only for requests that began executing; pre-handler
+          failures free the key.
+        </li>
+        <li>Replays marked, so a client can tell them apart.</li>
+      </ul>
+
+      <p class="small-print">
+        Taught in
+        <a href="../lessons/0005-the-lifecycle-of-a-key.html">lesson 5</a> and
+        <a href="../lessons/0006-the-atomic-claim.html">lesson 6</a>. Back to the
+        <a href="../index.html">topic contents</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

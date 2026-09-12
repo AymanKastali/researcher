@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vendor comparison — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Vendor comparison</h1>
+        <p class="page-blurb">
+          Where the implementations actually differ. No two vendors answer the
+          concurrent case the same way, and the retention windows span four orders
+          of magnitude — so this is the page to check before assuming anything
+          about someone else’s API.
+        </p>
+      </header>
+
+      <div class="aside warning">
+        <span class="label">Read this first</span>
+        <p>
+          Every disagreement below is real and load-bearing. A client written
+          against one vendor’s behaviour and pointed at another’s will be wrong in
+          ways that do not surface until a failure — which is exactly when you
+          were relying on it.
+        </p>
+      </div>
+
+      <h2>Field name and length budget</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Vendor / spec</th>
+              <th>Field</th>
+              <th>Max length</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>IETF draft-07</td>
+              <td>
+                <code>Idempotency-Key</code> — Structured Field String, quoted on
+                the wire
+              </td>
+              <td>not specified</td>
+            </tr>
+            <tr>
+              <td>Stripe</td>
+              <td><code>Idempotency-Key</code></td>
+              <td>255</td>
+            </tr>
+            <tr>
+              <td>Adyen</td>
+              <td><code>idempotency-key</code></td>
+              <td>64</td>
+            </tr>
+            <tr>
+              <td>Square</td>
+              <td><code>idempotency_key</code> — a <strong>body field</strong></td>
+              <td>45</td>
+            </tr>
+            <tr>
+              <td>PayPal</td>
+              <td><code>PayPal-Request-Id</code></td>
+              <td>38 single-byte characters</td>
+            </tr>
+            <tr>
+              <td>AWS EC2</td>
+              <td><code>ClientToken</code></td>
+              <td>64 ASCII characters</td>
+            </tr>
+            <tr>
+              <td>AWS DynamoDB</td>
+              <td><code>ClientRequestToken</code></td>
+              <td>36</td>
+            </tr>
+            <tr>
+              <td>Google AIP-155</td>
+              <td><code>request_id</code> — a proto field</td>
+              <td>
+                “Restricted to 36 ASCII characters” — in the illustrative proto
+                comment only, not a normative bullet
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Why UUIDv4 is the universal recommendation</span>
+        <p>
+          A bare UUIDv4 is <strong>36 characters</strong>, which fits inside every
+          budget above — including DynamoDB’s 36 and PayPal’s 38. That is not a
+          coincidence; it is the reason the recommendation is universal.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Square adds a caveat nobody else does: “the number of allowed characters
+        might be less than the stated maximum, if multi-byte characters are used.”
+      </p>
+
+      <h2>Concurrent request — a retry while the first is still in flight</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Vendor</th>
+              <th>Status</th>
+              <th>Retryable?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>IETF draft-07</td>
+              <td><code>409</code></td>
+              <td>
+                yes — “with the exception of 409 where no correction is required”
+              </td>
+            </tr>
+            <tr>
+              <td>Stripe</td>
+              <td><code>409 Conflict</code></td>
+              <td>yes, explicitly</td>
+            </tr>
+            <tr>
+              <td>Adyen</td>
+              <td>
+                <code>422</code> <strong>or</strong> <code>409</code>, error code
+                704
+              </td>
+              <td>yes — <code>transient-error: true</code> header</td>
+            </tr>
+            <tr>
+              <td>PayPal</td>
+              <td>not stated — “might fail the second request”</td>
+              <td>not stated</td>
+            </tr>
+            <tr>
+              <td>AWS Lambda Powertools</td>
+              <td><code>IdempotencyAlreadyInProgressError</code></td>
+              <td>yes — “you can safely retry the operation”</td>
+            </tr>
+            <tr>
+              <td>Square</td>
+              <td><strong>nothing documented</strong></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>AWS EC2</td>
+              <td><strong>nothing documented</strong></td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Nobody blocks</span>
+        <p>
+          Not one vendor documents holding the second request open until the first
+          finishes and then replaying its response — which is what a naive “take a
+          lock and wait” design would do. Every one of them
+          <strong>fails fast and tells the client to retry</strong>. Waiting means
+          holding a lease, and a lease you hold is a lease that can expire under
+          you.
+        </p>
+      </div>
+
+      <h2>Same key, different payload</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Vendor</th>
+              <th>Behaviour</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>IETF draft-07</td>
+              <td><code>422 Unprocessable Content</code></td>
+            </tr>
+            <tr>
+              <td>AWS (EC2, DynamoDB)</td>
+              <td>
+                <code>IdempotentParameterMismatch</code>, HTTP <code>400</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Stripe</td>
+              <td>
+                Errors, “indicating that the new request didn’t match the
+                original”; no code pinned on the idempotency page
+              </td>
+            </tr>
+            <tr>
+              <td>Square</td>
+              <td>
+                An error, hedged: “this behavior might vary depending on the API”
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <strong>The authorities disagree on the status code.</strong> If you are
+        writing a client, do not assume <code>422</code>.
+      </p>
+
+      <h2>Retention window</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Both specifications explicitly decline to choose. AIP-155: “APIs may
+            choose any reasonable timeframe.”
+          </caption>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Documented window</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>AWS DynamoDB <code>TransactWriteItems</code></td>
+              <td>10 minutes, stated on two pages</td>
+            </tr>
+            <tr>
+              <td>AWS Lambda Powertools</td>
+              <td>1 hour default; “no limit on how long” it can be set to</td>
+            </tr>
+            <tr>
+              <td>Stripe (API reference)</td>
+              <td>
+                “can remove keys … after they’re <em>at least</em> 24 hours old” —
+                a floor on pruning
+              </td>
+            </tr>
+            <tr>
+              <td>Stripe (error handling)</td>
+              <td>
+                “keys expire out of the system after 24 hours” — a ceiling on
+                validity
+              </td>
+            </tr>
+            <tr>
+              <td>Brandur (practitioner)</td>
+              <td>~72 hours, to carry a bad Friday deploy through to Monday</td>
+            </tr>
+            <tr>
+              <td>Adyen</td>
+              <td>“valid for a period of 7 to 14 days after first submission”</td>
+            </tr>
+            <tr>
+              <td>Birrell &amp; Nelson, 1983</td>
+              <td>“say, after five minutes”</td>
+            </tr>
+            <tr>
+              <td>AWS EC2 / PayPal / Square</td>
+              <td><strong>not documented</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The rule behind every number above</span>
+        <p>
+          <strong>Retention must exceed the client’s maximum retry
+          horizon.</strong> An expired key is indistinguishable from a key never
+          seen, so it silently executes — invisibly from both sides. Adyen’s
+          7–14 days is a range, not a number: plan against the floor.
+        </p>
+      </div>
+
+      <h2>What gets replayed</h2>
+
+      <p>
+        A genuine, citable fork in the design space — and not a cosmetic one.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Approach</th>
+              <th>Who</th>
+              <th>Consequence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Replay the stored original response</td>
+              <td>
+                Stripe (“saving the resulting status code and body of the first
+                request”), Square
+              </td>
+              <td>
+                The client sees exactly what it would have seen, however stale.
+              </td>
+            </tr>
+            <tr>
+              <td>Return current state</td>
+              <td>
+                AIP-155, and PayPal explicitly: “PayPal provides the status of a
+                request at the current time and not the status of the original
+                request.”
+              </td>
+              <td>
+                A client assuming the first approach will misread a
+                subsequently-modified resource as the original outcome.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Key scoping</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Scope</th>
+              <th>Who</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Per user account</td>
+              <td>Brandur: <code>UNIQUE (user_id, idempotency_key)</code></td>
+            </tr>
+            <tr>
+              <td>Per company account</td>
+              <td>Adyen</td>
+            </tr>
+            <tr>
+              <td>Per region</td>
+              <td>Adyen; AWS EC2 “regional idempotency”</td>
+            </tr>
+            <tr>
+              <td>Per availability zone</td>
+              <td>AWS EC2 “zonal idempotency”</td>
+            </tr>
+            <tr>
+              <td>Per API call type</td>
+              <td>PayPal — authorize and capture are separate keys</td>
+            </tr>
+            <tr>
+              <td>Per function + payload hash</td>
+              <td>AWS Lambda Powertools, by default</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Regional scoping breaks region failover</span>
+        <p>
+          AWS and Adyen both say it: a key is checked only within its region. A
+          client whose retry policy fails over to another region can duplicate an
+          operation <strong>while following every documented rule
+          correctly</strong>.
+        </p>
+      </div>
+
+      <h2>Vendor-specific headers, none of them standardised</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Header</th>
+              <th>Vendor</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Idempotent-Replayed: true</code></td>
+              <td>Stripe</td>
+              <td>
+                This response was replayed, not executed. The only way a client can
+                tell. Documented on the error-handling page only.
+              </td>
+            </tr>
+            <tr>
+              <td><code>Stripe-Should-Retry</code></td>
+              <td>Stripe</td>
+              <td>
+                Three-valued: <code>true</code> retry, <code>false</code> don’t,
+                <em>absent</em> means the API cannot determine it.
+              </td>
+            </tr>
+            <tr>
+              <td><code>transient-error: true</code></td>
+              <td>Adyen</td>
+              <td>
+                Safe to retry with the same key. Absent or <code>false</code> means
+                do not retry.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        None of these three appears in the IETF draft — which is itself a comment
+        on the draft’s completeness, since a status code alone does not carry
+        enough information to decide whether to retry.
+      </p>
+
+      <h2>What is not documented anywhere</h2>
+
+      <p>Gaps in the public record, recorded rather than guessed at.</p>
+
+      <ul>
+        <li>
+          <strong>How long “in flight” may last</strong> before a claim is stale.
+          Powertools ties it to the Lambda timeout, Brandur uses a constant;
+          Stripe, Adyen, PayPal and Square state no figure.
+        </li>
+        <li>
+          <strong>The EC2 client-token retention window.</strong> Any circulating
+          figure is unsourced. DynamoDB’s 10 minutes <em>is</em> documented.
+        </li>
+        <li>
+          <strong>Square’s concurrent-case behaviour and retention window</strong>,
+          and its exact error code for a payload mismatch.
+        </li>
+      </ul>
+
+      <p class="small-print">
+        Taught across
+        <a href="../lessons/0007-why-not-a-distributed-lock.html">lesson 7</a> and
+        <a href="../lessons/0008-the-edges-that-bite.html">lesson 8</a>. Back to
+        the <a href="../index.html">topic contents</a>.
+      </p>
+    </main>
+  </body>
+</html>

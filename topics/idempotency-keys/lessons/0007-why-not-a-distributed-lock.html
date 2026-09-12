@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7. Why not a distributed lock — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0007</span>
+        <h1>Why not a distributed lock</h1>
+        <p class="lesson-mission">
+          A mission success criterion: argue why a conditional insert in the
+          store that holds the effect beats an external lock —
+          <em>using the fencing-token argument on both sides</em>. The dispute is
+          the lesson, not a detour from it.
+        </p>
+      </header>
+
+      <p class="lead">
+        The third design occurs to almost everyone: before doing anything, grab a
+        lock named after the idempotency key from Redis, ZooKeeper or etcd; do
+        the work; release it. It is intuitive, it is popular, and it has a
+        failure mode that a famous argument makes unanswerable.
+      </p>
+
+      <h2>The tempting design</h2>
+
+      <p>The Redis documentation offers the single-instance recipe directly:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The command <code>SET resource-name anystring NX EX max-lock-time</code>
+            is a simple way to implement a locking system with Redis.
+          </p>
+          <p>
+            A client can acquire the lock if the above command returns OK (or
+            retry after some time if the command returns Nil), and remove the
+            lock just using DEL. The lock will be auto-released after the expire
+            time is reached.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://redis.io/docs/latest/commands/set/"
+            >Redis, <code>SET</code></a
+          >, “Patterns”.
+        </figcaption>
+      </figure>
+
+      <p>and Redlock for the multi-node case:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We propose an algorithm, called Redlock, which implements a DLM which
+            we believe to be safer than the vanilla single instance approach.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/"
+            >Redis, “Distributed Locks with Redis”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>The problem: a lease can expire while its holder is still running</h2>
+
+      <p>Martin Kleppmann’s critique states it plainly:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            In this example, the client that acquired the lock is paused for an
+            extended period of time while holding the lock – for example because
+            the garbage collector (GC) kicked in. The lock has a timeout (i.e. it
+            is a lease), which is always a good idea (otherwise a crashed client
+            could end up holding a lock forever and never releasing it). However,
+            if the GC pause lasts longer than the lease expiry period, and the
+            client doesn’t realise that it has expired, it may go ahead and make
+            some unsafe change.
+          </p>
+        </blockquote>
+        <figcaption>
+          Martin Kleppmann,
+          <a
+            class="citation"
+            href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"
+            >“How to do distributed locking”</a
+          >, 8 February 2016. <strong>Expert practitioner writing</strong>, not a
+          specification — though Kleppmann is the author of <em>Designing
+          Data-Intensive Applications</em> and the post came out of research for
+          it.
+        </figcaption>
+      </figure>
+
+      <p>He then closes the obvious escape route before you can take it:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            You cannot fix this problem by inserting a check on the lock expiry
+            just before writing back to storage. Remember that GC can pause a
+            running thread at any point, including the point that is maximally
+            inconvenient for you (between the last check and the write
+            operation).
+          </p>
+          <p>
+            And if you’re feeling smug because your programming language runtime
+            doesn’t have long GC pauses, there are many other reasons why your
+            process might get paused. Maybe your process tried to read an address
+            that is not yet loaded into memory, so it gets a page fault and is
+            paused until the page is loaded from disk. […] Whatever. Your
+            processes will get paused.
+          </p>
+          <p>
+            If you still don’t believe me about process pauses, then consider
+            instead that the file-writing request may get delayed in the network
+            before reaching the storage service. Packet networks such as Ethernet
+            and IP may delay packets arbitrarily, and they do: in a famous
+            incident at GitHub, packets were delayed in the network for
+            approximately 90 seconds.
+          </p>
+          <p>
+            Even in well-managed networks, this kind of thing can happen. You
+            simply cannot make any assumptions about timing, which is why the
+            code above is fundamentally unsafe, no matter what lock service you
+            use.
+          </p>
+        </blockquote>
+        <figcaption>Kleppmann, as above.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Applied to your charge endpoint</span>
+        <p>
+          Request A claims key <code>k</code>, holds the lock, and stalls for 40
+          seconds in a GC pause. The 30-second lease expires. Request B claims
+          <code>k</code> <em>legitimately</em> and charges the card. A wakes up,
+          still believing it holds the lock, and charges the card again.
+        </p>
+        <p>
+          <strong>Two charges, with a correctly implemented lock.</strong> No
+          component malfunctioned.
+        </p>
+      </div>
+
+      <h2>Kleppmann’s fix: fencing tokens</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The fix for this problem is actually pretty simple: you need to
+            include a fencing token with every write request to the storage
+            service. In this context, a fencing token is simply a number that
+            increases (e.g. incremented by the lock service) every time a client
+            acquires the lock.
+          </p>
+          <p>
+            Client 1 acquires the lease and gets a token of 33, but then it goes
+            into a long pause and the lease expires. Client 2 acquires the lease,
+            gets a token of 34 (the number always increases), and then sends its
+            write to the storage service, including the token of 34. Later,
+            client 1 comes back to life and sends its write to the storage
+            service, including its token value 33. However, the storage server
+            remembers that it has already processed a write with a higher token
+            number (34), and so it rejects the request with token 33.
+          </p>
+          <p>
+            Note this requires the storage server to take an active role in
+            checking tokens, and rejecting any writes on which the token has gone
+            backwards.
+          </p>
+        </blockquote>
+        <figcaption>Kleppmann, as above.</figcaption>
+      </figure>
+
+      <p>And his specific charge against Redlock:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            However, this leads us to the first big problem with Redlock: it does
+            not have any facility for generating fencing tokens. The algorithm
+            does not produce any number that is guaranteed to increase every time
+            a client acquires a lock.
+          </p>
+        </blockquote>
+        <figcaption>Kleppmann, as above.</figcaption>
+      </figure>
+
+      <h3>The frame that decides how much machinery to spend</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Efficiency:</strong> Taking a lock saves you from
+            unnecessarily doing the same work twice (e.g. some expensive
+            computation). If the lock fails and two nodes end up doing the same
+            piece of work, the result is a minor increase in cost […]
+          </p>
+          <p>
+            <strong>Correctness:</strong> Taking a lock prevents concurrent
+            processes from stepping on each others’ toes and messing up the state
+            of your system. If the lock fails and two nodes concurrently work on
+            the same piece of data, the result is a corrupted file, data loss,
+            permanent inconsistency, the wrong dose of a drug administered to a
+            patient, or some other serious problem.
+          </p>
+          <p>
+            Both are valid cases for wanting a lock, but you need to be very
+            clear about which one of the two you are dealing with.
+          </p>
+        </blockquote>
+        <figcaption>Kleppmann, as above.</figcaption>
+      </figure>
+
+      <p>
+        An idempotency key on a payments endpoint is unambiguously a
+        <strong>correctness</strong> lock. His conclusion for that case:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            On the other hand, if you need locks for correctness, please don’t use
+            Redlock. Instead, please use a proper consensus system such as
+            ZooKeeper […] (At the very least, use a database with reasonable
+            transactional guarantees.) And please enforce use of fencing tokens on
+            all resource accesses under the lock.
+          </p>
+        </blockquote>
+        <figcaption>Kleppmann, as above.</figcaption>
+      </figure>
+
+      <h2>The other side: antirez replies</h2>
+
+      <p>
+        Fairness requires the rebuttal, and it is a good one. Salvatore
+        Sanfilippo, Redis’s author, replied within days.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Martin’s analysis of the algorithm concludes that Redlock is not safe.
+            It is great that Martin published an analysis, I asked for an analysis
+            in the original Redlock specification here […] So thank you Martin.
+            However I don’t agree with the analysis.
+          </p>
+        </blockquote>
+        <figcaption>
+          Salvatore Sanfilippo (antirez),
+          <a class="citation" href="http://antirez.com/news/101"
+            >“Is Redlock safe?”</a
+          >, February 2016. The page carries only a relative timestamp; the date
+          is computed from it and corroborated by his describing Kleppmann’s post
+          as “yesterday”.
+        </figcaption>
+      </figure>
+
+      <p>On fencing tokens he makes three points. First, that the demand is self-undermining:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Most of the times when you need a distributed lock system that can
+            guarantee mutual exclusivity, when this property is violated you
+            already lost. Distributed locks are very useful exactly when we have
+            no other control in the shared resource. In his analysis, Martin
+            assumes that you always have some other way to avoid race conditions
+            when the mutual exclusivity of the lock is violated. I think this is a
+            very strange way to reason about distributed locks with strong
+            guarantees, it is not clear why you would use a lock with strong
+            properties at all if you can resolve races in a different way.
+          </p>
+        </blockquote>
+        <figcaption>antirez, as above.</figcaption>
+      </figure>
+
+      <p>
+        Second, that a store capable of enforcing monotonic tokens is already
+        strong enough to make the lock redundant:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If your data store can always accept the write only if your token is
+            greater than all the past tokens, than it’s a linearizable store. If
+            you have a linearizable store, you can just generate an incremental ID
+            for each Redlock acquired, so this would make Redlock equivalent to
+            another distributed lock system that provides an incremental token ID
+            with every new lock.
+          </p>
+        </blockquote>
+        <figcaption>antirez, as above.</figcaption>
+      </figure>
+
+      <p>
+        Third — and this is the one that matters most here, because it is
+        <em>precisely the idempotency-key pattern</em>:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Each Redlock is associated with a large random token […] What do you
+            do with a unique token? For example you can implement Check and Set.
+            When starting to work with a shared resource, we set its state to
+            ‘<code>&lt;token&gt;</code>’, then we operate the read-modify-write
+            only if the token is still the same when we write.
+          </p>
+          <p>
+            However even if you happen to agree with Martin about the fact the
+            above is very useful, the bottom line is that a unique identifier for
+            each lock can be used for the same goals, but is much more practical
+            in terms of not requiring strong guarantees from the store.
+          </p>
+        </blockquote>
+        <figcaption>antirez, as above.</figcaption>
+      </figure>
+
+      <p>And he concedes the clock point:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            However I think Martin is right that Redis and Redlock
+            implementations should switch to the monotonic time API provided by
+            most operating systems in order to make the above issues less of a
+            problem.
+          </p>
+        </blockquote>
+        <figcaption>antirez, as above.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Redis’s own documentation has since conceded further</span>
+        <p>
+          The live Redlock page now carries a “Disclaimer about consistency” that
+          adopts Kleppmann’s recommendation outright: “<strong>You should
+          implement fencing tokens.</strong> This is especially important for
+          processes that can take significant time and applies to any distributed
+          locking system.” And: “<strong>Redis is not using monotonic clock for
+          TTL expiration mechanism.</strong> That means that a wall-clock shift
+          may result in a lock being acquired by more than one process.”
+          (<a
+            class="citation"
+            href="https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/"
+            >Redis, “Distributed Locks with Redis”</a
+          >.)
+        </p>
+      </div>
+
+      <h2>Where the two actually converge</h2>
+
+      <p>
+        This is the useful conclusion, and it is easy to miss while watching two
+        experts disagree.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            They agree on the requirement and differ only on its strength.
+          </caption>
+          <thead>
+            <tr>
+              <th>Voice</th>
+              <th>Says the resource must</th>
+              <th>Strength required</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Kleppmann</td>
+              <td>“take an active role in checking tokens”</td>
+              <td>
+                <strong>Monotonic</strong> — also handles a late write from a
+                stale holder
+              </td>
+            </tr>
+            <tr>
+              <td>antirez</td>
+              <td>
+                “operate the read-modify-write only if the token is still the
+                same when we write”
+              </td>
+              <td>
+                <strong>Unique identity</strong> — handles duplicates but not
+                ordering
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Both are saying the same structural thing:
+        <strong>the resource that holds the effect must itself check something
+        before applying the write.</strong> Not the lock service. The resource.
+      </p>
+
+      <h2>The synthesis</h2>
+
+      <div class="aside insight">
+        <span class="label">The answer to “how do high-scale companies do this?”</span>
+        <p>
+          <strong>They do not take a lock. They make the key’s creation itself
+          the atomic operation, in the same store that holds the effect, so that
+          winning the race and recording the effect are the same commit.</strong>
+        </p>
+      </div>
+
+      <p>This is strictly better than an external lock for four reasons:</p>
+
+      <ol>
+        <li>
+          <strong>No lease to expire.</strong> A unique-constraint violation or a
+          <code>ConditionalCheckFailedException</code> is a decision made by the
+          storage engine <em>at write time</em>, not a promise made to a client
+          earlier that may have gone stale. Kleppmann’s entire GC-pause argument
+          is about the gap between being told you hold the lock and performing
+          the write — and a conditional write has no such gap, because the two
+          are one operation.
+        </li>
+        <li>
+          <strong>No second system to be partitioned from.</strong> An external
+          lock service can be unreachable while the database is fine, and vice
+          versa. Adyen documents what that costs: “In the unlikely event that this
+          data store should become unavailable, the API returns an HTTP 503 –
+          Service Unavailable status with the error code 703”.
+        </li>
+        <li>
+          <strong>It is a fencing token, for free, in the only place that
+          matters.</strong> The key record <em>is</em> the token, and the store
+          that holds the effect <em>is</em> the store that checks it — exactly
+          what both Kleppmann and antirez say the resource must do.
+        </li>
+        <li>
+          <strong>It composes with the commit of the effect.</strong> Step (5)
+          requires the effect and the key record to become durable together. Same
+          store: one transaction. External lock service: impossible.
+        </li>
+      </ol>
+
+      <p>
+        The external lock keeps a legitimate but narrower role — as an
+        <em>efficiency</em> optimisation in Kleppmann’s sense, avoiding wasted
+        duplicate work before you reach the database. Layered on top of the
+        conditional write, never instead of it.
+      </p>
+
+      <h2>What the vendors actually do when two identical keys collide</h2>
+
+      <p>
+        Every vendor documents this case, and <strong>no two of them answer it
+        the same way.</strong>
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Same-key request arriving while the first is still in flight.
+          </caption>
+          <thead>
+            <tr>
+              <th>Vendor</th>
+              <th>Status</th>
+              <th>Retryable?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>IETF draft-07</td>
+              <td><code>409</code></td>
+              <td>yes — “with the exception of 409 where no correction is required”</td>
+            </tr>
+            <tr>
+              <td>Stripe</td>
+              <td><code>409 Conflict</code></td>
+              <td>yes, explicitly</td>
+            </tr>
+            <tr>
+              <td>Adyen</td>
+              <td><code>422</code> <strong>or</strong> <code>409</code>, error code 704</td>
+              <td>yes — signalled by a <code>transient-error: true</code> header</td>
+            </tr>
+            <tr>
+              <td>PayPal</td>
+              <td>not stated — “might fail the second request”</td>
+              <td>not stated</td>
+            </tr>
+            <tr>
+              <td>AWS Lambda Powertools</td>
+              <td>exception: <code>IdempotencyAlreadyInProgressError</code></td>
+              <td>yes — “you can safely retry the operation”</td>
+            </tr>
+            <tr>
+              <td>Square</td>
+              <td><strong>nothing documented</strong></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>AWS EC2 client tokens</td>
+              <td><strong>nothing documented</strong></td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The single most important row is the one that isn’t there</span>
+        <p>
+          <strong>Nobody blocks.</strong> Not one vendor documents holding the
+          second request open until the first finishes and then replaying its
+          response — which is exactly what a naive “just take a lock and wait”
+          design would do. Every one of them fails fast and tells the client to
+          retry.
+        </p>
+        <p>
+          That is the practical consequence of everything above: waiting means
+          holding a lease, and a lease you hold is a lease that can expire under
+          you.
+        </p>
+      </div>
+
+      <p>
+        One subtlety worth carrying forward. Stripe deliberately does
+        <em>not</em> store the concurrent-conflict response as the idempotent
+        result:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We save results only after the execution of an endpoint begins. If
+            incoming parameters fail validation, or the request conflicts with
+            another request that’s executing concurrently, we don’t save the
+            idempotent result because no API endpoint initiates the execution. You
+            can retry these requests.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.stripe.com/api/idempotent_requests"
+            >Stripe API reference, “Idempotent requests”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        If the <code>409</code> <em>were</em> stored, the key would be
+        permanently poisoned: every subsequent retry would replay a
+        <code>409</code> and the client could never learn the real outcome. The
+        rule that only results from requests which actually began executing get
+        stored is what keeps the key usable — and
+        <a href="0008-the-edges-that-bite.html">lesson 8</a> generalises it.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A lock holder pauses for 40s in GC; its lease was 30s. What follows?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The runtime notices and aborts the stale write
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Two holders may write, so two charges occur
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The lock service revokes the first holder safely
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A shorter lease would have prevented the problem
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The paused holder has no way to learn its lease expired, and checking
+          just before the write does not help because the pause can land between
+          the check and the write. Nothing revokes it, because revocation only
+          works if the resource checks something at write time. And a shorter
+          lease makes the problem <em>more</em> likely, not less.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What do Kleppmann and antirez actually agree about?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Redlock is unsafe for any correctness-critical work
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Lock services should generate monotonic fencing tokens
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Consensus systems are required for all locking
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The resource must check something before writing
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Kleppmann wants the storage server to “take an active role in checking
+          tokens”; antirez wants a read-modify-write that proceeds “only if the
+          token is still the same when we write”. Same structure. They disagree
+          precisely on whether the checked value must be monotonic or merely
+          unique — which is the second and third options, both of which antirez
+          contests.
+        </p>
+      </div>
+
+      <h2>Next</h2>
+
+      <p>
+        The mechanism is now complete and correct. What remains are the edges —
+        and one of them will silently re-execute your operation while both sides
+        believe everything worked.
+        <a href="0008-the-edges-that-bite.html">Lesson 8</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"
+              >Kleppmann, “How to do distributed locking”</a
+            >, and then
+            <a class="citation" href="http://antirez.com/news/101"
+              >antirez, “Is Redlock safe?”</a
+            >
+            — in that order, back to back, in one sitting. Neither is a
+            specification and neither is the last word; the value is in watching
+            two serious people disagree carefully about something that looks
+            simple. Read them as a pair or not at all.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Genuinely worth arguing about: is antirez’s
+          first point — that if you can resolve the race another way you did not
+          need a strong lock — a fair objection or a dodge? There is a defensible
+          case either way, and constructing it is the best possible test of
+          whether this lesson landed.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Interleaving helps here. Before lesson 8, go back and re-derive
+            lesson 6’s race diagram, then explain to yourself why an external
+            lock does not fix it and a conditional insert does. Mixing the two
+            lessons in one recall session builds a more durable trace than
+            reviewing either alone.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0006-the-atomic-claim.html">6. The atomic claim</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0008-the-edges-that-bite.html">8. The edges that bite</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

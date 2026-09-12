@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3. The ambiguous failure — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0003</span>
+        <h1>The ambiguous failure</h1>
+        <p class="lesson-mission">
+          A mission success criterion, stated as a sentence you should be able to
+          produce from memory: “either once or not at all, and the user is not
+          told which” — and why no protocol removes it.
+        </p>
+      </header>
+
+      <p class="lead">
+        You now obey RFC 9110 perfectly. You still have a problem, and it is not
+        a problem about HTTP. It is a property of the channel rather than of the
+        verb, it was described precisely in 1983, and no amount of correct method
+        selection touches it.
+      </p>
+
+      <h2>1983: the limit of what any request/response protocol can offer</h2>
+
+      <p>
+        Birrell and Nelson, describing the guarantees of the Cedar RPC system at
+        Xerox PARC, state the boundary plainly. This is the foundational
+        statement of the problem:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            It is this level of the RPC package that defines what semantics and
+            guarantees we give for calls. We guarantee that if the call returns
+            to the user then the procedure in the server has been invoked
+            precisely once. Otherwise, an exception is reported to the user and
+            the procedure will have been invoked either once or not at all — the
+            user is not told which. If an exception is reported, the user does
+            not know whether the server has crashed or whether there is a problem
+            in the communication network.
+          </p>
+        </blockquote>
+        <figcaption>
+          Andrew D. Birrell and Bruce Jay Nelson,
+          <em>Implementing Remote Procedure Calls</em>, Xerox PARC
+          <a
+            class="citation"
+            href="http://www.bitsavers.org/pdf/xerox/parc/techReports/CSL-83-7_Implementing_Remote_Procedure_Calls.pdf"
+            >CSL-83-7, December 1983</a
+          >, p. 11. Published as ACM <em>TOCS</em> 2(1), February 1984,
+          pp. 39–59.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Nine words to memorise</span>
+        <p>
+          “<strong>Either once or not at all — the user is not told which.</strong>”
+        </p>
+        <p>
+          This is the <strong>ambiguous failure</strong>, and it is the reason
+          idempotency keys exist. Everything else in this topic is machinery
+          built in response to this one sentence.
+        </p>
+      </div>
+
+      <h2>Why the client cannot tell</h2>
+
+      <p>
+        Maarten van Steen’s companion material for <em>Distributed Systems</em>
+        makes the same point about the client’s epistemic position:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>The real issue</p>
+          <p>
+            What the client notices, is that it is not getting an answer.
+            However, it cannot decide whether this is caused by a lost request, a
+            crashed server, or a lost response.
+          </p>
+        </blockquote>
+        <figcaption>
+          Tanenbaum &amp; van Steen, <em>Distributed Systems</em>, 4th ed.,
+          Chapter 8 (Fault Tolerance), slide 55, from the author-published slide
+          set at
+          <a
+            class="citation"
+            href="https://www.distributed-systems.net/index.php/books/ds4/"
+            >distributed-systems.net</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Three utterly different situations, one indistinguishable symptom. The
+        request never arrived; the request arrived and the server died; the
+        request arrived, succeeded, and the reply was lost. From the client’s
+        chair they are the same event: silence.
+      </p>
+
+      <h2>Transparent recovery is not merely hard — it is impossible</h2>
+
+      <p>
+        This is the part that usually surprises people, and it is worth sitting
+        with. Consider a server asked to update a document, with three events:
+        <code>M</code> (send the completion message), <code>P</code> (complete
+        the processing), <code>C</code> (crash). Enumerate the orderings:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>1. M → P → C: Crash after reporting completion.</p>
+          <p>
+            2. M → C → P: Crash after reporting completion, but before the
+            update.
+          </p>
+          <p>
+            3. P → M → C: Crash after reporting completion, and after the update.
+          </p>
+          <p>4. P → C(→ M): Update took place, and then a crash.</p>
+          <p>5. C(→ P → M): Crash before doing anything</p>
+          <p>6. C(→ M → P): Crash before doing anything</p>
+        </blockquote>
+        <figcaption>
+          Tanenbaum &amp; van Steen, as above — under the heading “Why fully
+          transparent server recovery is impossible”.
+        </figcaption>
+      </figure>
+
+      <p>
+        Now look at cases <strong>2</strong> and <strong>4</strong>. In case 2
+        the update never happened; in case 4 it did. From the client’s side they
+        are indistinguishable from each other <em>and</em> from a simple lost
+        reply. There is no header, no status code and no protocol extension that
+        separates them, because the information the client would need was
+        destroyed along with the server.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Do not look for a protocol fix</span>
+        <p>
+          A great deal of wasted design effort goes into trying to make the
+          network tell the client what happened. It cannot. The correct response
+          is not a better protocol but a different arrangement: let the operation
+          be attempted more than once, and make the second attempt harmless.
+        </p>
+      </div>
+
+      <h2>The trilemma</h2>
+
+      <p>
+        Because the failure is ambiguous, a client must choose a policy, and the
+        choice is famously three-way. The Apache Kafka documentation states the
+        options in their standard form:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <em>At most once</em> — Messages may be lost but are never
+            redelivered.<br />
+            <em>At least once</em> — Messages are never lost but may be
+            redelivered.<br />
+            <em>Exactly once</em> — Each message is processed once and only once.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://kafka.apache.org/documentation/#semantics"
+            >Apache Kafka documentation, “Message Delivery Semantics”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>And van Steen gives the RPC-side formulation of the first two:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            At-least-once-semantics: The server guarantees it will carry out an
+            operation at least once, no matter what.
+          </p>
+          <p>
+            At-most-once-semantics: The server guarantees it will carry out an
+            operation at most once.
+          </p>
+        </blockquote>
+        <figcaption>
+          Tanenbaum &amp; van Steen, <em>Distributed Systems</em>, 4th ed.,
+          Chapter 8 slides.
+        </figcaption>
+      </figure>
+
+      <p>
+        The engineering content of the trilemma is simple and unforgiving. It
+        reduces to a single line of client code — whether or not you retry:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">try:
+    charge_the_card(amount=2000)
+except AmbiguousFailure:
+    # You are standing at the fork. There is no third branch here.
+    pass          # at-most-once: never double-charge, sometimes drop the work
+    # retry()     # at-least-once: never drop the work, sometimes double-charge</code></pre>
+      </div>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Two real options, and a third that is not a delivery policy at all.
+          </caption>
+          <thead>
+            <tr>
+              <th>Policy</th>
+              <th>You get</th>
+              <th>You pay</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Don’t retry → at-most-once</td>
+              <td>Never double-charge</td>
+              <td>Silently drop work whenever the network hiccups</td>
+            </tr>
+            <tr>
+              <td>Retry → at-least-once</td>
+              <td>Never drop work</td>
+              <td>Double-charge whenever a response is lost, not a request</td>
+            </tr>
+            <tr>
+              <td>Exactly-once</td>
+              <td>—</td>
+              <td>Not selectable. See below.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>“Exactly-once” is not a third option</h2>
+
+      <p>
+        Kafka’s own documentation is unusually blunt about this, and the honesty
+        is worth quoting in full because it is rare:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Many systems claim to provide “exactly-once” delivery semantics, but
+            it is important to read the fine print, because sometimes these
+            claims are misleading (i.e. they don’t translate to the case where
+            consumers or producers can fail, cases where there are multiple
+            consumer processes, or cases where data written to disk can be lost).
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://kafka.apache.org/documentation/#semantics"
+            >Apache Kafka documentation, “Message Delivery Semantics”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The resolution, in <em>every</em> system that achieves the appearance of
+        once, is the same two-part arrangement:
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The shape of every real answer</span>
+        <p>
+          <strong>Retry (at-least-once delivery) plus deduplication at the
+          receiver (so that the effect occurs once).</strong>
+        </p>
+        <p>
+          Exactly-once is not something you select. It is something you
+          construct, out of an at-least-once channel and a receiver that
+          remembers.
+        </p>
+      </div>
+
+      <p>
+        Kafka does exactly this, and describes the mechanism in terms that should
+        now look extremely familiar:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If a producer attempts to publish a message and experiences a network
+            error, it cannot be sure if this error happened before or after the
+            message was committed. This is similar to the semantics of inserting
+            into a database table with an autogenerated key.
+          </p>
+          <p>
+            Prior to 0.11.0.0, if a producer failed to receive a response
+            indicating that a message was committed, it had little choice but to
+            resend the message. This provides at-least-once delivery semantics
+            since the message may be written to the log again during resending if
+            the original request had in fact succeeded. Since 0.11.0.0, the Kafka
+            producer also supports an idempotent delivery option which guarantees
+            that resending will not result in duplicate entries in the log. To
+            achieve this, the broker assigns each producer an ID and deduplicates
+            messages using a sequence number that is sent by the producer along
+            with every message.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://kafka.apache.org/documentation/#semantics"
+            >Apache Kafka documentation, “Message Delivery Semantics”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        A producer ID plus a sequence number, kept in a table at the receiver so
+        duplicates can be dropped. <strong>That is an idempotency key</strong>,
+        under a different name, inside a message broker.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A client sends a charge request and receives no response. What does it
+          know?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The charge certainly never arrived at the server
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The charge happened once, or did not happen
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The charge was applied but the reply vanished
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The charge failed and the server rolled back
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Silence is compatible with a lost request, a crashed server, and a lost
+          response — and the client cannot tell which. Each of the other three
+          answers claims knowledge the client provably does not have. If any of
+          them were obtainable, the ambiguous failure would not exist and neither
+          would this topic.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          How is exactly-once actually achieved in systems that offer it?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Using a transport protocol that never drops any packets
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Running a two-phase commit between the client and server
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Trusting a broker guarantee about its own durable storage
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Delivering at least once, then deduplicating at the receiver
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Kafka’s producer ID and sequence number are the receiver-side
+          deduplication half; resending after a network error is the
+          at-least-once half. No transport can help, because the duplicate may
+          originate in the application’s own retry logic rather than in the
+          network — a point the next lesson makes precisely.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        If the answer is deduplication at the receiver, something has to identify
+        the duplicate. Why must the client supply that identifier? Couldn’t the
+        network layer, or the framework, or the load balancer suppress duplicates
+        on your behalf? There is a firm and famous answer, and it is
+        <a href="0004-why-the-client-generates-the-key.html">lesson 4</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="http://www.bitsavers.org/pdf/xerox/parc/techReports/CSL-83-7_Implementing_Remote_Procedure_Calls.pdf"
+              >Birrell &amp; Nelson, <em>Implementing Remote Procedure Calls</em>
+              (Xerox PARC CSL-83-7, 1983)</a
+            >
+            — read §2 and the first few pages of §3. It is the best-written paper
+            in this topic and the most consequential: the guarantee on p. 11 is
+            still the guarantee, forty years on. You will meet its
+            <em>call identifier</em> again in the next lesson, and recognising it
+            as your idempotency key is the moment this subject clicks.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If the impossibility argument feels like it
+          must have a loophole, push on it — trying to construct the loophole and
+          watching it fail is a far better way to internalise this than accepting
+          it, and the M/P/C orderings give you the tool to test any proposal.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This lesson and lesson 4 are the conceptual heart of the topic.
+            Before moving on, close this page and try to write out the six M/P/C
+            orderings and say which two are indistinguishable. Getting it
+            partially wrong and then checking is worth more than reading it again
+            now.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0002-what-http-promises.html"
+              >2. What HTTP actually promises</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0004-why-the-client-generates-the-key.html"
+              >4. Why the client generates the key</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

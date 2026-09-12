@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2. What HTTP actually promises — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0002</span>
+        <h1>What HTTP actually promises</h1>
+        <p class="lesson-mission">
+          One of the mission’s success criteria is stating from memory why
+          <code>PUT</code> and <code>DELETE</code> are idempotent but
+          <code>POST</code> is not — and why “returns the same response” is the
+          wrong definition. This lesson is that criterion.
+        </p>
+      </header>
+
+      <p class="lead">
+        <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9110.html"
+          >RFC 9110</a
+        >
+        is the current definition of HTTP semantics — an Internet Standard
+        (STD 97, June 2022) that obsoletes RFC 7231 among others. Almost every
+        vendor’s idempotency documentation is quoting or paraphrasing one
+        sentence of it, so it is worth reading that sentence in the original.
+      </p>
+
+      <h2>Two axes, not one</h2>
+
+      <p>
+        HTTP classifies methods along two separate axes, and conflating them is
+        the first mistake. Safety first:
+      </p>
+
+      <div class="definition">
+        <span class="term">safe</span>
+        <p>
+          Request methods are considered “safe” if their defined semantics are
+          essentially read-only; i.e., the client does not request, and does not
+          expect, any state change on the origin server as a result of applying a
+          safe method to a target resource. Likewise, reasonable use of a safe
+          method is not expected to cause any harm, loss of property, or unusual
+          burden on the origin server.
+        </p>
+        <p>
+          […] Of the request methods defined by this specification, the GET,
+          HEAD, OPTIONS, and TRACE methods are defined to be safe.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.1"
+            >RFC 9110 §9.2.1</a
+          >, IETF, STD 97, June 2022.
+        </span>
+      </div>
+
+      <p>And then the definition this entire topic rests on:</p>
+
+      <div class="definition">
+        <span class="term">idempotent</span>
+        <p>
+          A request method is considered “idempotent” if the intended effect on
+          the server of multiple identical requests with that method is the same
+          as the effect for a single such request. Of the request methods defined
+          by this specification, PUT, DELETE, and safe request methods are
+          idempotent.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >, IETF, STD 97, June 2022.
+        </span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            The two axes are independent. Safe is a strict subset of idempotent.
+          </caption>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Safe</th>
+              <th>Idempotent</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GET</td>
+              <td>yes</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <td>HEAD</td>
+              <td>yes</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <td>OPTIONS</td>
+              <td>yes</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <td>TRACE</td>
+              <td>yes</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <td>PUT</td>
+              <td>no</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <td>DELETE</td>
+              <td>no</td>
+              <td>yes</td>
+            </tr>
+            <tr>
+              <td>POST</td>
+              <td>no</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>PATCH</td>
+              <td>no</td>
+              <td>no</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Every safe method is idempotent, because a method that changes nothing
+        trivially changes nothing twice over. The converse fails:
+        <code>DELETE</code> is idempotent and emphatically not safe. Written as a
+        relation, <strong>safe ⊂ idempotent</strong>. Note also that
+        <code>PATCH</code> is not defined in RFC 9110 at all — it comes from
+        <a class="citation" href="https://www.rfc-editor.org/rfc/rfc5789"
+          >RFC 5789</a
+        >
+        — and that both <code>POST</code> and <code>PATCH</code> appear in the
+        table as “no” because §9.2.2 simply does not list them.
+      </p>
+
+      <h2>The caveat that matters most</h2>
+
+      <p>
+        Read the definition again and notice what it is about: the
+        <strong>intended effect on the server</strong>. It is not about the
+        response the client receives. The specification is explicit that the
+        response may legitimately differ between the first request and the retry:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Idempotent methods are distinguished because the request can be
+            repeated automatically if a communication failure occurs before the
+            client is able to read the server’s response. For example, if a
+            client sends a PUT request and the underlying connection is closed
+            before any response is received, then the client can establish a new
+            connection and retry the idempotent request. It knows that repeating
+            the request will have the same intended effect, even if the original
+            request succeeded, though the response might differ.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >. Emphasis on the final clause is this lesson’s.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The demonstration to remember</span>
+        <p>
+          <code>DELETE /orders/7</code> returns <code>204 No Content</code> the
+          first time and <code>404 Not Found</code> the second. The
+          <em>responses</em> differ. The <em>intended effect on the server</em> —
+          that order 7 not exist — is identical. The method is idempotent.
+        </p>
+        <p>
+          Anyone who defines idempotence as “returns the same response” will
+          conclude, wrongly, that <code>DELETE</code> is not idempotent. This is
+          the single most common error in the whole subject, and you now have the
+          counterexample that settles it in one line.
+        </p>
+      </div>
+
+      <p>
+        The specification goes further and explicitly licenses side effects that
+        were not part of what was requested:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Like the definition of safe, the idempotent property only applies to
+            what has been requested by the user; a server is free to log each
+            request separately, retain a revision control history, or implement
+            other non-idempotent side effects for each idempotent request.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        So an idempotent <code>PUT</code> that writes two audit-log rows on two
+        attempts has not violated anything. Idempotence is a promise about the
+        requested effect, and only that.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A <code>DELETE</code> returns <code>204</code>, then <code>404</code>
+          on retry. What does RFC 9110 say about this?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Not idempotent, because the two responses differ
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Still idempotent, but requiring an idempotency key
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Not idempotent, because the server changed state
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Still idempotent, since the intended effect matches
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The definition is about the intended effect on the server, not the
+          response, and §9.2.2 says outright that “the response might differ”.
+          The intended effect — that the order not exist — is identical after one
+          call and after two. No key is involved, and changing state on the first
+          call is exactly what a non-safe idempotent method is expected to do.
+        </p>
+      </div>
+
+      <h2>Idempotence is what licenses automatic retry</h2>
+
+      <p>
+        Here is why the classification exists at all. §9.2.2 continues with the
+        normative rule that makes the property operationally useful:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A client SHOULD NOT automatically retry a request with a
+            non-idempotent method unless it has some means to know that the
+            request semantics are actually idempotent, regardless of the method,
+            or some means to detect that the original request was never applied.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>and, more strictly, for anything sitting in the middle:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A proxy MUST NOT automatically retry non-idempotent requests. A
+            client SHOULD NOT automatically retry a failed automatic retry.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The clause that justifies the whole topic</span>
+        <p>
+          “<strong>unless it has some means to know that the request semantics
+          are actually idempotent, regardless of the method</strong>”.
+        </p>
+        <p>
+          That subordinate clause, buried in a SHOULD NOT, is the entire
+          specification-level justification for the
+          <code>Idempotency-Key</code> header. The header <em>is</em> the means.
+          Everything in the remaining lessons is an elaboration of how to build
+          it.
+        </p>
+      </div>
+
+      <h2>Why <code>POST</code> is not idempotent</h2>
+
+      <p>
+        Not because of anything about bodies, tunnels, or creation semantics. It
+        is because the specification declines to constrain what
+        <code>POST</code> does at all:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The POST method requests that the target resource process the
+            representation enclosed in the request according to the resource’s
+            own specific semantics.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.3"
+            >RFC 9110 §9.3.3</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The semantics are <em>the resource’s</em>, not the method’s. Because HTTP
+        does not know what a given <code>POST</code> means, it cannot promise
+        that doing it twice equals doing it once. And the mirror image explains
+        the other two:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The promise tracks whether the method names an absolute state.
+          </caption>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it names</th>
+              <th>Promise possible?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>PUT</code></td>
+              <td>A destination state — replace the resource with this</td>
+              <td>Yes. Absolute, so repeating lands in the same place.</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td>An absence — this resource should not exist</td>
+              <td>Yes. Absolute, and absence is absence.</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td>Nothing. The resource decides.</td>
+              <td>No. HTTP cannot promise what it does not define.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        This is the same destination-versus-delta split from
+        <a href="0001-what-idempotent-means.html">lesson 1</a>, now showing up
+        at the protocol level rather than in a function.
+      </p>
+
+      <p>
+        RFC 9110 even acknowledges that clients cheat here, and disapproves in
+        the same breath:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Some clients take a riskier approach and attempt to guess when an
+            automatic retry is possible. For example, a client might
+            automatically retry a POST request if the underlying transport
+            connection closed before any part of a response is received,
+            particularly if an idle persistent connection was used.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does RFC 9110 decline to call <code>POST</code> idempotent?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It never defines what a POST means
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It always creates a brand new resource
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It carries a body servers must parse
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It cannot be cached by any intermediary
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          §9.3.3 hands the semantics to the resource: a <code>POST</code> does
+          whatever that particular resource says it does. HTTP cannot promise a
+          property of an operation it has not defined. Note that “always creates
+          a resource” is simply false — plenty of <code>POST</code> endpoints
+          create nothing — and neither bodies nor caching enter into the
+          definition of idempotence.
+        </p>
+      </div>
+
+      <h2>Where this leaves you</h2>
+
+      <p>
+        Suppose you now obey RFC 9110 perfectly: you choose idempotent methods
+        wherever the operation permits it, and you never auto-retry a
+        <code>POST</code>. You still have a serious problem, and it is not a
+        problem about HTTP at all. It is a problem about distributed systems, and
+        it was described precisely in 1983 —
+        <a href="0003-the-ambiguous-failure.html">lesson 3</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2"
+              >RFC 9110 §9.2, “Common Method Properties”</a
+            >
+            — sections 9.2.1 and 9.2.2 together run to roughly a page and a half.
+            This is the highest-trust document in the entire topic, it is
+            readable prose rather than grammar, and everything the vendors say
+            later is downstream of it. If you read one primary source from this
+            workspace, read this one.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good question to bring back: is a
+          <code>PATCH</code> that sets fields to absolute values idempotent? The
+          answer is genuinely interesting and the specification’s “regardless of
+          the method” clause is what settles it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before opening lesson 3, try to reconstruct two things from memory:
+            the exact wording of what idempotence is a promise <em>about</em>,
+            and the <code>DELETE</code> counterexample. Recalling them with
+            effort is what moves them into long-term storage; re-reading this
+            page is not.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0001-what-idempotent-means.html"
+              >1. What “idempotent” actually means</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0003-the-ambiguous-failure.html"
+              >3. The ambiguous failure</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

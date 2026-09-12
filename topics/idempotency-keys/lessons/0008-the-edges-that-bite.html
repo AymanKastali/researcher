@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>8. The edges that bite — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0008</span>
+        <h1>The edges that bite</h1>
+        <p class="lesson-mission">
+          The last two mission criteria live here: naming the mechanism’s most
+          dangerous property, and recognising that a key buys effectively-once
+          <em>effect</em> and never exactly-once <em>execution</em>.
+        </p>
+      </header>
+
+      <p class="lead">
+        The mechanism is complete and correct. What is left is where it fails
+        anyway — and the first of these is the only failure mode in the whole
+        subject that is invisible from both sides at once.
+      </p>
+
+      <h2>1. Retention: the silent re-execution</h2>
+
+      <p>
+        <strong>No authority agrees with any other</strong>, and the
+        specifications explicitly decline to choose:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            APIs <strong>may</strong> choose any reasonable timeframe for
+            honoring request IDs.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://google.aip.dev/155"
+            >AIP-155: Request identification</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Documented retention windows. The spread is four orders of magnitude.
+          </caption>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Window</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>AWS DynamoDB <code>TransactWriteItems</code></td>
+              <td>10 minutes</td>
+            </tr>
+            <tr>
+              <td>AWS Lambda Powertools</td>
+              <td>1 hour by default, configurable with no upper limit</td>
+            </tr>
+            <tr>
+              <td>Stripe</td>
+              <td>24 hours — but see the discrepancy below</td>
+            </tr>
+            <tr>
+              <td>Brandur (practitioner)</td>
+              <td>~72 hours, to survive a bad Friday deploy into Monday</td>
+            </tr>
+            <tr>
+              <td>Adyen</td>
+              <td>“valid for a period of 7 to 14 days after first submission”</td>
+            </tr>
+            <tr>
+              <td>Birrell &amp; Nelson, 1983</td>
+              <td>“say, after five minutes”</td>
+            </tr>
+            <tr>
+              <td>PayPal, Square, AWS EC2</td>
+              <td><strong>not documented</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Stripe’s two pages do not say the same thing</span>
+        <p>
+          The API reference says keys “can [be removed] from the system
+          automatically after they’re at least 24 hours old” — a
+          <em>floor on when pruning may begin</em>. The error-handling page says
+          “keys expire out of the system after 24 hours” — a
+          <em>ceiling on validity</em>. These are different statements, and this
+          workspace quotes both rather than reconciling them.
+        </p>
+      </div>
+
+      <p>The rule that generates all of those numbers is one sentence:</p>
+
+      <div class="aside insight">
+        <span class="label">The rule</span>
+        <p>
+          <strong>Retention must exceed the client’s maximum retry
+          horizon.</strong>
+        </p>
+        <p>
+          If a client’s retry policy can fire a final attempt 36 hours after the
+          first, and the server prunes at 24, the final retry finds no record and
+          <strong>executes the operation a second time</strong>.
+        </p>
+      </div>
+
+      <p>Stripe states the consequence outright:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>We generate a new request if a key is reused after the original is pruned.</p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://docs.stripe.com/error-low-level"
+            >Stripe, “Advanced error handling”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The most dangerous property of the whole mechanism</span>
+        <p>
+          An expired key is not an error. It is
+          <strong>indistinguishable from a key never seen</strong>, and therefore
+          silently executes.
+        </p>
+        <p>
+          The failure is invisible from both sides: the client believes it
+          retried idempotently, the server believes it received a new request,
+          and a second charge exists. Nothing logs an error. Nothing alerts.
+        </p>
+        <p>
+          Worse, the retention window and the client’s retry schedule are
+          <em>one design</em> — and they are usually owned by two different
+          teams who never discuss it.
+        </p>
+      </div>
+
+      <p>
+        Adyen’s 7–14 days is interesting precisely because it is a
+        <em>range</em>: the guarantee is a floor of 7 days, with actual pruning
+        somewhere up to 14. A client should always plan against the floor.
+      </p>
+
+      <h2>2. Same key, different payload</h2>
+
+      <p>
+        This is what the idempotency fingerprint exists to catch. The draft’s
+        answer is <code>422</code>:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If there is an attempt to reuse an idempotency key with a different
+            request payload, the resource SHOULD reply with a HTTP 422 status code
+            with body containing a link pointing to relevant documentation.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2.7"
+            >draft-07 §2.7</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>AWS uses one consistent error name across two services:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If you retry a successful request using the same client token, but one
+            or more of the parameters are different, other than the Region or
+            Availability Zone, the retry fails with an
+            <code>IdempotentParameterMismatch</code> error.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.aws.amazon.com/AWSEC2/latest/APIReference/Run_Instance_Idempotency.html"
+            >AWS, “Ensuring idempotency in Amazon EC2 API requests”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The authorities disagree on the status code</span>
+        <p>
+          The IETF draft says <code>422</code>. AWS returns HTTP
+          <code>400</code>. Stripe describes the error without pinning a code to
+          it on its idempotency page. Square hedges: “this behavior might vary
+          depending on the API.” <strong>If you are writing a client, do not
+          assume <code>422</code>.</strong>
+        </p>
+      </div>
+
+      <p>
+        <strong>Why detect it at all?</strong> Because both alternatives are
+        worse. Replay on key alone, and a client with a key-reuse bug silently
+        receives someone else’s answer — the $5 charge response for a $500
+        request. Ignore the key and execute, and you have no idempotency. Failing
+        loudly is the only option that surfaces the client’s bug.
+      </p>
+
+      <h3>A trap inside the fingerprint</h3>
+
+      <p>
+        draft-07 §2.4 permits fingerprinting either the entire payload or
+        selected elements, and the choice has teeth. Whole-payload checksums are
+        brittle: a client that re-serialises its JSON with different key ordering,
+        adds a <code>client_timestamp</code>, or upgrades a library that changes
+        float formatting will produce a different fingerprint for a
+        <em>semantically identical</em> retry — and receive a <code>422</code> on
+        a request that should have replayed.
+      </p>
+
+      <p>
+        Fingerprinting only the semantically significant fields is more forgiving,
+        at the cost of missing changes to the fields you excluded. The
+        specification takes no position. This is a real decision, and it is yours.
+      </p>
+
+      <h2>3. Scoping: a key is never global</h2>
+
+      <p>
+        draft-07 §5 makes this a <strong>security</strong> requirement rather than
+        mere hygiene:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Data leaks—When an idempotency implementation allows low entropy keys,
+            attackers MAY determine other keys and use them to fetch existing
+            idempotent cache entries, belonging to other clients.
+          </p>
+          <p>
+            On the resource, implement a unique composite key as the idempotent
+            cache lookup key. For example, a composite key MAY be implemented by
+            combining the idempotency key sent by the client with other client
+            specific attributes known only to the resource.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-5"
+            >draft-07 §5, Security Considerations</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Concretely: if keys are global and a client sends
+        <code>Idempotency-Key: 1</code>, it receives whatever response the
+        previous sender of <code>1</code> got. That is a cross-tenant data
+        disclosure reachable by guessing.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The observed scopes differ substantially.</caption>
+          <thead>
+            <tr>
+              <th>Scope</th>
+              <th>Who</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Per user account</td>
+              <td>Brandur: <code>UNIQUE (user_id, idempotency_key)</code></td>
+            </tr>
+            <tr>
+              <td>Per company account</td>
+              <td>Adyen</td>
+            </tr>
+            <tr>
+              <td>Per region</td>
+              <td>Adyen, and AWS EC2 (“regional idempotency”)</td>
+            </tr>
+            <tr>
+              <td>Per availability zone</td>
+              <td>AWS EC2 (“zonal idempotency”)</td>
+            </tr>
+            <tr>
+              <td>Per API call type</td>
+              <td>PayPal — authorize and capture are different keys</td>
+            </tr>
+            <tr>
+              <td>Per function + payload hash</td>
+              <td>AWS Lambda Powertools, by default</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Regional scoping breaks region failover</span>
+        <p>
+          AWS says it outright, and so does Adyen: a request with the same token
+          “can complete only once <em>within a Region</em>”. A client with region
+          failover in its retry policy can duplicate an operation
+          <strong>while following every documented rule correctly</strong>.
+        </p>
+      </div>
+
+      <p>
+        Note also the Powertools default: the key is <em>derived from the payload
+        hash</em> rather than supplied by the client. That is a genuinely
+        different design. It deduplicates identical payloads automatically, but it
+        cannot distinguish “the same request retried” from “two legitimately
+        identical requests” — which is precisely the distinction a client-supplied
+        key exists to express. A reasonable default for event processing; a poor
+        one for payments.
+      </p>
+
+      <h2>4. Which failures to store, and which free the key</h2>
+
+      <p>
+        This is the most contested design point in the subject. Stripe stores
+        nearly everything:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            As with user errors, the idempotency layer caches the result of POST
+            mutations that result in server errors (specifically 500s, which are
+            internal server errors), so retrying them with the same idempotency key
+            usually produces the same result. The client can retry the request with
+            a new idempotency key, but we advise against it because the original key
+            may have produced side effects.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://docs.stripe.com/error-low-level"
+            >Stripe, “Advanced error handling”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        That final clause is the justification, and it is a good one: a 500 means
+        the outcome is <strong>indeterminate</strong>, so re-running under a
+        <em>new</em> key risks a second effect from an operation that may have
+        half-succeeded.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The operative principle</span>
+        <p>
+          It is <strong>not</strong> “cache successes, free failures”. It is:
+        </p>
+        <p>
+          <strong>Store the outcome of anything that may have had an effect. Free
+          the key for anything that provably did not.</strong>
+        </p>
+        <p>
+          A validation rejection, an auth failure, a rate-limit and a concurrency
+          conflict all happen <em>before</em> the handler runs — so nothing
+          happened, so the key stays available. A 500 from inside the handler
+          might have done anything, so it is recorded.
+        </p>
+      </div>
+
+      <p>Stripe warns that the boundary is genuinely fuzzy:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            [A] request that’s rate limited with a 429 can produce a different
+            result with the same idempotency key because rate limiters run before
+            the API’s idempotency layer. The same goes for a 401 that omitted an
+            API key, or most 400s that sent invalid parameters. Even so, the safest
+            strategy where 4xx errors are concerned is to always generate a new
+            idempotency key.
+          </p>
+        </blockquote>
+        <figcaption>Stripe, “Advanced error handling”.</figcaption>
+      </figure>
+
+      <p>
+        Because a status code alone does not carry enough information, two vendors
+        invented headers for it — Adyen’s <code>transient-error</code>, and
+        Stripe’s <code>Stripe-Should-Retry</code>, whose three-valued design is
+        worth noticing because it admits ignorance: set to <code>true</code>,
+        retry; set to <code>false</code>, don’t; <em>not set</em>, “the API can’t
+        determine whether or not it can retry the request.” Neither header is in
+        the IETF draft, which is itself a comment on the draft’s completeness.
+      </p>
+
+      <h2>5. The crashed holder</h2>
+
+      <p>
+        If the server dies after claiming the key and before completing, the
+        record sits in <code>IN_FLIGHT</code> forever and the key is
+        <strong>bricked</strong> — every retry gets a <code>409</code> and the
+        operation can never complete. So the in-flight state needs a
+        <strong>lease</strong>, and every real implementation has one.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If a second invocation happens after this timestamp, and the record is
+            marked as INPROGRESS, we will run the invocation again as if it was in
+            the EXPIRED state. This means that if an invocation expired during
+            execution, it will be quickly executed again on the next retry.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.powertools.aws.dev/lambda/python/latest/utilities/idempotency/"
+            >Powertools for AWS Lambda (Python), Idempotency</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">This is lesson 7’s hazard, in your own database</span>
+        <p>
+          It does not disappear because the lease is local. If the original holder
+          was merely <em>paused</em> rather than dead, it can wake after the lease
+          expires and complete its work alongside the second attempt.
+        </p>
+        <p>
+          What makes it tolerable here is that the commit in step (5) is itself
+          conditional: the awakened holder’s write targets a record whose state it
+          no longer owns, and a conditional update
+          (<code>UPDATE ... WHERE state = 'IN_FLIGHT' AND lease_id = ?</code>)
+          rejects it.
+        </p>
+        <p>
+          <strong>The lease is an optimisation for liveness; the conditional write
+          is what provides safety.</strong> Get those two backwards and the lease
+          becomes the safety mechanism — which is exactly the mistake Kleppmann
+          was warning about.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Nobody documents how long “in flight” may last. Powertools ties it to the
+        Lambda timeout and Brandur uses a constant; Stripe, Adyen, PayPal and
+        Square state no figure. This is a genuine gap in the public record, not an
+        omission here.
+      </p>
+
+      <h2>6. Third-party side effects: where the atomic commit stops working</h2>
+
+      <p>
+        Step (5) assumed the effect and the key record could commit together. The
+        moment the handler calls a <em>foreign</em> system, they cannot.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The reason that the local vs. foreign distinction matters is that
+            unlike a local set of operations where we can leverage an ACID store to
+            roll back a result that we didn’t like, once we make our first foreign
+            state mutation, we’re committed one way or another. We’ve pushed data
+            into a system beyond our own boundaries and we shouldn’t lose track of
+            it.
+          </p>
+        </blockquote>
+        <figcaption>
+          Brandur Leach,
+          <a class="citation" href="https://brandur.org/idempotency-keys"
+            >“Implementing Stripe-like Idempotency Keys in Postgres”</a
+          >. <strong>Practitioner writing.</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        His structural answer is to break the handler into
+        <strong>atomic phases</strong> separated by foreign calls, recording a
+        <strong>recovery point</strong> after each:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Atomic phases should be safely committed <strong>before</strong>
+            initiating any foreign state mutation. If the call fails, our local
+            state will still have a record of it happening that we can use to retry
+            the operation.
+          </p>
+          <p>
+            A <strong>recovery point</strong> is a name of a check point that we
+            get to after having successfully executed any atomic phase
+            <strong>or</strong> foreign state mutation. Its purpose is to allow a
+            request that’s being retried to jump back to the point in the lifecycle
+            just before the last attempt failed.
+          </p>
+        </blockquote>
+        <figcaption>Brandur Leach, as above.</figcaption>
+      </figure>
+
+      <p>
+        The second half of the answer is that the foreign call must itself be
+        idempotent — which is why
+        <strong>you pass your own idempotency key downstream</strong>:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Some foreign state mutations are idempotent by nature (e.g. adding a
+            DNS record), some are not idempotent but can be made idempotent with
+            the help of an idempotency key (e.g. charge on Stripe, sending an
+            email), and some operations are not idempotent, most often because a
+            foreign service hasn’t designed them that way and doesn’t provide a
+            mechanism like an idempotency key.
+          </p>
+        </blockquote>
+        <figcaption>Brandur Leach, as above.</figcaption>
+      </figure>
+
+      <p>
+        That third category is the hard one, and it is the end-to-end argument
+        from <a href="0004-why-the-client-generates-the-key.html">lesson 4</a>
+        biting from the other direction. If a downstream service offers no key, no
+        amount of care upstream makes the composite operation idempotent. The
+        honest options are to make the call <em>observable</em> — query downstream
+        for whether your operation happened, using a correlation ID you chose — or
+        to accept at-least-once and reconcile afterwards.
+      </p>
+
+      <h2>7. The conceptual payoff</h2>
+
+      <div class="aside insight">
+        <span class="label">State this flatly</span>
+        <p>
+          <strong>A key gives you effectively-once <em>effect</em>, never
+          exactly-once <em>execution</em>.</strong>
+        </p>
+      </div>
+
+      <p>
+        The handler may run more than once. That is not a bug to be engineered
+        away; it is forced by the ambiguous failure. The client cannot distinguish
+        a lost request from a lost response, so it must retry, and a retry may
+        arrive after a crashed first attempt left partial work behind. Van Steen’s
+        six orderings show there is no protocol that avoids it.
+      </p>
+
+      <p>
+        What the key buys is that the <em>externally observable effect</em> occurs
+        once. The charge row exists once. The email is sent once — if the email
+        provider honours a key. The instance is launched once, within its region.
+      </p>
+
+      <p>The distinction is not pedantic. It dictates three things:</p>
+
+      <ul>
+        <li>
+          <strong>Handlers must tolerate partial re-execution</strong>, because
+          they will get it. Anything done before a crash must be either rolled back
+          by the transaction or made idempotent in its own right.
+        </li>
+        <li>
+          <strong>“Exactly-once” in vendor marketing means this</strong>, not what
+          it says. Kafka’s documentation is the model of honesty: “it is important
+          to read the fine print”.
+        </li>
+        <li>
+          <strong>The composite is only as idempotent as its weakest foreign
+          call.</strong>
+        </li>
+      </ul>
+
+      <h2>8. When not to use one</h2>
+
+      <p>
+        Worth stating because it is the most common misuse. A key is unnecessary
+        where the method already carries the guarantee:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            All POST requests accept idempotency keys. Don’t send idempotency keys
+            in GET and DELETE requests because it has no effect. These requests are
+            idempotent by definition.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.stripe.com/api/idempotent_requests"
+            >Stripe API reference, “Idempotent requests”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Both Stripe and Adyen are appealing directly to RFC 9110 §9.2.2 here. A
+        key on a <code>PUT</code> adds a row, a lookup and a failure mode in
+        exchange for a guarantee the method already makes.
+      </p>
+
+      <p>
+        The genuinely marginal case is <code>PATCH</code>, which is not idempotent
+        in general but often is in practice: a <code>PATCH</code> that sets fields
+        to absolute values behaves like a scoped <code>PUT</code>; one that
+        increments does not. RFC 9110 §9.2.2’s clause — “unless it has some means
+        to know that the request semantics are actually idempotent, regardless of
+        the method” — is what licenses treating such a <code>PATCH</code> as safe
+        to retry, and a key is how you would establish that for the ones that are
+        not.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A retry arrives after the key record was pruned. What happens?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The server returns an expired-key error to callers
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The server replays the last known stored response
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The operation silently runs for a second time
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The request is rejected as a conflicting duplicate
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          An expired record is deleted, so the atomic claim succeeds and the
+          request looks brand new. There is no expired-key error because there is
+          nothing left to report on, and nothing to replay. This is the mechanism’s
+          most dangerous property: both sides believe everything worked.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does Stripe store the result of a 500 but not of a 409?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Only the 500 could have produced an effect
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Only the 500 counts as a server-side failure
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Only the 409 is considered safe to retry
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Only the 500 is returned after validation runs
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The concurrency conflict happens before the endpoint begins executing,
+          so provably nothing happened and the key stays usable. A 500 from inside
+          the handler is indeterminate, so it is recorded. Storing the 409 would
+          poison the key permanently — every later retry would replay it and the
+          client could never learn the real outcome.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What exactly does an idempotency key guarantee?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The handler runs once, and the effect follows
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The request reaches the server exactly one time
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The response is identical across all later retries
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The observable effect happens once, not the handler
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Effectively-once effect, never exactly-once execution. The handler may
+          well run twice — after a crash, after a lease expiry — which is why it
+          must tolerate partial re-execution. The request certainly arrives more
+          than once; that is the premise. And responses may legitimately differ,
+          as PayPal’s return-current-state design shows.
+        </p>
+      </div>
+
+      <h2>You have arrived</h2>
+
+      <p>
+        That is the topic. From an 1870 algebra text to a lease you should not
+        trust, by way of a 1983 guarantee that has not been improved on. What
+        remains is revisiting — the
+        <a href="../reference/glossary.html">glossary</a>, the
+        <a href="../reference/http-method-semantics.html">method semantics</a>,
+        the <a href="../reference/key-record-lifecycle.html">lifecycle</a>, and
+        the <a href="../reference/vendor-comparison.html">vendor comparison</a>
+        are the four pages built to be come back to.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://brandur.org/idempotency-keys"
+              >Brandur Leach, “Implementing Stripe-like Idempotency Keys in
+              Postgres”</a
+            >
+            — practitioner writing rather than specification, and the most
+            detailed public account of the mechanism that exists. Read it last,
+            not first: with the specifications already in hand you will be able to
+            see which of his choices are forced and which are his.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. The highest-value thing you can do now is
+          ask to be quizzed cold across all eight lessons, with no warning about
+          which one a question comes from. Interleaved retrieval is what converts
+          this from something you have read into something you know.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing, one last time</span>
+          <p>
+            Come back to the six mission success criteria in about a week and try
+            to satisfy each one out loud without opening a lesson. The ones you
+            cannot are not failures — they are the map of what to re-read, and
+            finding them by failing is the whole point of testing yourself rather
+            than reviewing.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0007-why-not-a-distributed-lock.html"
+              >7. Why not a distributed lock</a
+            >
+          </li>
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

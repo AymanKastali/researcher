@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HTTP method semantics — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>HTTP method semantics</h1>
+        <p class="page-blurb">
+          What RFC 9110 promises, in the order you will want to check it: the two
+          definitions, the method table, the retry rules, and the three
+          consequences people most often get wrong.
+        </p>
+      </header>
+
+      <p class="small-print">
+        All quotations from
+        <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9110.html"
+          >RFC 9110, HTTP Semantics</a
+        >
+        — Fielding, Nottingham &amp; Reschke (eds.), IETF, STD 97, June 2022.
+        Obsoletes RFC 7231.
+      </p>
+
+      <h2>The two definitions</h2>
+
+      <div class="definition">
+        <span class="term">safe — §9.2.1</span>
+        <p>
+          Request methods are considered “safe” if their defined semantics are
+          essentially read-only; i.e., the client does not request, and does not
+          expect, any state change on the origin server as a result of applying a
+          safe method to a target resource.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.1"
+            >RFC 9110 §9.2.1</a
+          >
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">idempotent — §9.2.2</span>
+        <p>
+          A request method is considered “idempotent” if the intended effect on
+          the server of multiple identical requests with that method is the same
+          as the effect for a single such request. Of the request methods defined
+          by this specification, PUT, DELETE, and safe request methods are
+          idempotent.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >
+        </span>
+      </div>
+
+      <h2>The table</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>safe ⊂ idempotent. Every safe method is idempotent.</caption>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>Safe</th>
+              <th>Idempotent</th>
+              <th>Defined in</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GET</td>
+              <td>yes</td>
+              <td>yes</td>
+              <td>§9.2.1, §9.2.2</td>
+            </tr>
+            <tr>
+              <td>HEAD</td>
+              <td>yes</td>
+              <td>yes</td>
+              <td>§9.2.1, §9.2.2</td>
+            </tr>
+            <tr>
+              <td>OPTIONS</td>
+              <td>yes</td>
+              <td>yes</td>
+              <td>§9.2.1, §9.2.2</td>
+            </tr>
+            <tr>
+              <td>TRACE</td>
+              <td>yes</td>
+              <td>yes</td>
+              <td>§9.2.1, §9.2.2</td>
+            </tr>
+            <tr>
+              <td>PUT</td>
+              <td>no</td>
+              <td>yes</td>
+              <td>§9.2.2</td>
+            </tr>
+            <tr>
+              <td>DELETE</td>
+              <td>no</td>
+              <td>yes</td>
+              <td>§9.2.2</td>
+            </tr>
+            <tr>
+              <td>POST</td>
+              <td>no</td>
+              <td>no</td>
+              <td>not listed in §9.2.2</td>
+            </tr>
+            <tr>
+              <td>PATCH</td>
+              <td>no</td>
+              <td>no</td>
+              <td>RFC 5789; not listed in §9.2.2</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Three consequences</h2>
+
+      <h3>(a) Safety and idempotence are different axes</h3>
+
+      <p>
+        A method that changes nothing trivially changes nothing twice over, so
+        safe implies idempotent. The converse fails: <code>DELETE</code> is
+        idempotent and emphatically not safe.
+      </p>
+
+      <h3>(b) It is about the effect, not the response</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            It knows that repeating the request will have the same intended
+            effect, even if the original request succeeded, though the response
+            might differ.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9110 §9.2.2.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The one-line settler</span>
+        <p>
+          <code>DELETE /orders/7</code> → <code>204</code>, then
+          <code>404</code>. Responses differ; intended effect is identical; the
+          method is idempotent. Anyone defining idempotence as “returns the same
+          response” concludes wrongly here.
+        </p>
+      </div>
+
+      <p>The spec also licenses unrequested side effects:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Like the definition of safe, the idempotent property only applies to
+            what has been requested by the user; a server is free to log each
+            request separately, retain a revision control history, or implement
+            other non-idempotent side effects for each idempotent request.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9110 §9.2.2.</figcaption>
+      </figure>
+
+      <h3>(c) Idempotence is what licenses automatic retry</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A client SHOULD NOT automatically retry a request with a
+            non-idempotent method unless it has some means to know that the
+            request semantics are actually idempotent, regardless of the method,
+            or some means to detect that the original request was never applied.
+          </p>
+          <p>
+            A proxy MUST NOT automatically retry non-idempotent requests. A client
+            SHOULD NOT automatically retry a failed automatic retry.
+          </p>
+        </blockquote>
+        <figcaption>RFC 9110 §9.2.2.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Why the header exists at all</span>
+        <p>
+          “<strong>unless it has some means to know that the request semantics are
+          actually idempotent, regardless of the method</strong>” — that clause is
+          the specification-level justification for
+          <code>Idempotency-Key</code>. The header is the means.
+        </p>
+      </div>
+
+      <h2>Why POST is not idempotent</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The POST method requests that the target resource process the
+            representation enclosed in the request according to the resource’s own
+            specific semantics.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.3"
+            >RFC 9110 §9.3.3</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The promise tracks whether the method names an absolute state.</caption>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th>What it names</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>PUT</code></td>
+              <td>A destination state — replace the resource with this.</td>
+            </tr>
+            <tr>
+              <td><code>DELETE</code></td>
+              <td>An absence — this resource should not exist.</td>
+            </tr>
+            <tr>
+              <td><code>POST</code></td>
+              <td>Nothing. The resource decides, so HTTP cannot promise.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Status codes the idempotency draft leans on</h2>
+
+      <div class="definition">
+        <span class="term">409 Conflict — §15.5.10</span>
+        <p>
+          The 409 (Conflict) status code indicates that the request could not be
+          completed due to a conflict with the current state of the target
+          resource. This code is used in situations where the user might be able to
+          resolve the conflict and resubmit the request.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-15.5.10"
+            >RFC 9110 §15.5.10</a
+          >. A good fit for “wait, then retry the same key”.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">422 Unprocessable Content — §15.5.21</span>
+        <p>
+          The 422 (Unprocessable Content) status code indicates that the server
+          understands the content type of the request content […] and the syntax of
+          the request content is correct, but it was unable to process the
+          contained instructions.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-15.5.21"
+            >RFC 9110 §15.5.21</a
+          >. A fingerprint mismatch is exactly this.
+        </span>
+      </div>
+
+      <h2>Two errata in the idempotency draft</h2>
+
+      <p>
+        Verified against the source documents, and a useful reminder that a draft
+        is a draft.
+      </p>
+
+      <ol>
+        <li>
+          <strong>It omits TRACE.</strong> draft-07 §1 says “Per [RFC9110], the
+          methods OPTIONS, HEAD, GET, PUT and DELETE are idempotent”. RFC 9110
+          §9.2.2 says “PUT, DELETE, and safe request methods”, and §9.2.1 lists the
+          safe methods as “GET, HEAD, OPTIONS, and TRACE”.
+        </li>
+        <li>
+          <strong>Its normative references are stale.</strong> It cites RFC 8941
+          for Structured Fields, obsoleted by
+          <a class="citation" href="https://www.rfc-editor.org/rfc/rfc9651.txt"
+            >RFC 9651</a
+          >
+          in September 2024; and RFC 7231 for “resource” and
+          <code>IMF-fixdate</code>, obsoleted by RFC 9110 in June 2022 — the very
+          document it cites elsewhere.
+        </li>
+      </ol>
+
+      <div class="aside warning">
+        <span class="label">When not to add a key</span>
+        <p>
+          A key on a <code>GET</code>, <code>PUT</code> or <code>DELETE</code> adds
+          a row, a lookup and a failure mode in exchange for a guarantee the method
+          already makes. Stripe: “Don’t send idempotency keys in GET and DELETE
+          requests because it has no effect. These requests are idempotent by
+          definition.”
+        </p>
+      </div>
+
+      <p class="small-print">
+        Taught in <a href="../lessons/0002-what-http-promises.html">lesson 2</a>.
+        Back to the <a href="../index.html">topic contents</a>.
+      </p>
+    </main>
+  </body>
+</html>

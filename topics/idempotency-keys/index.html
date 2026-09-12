@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Network Idempotency and Idempotency Keys</title>
+    <link rel="stylesheet" href="../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Topic</span>
+        <h1>Network Idempotency and Idempotency Keys</h1>
+        <p class="page-blurb">
+          Why a network cannot tell a lost request from a lost response, why that
+          forces the client to retry, and why the receiver must therefore
+          deduplicate — from an 1870 algebra text to a lease you should not trust.
+        </p>
+      </header>
+
+      <p class="lead">
+        Eight lessons, built to be spaced over days rather than read in one
+        sitting. The four reference documents at the bottom are the ones designed
+        to be come back to.
+      </p>
+
+      <h2>Lessons</h2>
+
+      <ul class="index-list">
+        <li>
+          <span class="index-number">0001</span>
+          <a
+            class="index-title"
+            href="lessons/0001-what-idempotent-means.html"
+            >What “idempotent” actually means</a
+          >
+          <p class="index-summary">
+            Peirce’s 1870 definition, the move to function composition, and the
+            distinction everything else rests on: a function is idempotent by
+            inspection, an effect only by construction.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0002</span>
+          <a class="index-title" href="lessons/0002-what-http-promises.html"
+            >What HTTP actually promises</a
+          >
+          <p class="index-summary">
+            RFC 9110’s two definitions, why safe ⊂ idempotent, why “returns the
+            same response” is wrong, and the buried clause that justifies the
+            <code>Idempotency-Key</code> header.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0003</span>
+          <a class="index-title" href="lessons/0003-the-ambiguous-failure.html"
+            >The ambiguous failure</a
+          >
+          <p class="index-summary">
+            “Either once or not at all — the user is not told which.” The 1983
+            guarantee, the proof that transparent recovery is impossible, and the
+            delivery trilemma with its fake third option.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0004</span>
+          <a
+            class="index-title"
+            href="lessons/0004-why-the-client-generates-the-key.html"
+            >Why the client generates the key</a
+          >
+          <p class="index-summary">
+            The end-to-end argument: TCP deduplicates segments but cannot
+            deduplicate intentions. Plus the header itself, and the generation
+            mistake that silently disables everything.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0005</span>
+          <a class="index-title" href="lessons/0005-the-lifecycle-of-a-key.html"
+            >The lifecycle of a key</a
+          >
+          <p class="index-summary">
+            Eleven steps from generation to expiry, the key record as a state
+            machine, the read-path decision table, and the two steps that must be
+            atomic.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0006</span>
+          <a class="index-title" href="lessons/0006-the-atomic-claim.html"
+            >The atomic claim</a
+          >
+          <p class="index-summary">
+            The time-of-check-to-time-of-use race, and the two good answers —
+            conditional insert and serialisable transaction — in Postgres,
+            DynamoDB and Redis.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0007</span>
+          <a
+            class="index-title"
+            href="lessons/0007-why-not-a-distributed-lock.html"
+            >Why not a distributed lock</a
+          >
+          <p class="index-summary">
+            Kleppmann versus antirez on fencing tokens, where the two actually
+            converge, and the observation that no vendor blocks a concurrent
+            request.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0008</span>
+          <a class="index-title" href="lessons/0008-the-edges-that-bite.html"
+            >The edges that bite</a
+          >
+          <p class="index-summary">
+            Retention as the only failure invisible from both sides, fingerprint
+            traps, scoping as a security requirement, which failures to store, and
+            effectively-once versus exactly-once.
+          </p>
+        </li>
+      </ul>
+
+      <h2>Reference</h2>
+
+      <p>
+        Compressed for lookup rather than reading. These are what the lessons are
+        for.
+      </p>
+
+      <ul class="index-list">
+        <li>
+          <a class="index-title" href="reference/glossary.html">Glossary</a>
+          <p class="index-summary">
+            Every term this topic uses, with the aliases to avoid and the
+            specification each definition comes from.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/http-method-semantics.html"
+            >HTTP method semantics</a
+          >
+          <p class="index-summary">
+            RFC 9110’s definitions and method table, the retry rules, the status
+            codes, and two errata in the idempotency draft.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/key-record-lifecycle.html"
+            >Key record lifecycle</a
+          >
+          <p class="index-summary">
+            The eleven steps, the state machine, the read-path table, the atomic
+            claim idiom per store, and a nine-point checklist.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/vendor-comparison.html"
+            >Vendor comparison</a
+          >
+          <p class="index-summary">
+            Field names, length budgets, concurrent-case behaviour, retention
+            windows, scoping and vendor headers — including what none of them
+            document.
+          </p>
+        </li>
+      </ul>
+
+      <h2>How to study this</h2>
+
+      <div class="aside insight">
+        <span class="label">Storage strength, not fluency</span>
+        <p>
+          The goal is retention in a year, not comprehension today. That means
+          leaving gaps between lessons, and — before opening the next one —
+          trying to state the previous one’s argument out loud from memory. The
+          recall attempt is the learning; re-reading only feels like it.
+        </p>
+        <p>
+          Lessons 1–4 are the “why” and 5–8 are the “how”. The natural long pause
+          is between 4 and 5.
+        </p>
+      </div>
+
+      <p>
+        The mission, the sources and the working notes live beside this page as
+        <code>MISSION.md</code>, <code>RESOURCES.md</code>,
+        <code>GLOSSARY.md</code> and <code>NOTES.md</code>.
+      </p>
+
+      <p class="small-print">
+        Built from primary sources: RFC 9110, the IETF idempotency-key draft,
+        Birrell &amp; Nelson (1983), Saltzer/Reed/Clark (1984), Peirce (1870),
+        Tanenbaum &amp; van Steen, and the first-party documentation of Stripe,
+        Adyen, PayPal, Square, AWS, Redis, Kafka and Google. Practitioner writing
+        is labelled as such wherever it appears.
+        <a href="../../index.html">Back to all topics</a>.
+      </p>
+    </main>
+  </body>
+</html>

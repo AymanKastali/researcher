@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>6. The atomic claim — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0006</span>
+        <h1>The atomic claim</h1>
+        <p class="lesson-mission">
+          Step (3) of the lifecycle, alone. It is the step that decides whether
+          the whole design is correct, and the mission asks you to be able to say
+          what breaks when it is not atomic.
+        </p>
+      </header>
+
+      <p class="lead">
+        Step (3) looks innocuous right up until you write it as two operations.
+        Then it is a textbook time-of-check-to-time-of-use bug, wearing the
+        costume of a safety mechanism.
+      </p>
+
+      <h2>The race, precisely</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code>   REQUEST A                                    REQUEST B
+   (key = k)                                    (key = k)
+       │                                            │
+  t₀   │ SELECT * FROM keys WHERE key = k           │
+       │ → not found                                │
+       │                                       t₁   │ SELECT * FROM keys WHERE key = k
+       │                                            │ → not found        ← STILL not found
+  t₂   │ INSERT (k, IN_FLIGHT)                      │
+       │                                       t₃   │ INSERT (k, IN_FLIGHT)
+       │                                            │
+  t₄   │ charge the card  ──────> $20               │
+       │                                       t₅   │ charge the card  ──────> $20
+       │                                            │
+       ▼                                            ▼
+                        TWO CHARGES
+</code></pre>
+        </div>
+        <figcaption>
+          Both requests observed “absent”, because both read before either wrote.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Two things this is not</span>
+        <p>
+          <strong>It is not fixed by narrowing the window.</strong> Moving
+          <code>t₂</code> closer to <code>t₀</code> shrinks the probability and
+          removes nothing. A bug that happens rarely on a payments endpoint is
+          still a bug that happens.
+        </p>
+        <p>
+          <strong>It is not fixable in the process.</strong> The two requests may
+          be handled by different processes on different machines, so a mutex, a
+          language-level lock, or a per-process cache cannot help. There is no
+          shared memory to guard.
+        </p>
+      </div>
+
+      <p>
+        This is not exotic. A double-clicked submit button, two load-balanced
+        retries landing on different application servers, or a client retrying on
+        timeout while the original still runs will all produce it.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The requirement, stated once</span>
+        <p>
+          <strong>The check and the claim must be a single indivisible operation
+          in a store that both requests can see.</strong>
+        </p>
+        <p>
+          There are three families of answer. Two are good. One is popular and
+          worse — and it gets
+          <a href="0007-why-not-a-distributed-lock.html">lesson 7</a> to itself.
+        </p>
+      </div>
+
+      <h2>Mechanism A — the atomic conditional insert</h2>
+
+      <p>
+        Collapse check-and-claim into one statement, and let the storage engine’s
+        own uniqueness machinery arbitrate. Exactly one request wins; the loser
+        is told it lost. This is the recommended answer, and every major store
+        offers the primitive.
+      </p>
+
+      <h3>PostgreSQL</h3>
+
+      <p>
+        A <code>UNIQUE</code> index on the key column makes a second insert fail.
+        The documentation states the guarantee for the upsert form outright:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            ON CONFLICT DO UPDATE guarantees an atomic INSERT or UPDATE outcome;
+            provided there is no independent error, one of those two outcomes is
+            guaranteed, even under high concurrency. This is also known as UPSERT
+            — “UPDATE or INSERT”.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/17/sql-insert.html"
+            >PostgreSQL 17 documentation, <code>INSERT</code>, “ON CONFLICT
+            Clause”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        “Even under high concurrency” is the phrase doing the work.
+        <code>INSERT ... ON CONFLICT DO NOTHING</code> combined with
+        <code>RETURNING</code> tells you in a single round trip whether you
+        claimed the key or somebody else already had it.
+      </p>
+
+      <h3>DynamoDB</h3>
+
+      <p>The same primitive, spelled as a condition expression:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            DynamoDB provides four operations for basic create, read, update, and
+            delete (CRUD) functionality. All these operations are atomic.
+          </p>
+          <p>
+            DynamoDB optionally supports conditional writes for these operations.
+            A conditional write succeeds only if the item attributes meet one or
+            more expected conditions. Otherwise, it returns an error.
+          </p>
+          <p>
+            Conditional writes check their conditions against the most recently
+            updated version of the item.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html"
+            >AWS, “Working with items and attributes in DynamoDB”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>The exact insert-if-absent idiom is named in the `PutItem` reference:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            To prevent a new item from replacing an existing item, use a
+            conditional expression that contains the
+            <code>attribute_not_exists</code> function with the name of the
+            attribute being used as the partition key for the table. Since every
+            record must contain that attribute, the
+            <code>attribute_not_exists</code> function will only succeed if no
+            matching item exists.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutItem.html"
+            >AWS, <code>PutItem</code> API reference</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>And the loser is told, by name:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When a conditional <code>PutItem</code>, <code>UpdateItem</code>, or
+            <code>DeleteItem</code> operation fails its condition, it returns a
+            <code>ConditionalCheckFailedException</code>.
+          </p>
+        </blockquote>
+        <figcaption>AWS, “Working with items and attributes in DynamoDB”.</figcaption>
+      </figure>
+
+      <p>
+        AWS also documents <em>why</em> this makes retries safe, in language that
+        maps directly onto the ambiguous failure from
+        <a href="0003-the-ambiguous-failure.html">lesson 3</a>:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            For example, suppose that you issue an <code>UpdateItem</code>
+            request to increase the <code>Price</code> of an item by 3, but only
+            if the <code>Price</code> is currently 20. After you send the
+            request, but before you get the results back, a network error occurs,
+            and you don’t know whether the request was successful. Because this
+            conditional write is idempotent, you can retry the same
+            <code>UpdateItem</code> request, and DynamoDB updates the item only
+            if the <code>Price</code> is currently 20.
+          </p>
+        </blockquote>
+        <figcaption>AWS, “Working with items and attributes in DynamoDB”.</figcaption>
+      </figure>
+
+      <h3>Redis</h3>
+
+      <p><code>SET key value NX</code> is the same compare-and-set insert:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p><strong>NX</strong> — Only set the key if it does not already exist.</p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://redis.io/docs/latest/commands/set/"
+            >Redis, <code>SET</code></a
+          >. Available since Redis 1.0.0; <code>NX</code> added in 2.6.12.
+        </figcaption>
+      </figure>
+
+      <p>and the caller learns it lost from the return value:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Null reply in the following two cases. — The key doesn’t exist and
+            XX/IFEQ/IFDEQ was specified. The key was not created. — The key
+            exists, and NX was specified […] The key was not set. Simple string
+            reply: OK: The key was set.
+          </p>
+        </blockquote>
+        <figcaption>Redis, <code>SET</code>.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">A caveat worth recording</span>
+        <p>
+          The <code>SET</code> page makes <strong>no explicit atomicity
+          claim</strong>. This is widely misquoted. The guarantee has to be
+          sourced from the transactions page instead: “All the commands in a
+          transaction are serialized and executed sequentially. A request sent by
+          another client will never be served in the middle of the execution of a
+          Redis Transaction.”
+          (<a
+            class="citation"
+            href="https://redis.io/docs/latest/develop/using-commands/transactions/"
+            >Redis, “Transactions”</a
+          >.)
+        </p>
+      </div>
+
+      <h2>Mechanism A in the wild: AWS Lambda Powertools</h2>
+
+      <p>
+        AWS ships a first-party implementation of exactly this design, and it is
+        worth looking at because the reasoning is documented alongside the code:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Old boto3 versions can increase costs.</strong> For cost
+            optimization, we use a conditional <code>PutItem</code> to always
+            lock a new idempotency record. If locking fails, it means we already
+            have an idempotency record saving us an additional
+            <code>GetItem</code> call.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.powertools.aws.dev/lambda/python/latest/utilities/idempotency/"
+            >Powertools for AWS Lambda (Python), Idempotency</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The condition expression itself is a three-way “claim if nobody holds
+        this, or the holder’s claim has gone stale”. The comments are the library
+        authors’:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python"># Conditions to successfully save a record:
+
+# The idempotency key does not exist:
+#    - first time that this invocation key is used
+#    - previous invocation with the same key was deleted due to TTL
+idempotency_key_not_exist = "attribute_not_exists(#id)"
+
+# The idempotency record exists but it's expired:
+idempotency_expiry_expired = "#expiry &lt; :now"
+
+# The status of the record is "INPROGRESS", there is an in-progress expiry timestamp, but it's expired
+inprogress_expiry_expired = " AND ".join(
+    [
+        "#status = :inprogress",
+        "attribute_exists(#in_progress_expiry)",
+        "#in_progress_expiry &lt; :now_in_millis",
+    ],
+)
+
+condition_expression = (
+    f"{idempotency_key_not_exist} OR {idempotency_expiry_expired} OR ({inprogress_expiry_expired})"
+)</code></pre>
+      </div>
+
+      <p class="small-print">
+        Quoted from
+        <code
+          >aws_lambda_powertools/utilities/idempotency/persistence/dynamodb.py</code
+        >. This is the library’s source, not code written for this lesson.
+      </p>
+
+      <p>And when the existing record is still running:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This utility will raise an
+            <code>IdempotencyAlreadyInProgressError</code> exception if you
+            receive multiple invocations with the same payload while the first
+            invocation hasn’t completed yet.
+          </p>
+          <p>
+            This is a locking mechanism for correctness. Since we don’t know the
+            result from the first invocation yet, we can’t safely allow another
+            concurrent execution.
+          </p>
+        </blockquote>
+        <figcaption>Powertools for AWS Lambda (Python), Idempotency.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Three spellings on one documentation page</span>
+        <p>
+          The source constant is
+          <code
+            >{"INPROGRESS": "INPROGRESS", "COMPLETED": "COMPLETED", "EXPIRED":
+            "EXPIRED"}</code
+          >. The same docs page’s class diagram writes <code>COMPLETE</code> and
+          its sample DynamoDB table writes <code>IN_PROGRESS</code>. When the
+          documentation and the code disagree, trust the constant — and note that
+          this workspace uses <code>IN_FLIGHT</code> and <code>COMPLETE</code>
+          throughout for consistency, with vendor spellings kept only inside
+          quotations.
+        </p>
+      </div>
+
+      <h2>Mechanism B — serialise the transaction</h2>
+
+      <p>
+        The other good answer keeps the claim in the same database as the effect,
+        but leans on isolation rather than a uniqueness constraint:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            any concurrent execution of a set of Serializable transactions is
+            guaranteed to produce the same effect as running them one at a time
+            in some order
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/17/transaction-iso.html"
+            >PostgreSQL 17 documentation, “Transaction Isolation”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Brandur Leach’s Postgres implementation of Stripe-style keys combines
+        both mechanisms — a unique index <em>and</em> a serialisable transaction
+        <em>and</em> a lock column:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We’ve made <code>idempotency_key</code> unique, but across
+            <code>(user_id, idempotency_key)</code> so that it’s possible to have
+            the same idempotency key for different requests as long as it’s
+            across different user accounts.
+          </p>
+          <p>
+            At first glance this code might not look like it’s safe from having
+            two concurrent requests come in in close succession and try to the
+            lock the same key, but it is because the atomic phase is wrapped in a
+            <code>SERIALIZABLE</code> transaction. If two different transactions
+            both try to lock any one key, one of them will be aborted by
+            Postgres.
+          </p>
+          <p>
+            Two requests try to create an idempotency key at the same time: A
+            UNIQUE constraint in the database guarantees that only one request
+            can succeed. One goes through, and the other gets a
+            <code>409 Conflict</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          Brandur Leach,
+          <a class="citation" href="https://brandur.org/idempotency-keys"
+            >“Implementing Stripe-like Idempotency Keys in Postgres”</a
+          >, 27 October 2017. <strong>Practitioner writing.</strong> (The typo
+          “try to the lock the same key” is in the original.)
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Both mechanisms are correct. They differ in what does the arbitrating.
+          </caption>
+          <thead>
+            <tr>
+              <th>Mechanism</th>
+              <th>Arbitrated by</th>
+              <th>The loser learns via</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A — conditional insert</td>
+              <td>A uniqueness constraint or condition expression</td>
+              <td>
+                Constraint violation,
+                <code>ConditionalCheckFailedException</code>, or a null reply
+              </td>
+            </tr>
+            <tr>
+              <td>B — serialisable transaction</td>
+              <td>The isolation level’s conflict detection</td>
+              <td>A serialisation failure aborting the transaction</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can’t an in-process mutex protect the claim step?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Mutex acquisition is far too slow for this path
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The runtime may release the mutex during a pause
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The requests may be handled on two different machines
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A mutex cannot be keyed by an arbitrary string
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A mutex guards shared memory, and two load-balanced requests carrying
+          the same key have none. The arbitration has to happen in the one place
+          both requests can see — the store. Note that runtimes do not silently
+          release mutexes, and keying a lock table by string is trivial; neither
+          is the real objection.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which single property makes <code>INSERT ... ON CONFLICT</code> the
+          right tool here?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Check and insert resolve as a single indivisible outcome
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It avoids a second network round trip to Postgres
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It updates the existing row rather than failing outright
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It holds a row lock throughout the request duration
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Postgres guarantees “an atomic INSERT or UPDATE outcome … even under
+          high concurrency”, which is precisely the indivisibility the race
+          requires. Saving a round trip is a genuine but incidental benefit, and
+          holding a lock for the request duration is the thing the next lesson
+          argues <em>against</em>.
+        </p>
+      </div>
+
+      <h2>Next</h2>
+
+      <p>
+        There is a third family of answer that occurs to almost everyone: take a
+        lock from Redis or ZooKeeper, do the work, release it. It is popular, it
+        is intuitive, and it has a failure mode that a famous argument makes
+        unanswerable. <a href="0007-why-not-a-distributed-lock.html">Lesson 7</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/17/sql-insert.html"
+              >PostgreSQL 17, <code>INSERT</code> — the “ON CONFLICT Clause”
+              section</a
+            >
+            — read for the atomicity guarantee and for what it carefully does
+            <em>not</em> promise. Then compare it with
+            <a
+              class="citation"
+              href="https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutItem.html"
+              >DynamoDB’s <code>PutItem</code></a
+            >: two entirely different databases arriving at the same primitive is
+            the strongest evidence you will get that this is the right shape.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good exercise to request: have your
+          teacher walk the race diagram again with mechanism A substituted in at
+          <code>t₂</code> and <code>t₃</code>, and make you say what request B
+          observes.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Retrieval beats re-reading, and this lesson has a natural test: from
+            memory, name the one-statement claim idiom in Postgres, in DynamoDB,
+            and in Redis. Three short answers. Check them against the
+            <a href="../reference/key-record-lifecycle.html"
+              >lifecycle reference</a
+            >
+            rather than by scrolling back up.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0005-the-lifecycle-of-a-key.html"
+              >5. The lifecycle of a key</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0007-why-not-a-distributed-lock.html"
+              >7. Why not a distributed lock</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

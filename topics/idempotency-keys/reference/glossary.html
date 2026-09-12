@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glossary — Network Idempotency</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Glossary</h1>
+        <p class="page-blurb">
+          The vocabulary of retry-safe APIs. Where a term has a quoted definition
+          in a specification, that quotation is the authority and the entry here
+          is its compression.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Canonical source: <code>GLOSSARY.md</code> in this topic. The two are kept
+        in step; this page is the readable rendering.
+      </p>
+
+      <h2>The property</h2>
+
+      <div class="definition">
+        <span class="term">idempotent</span>
+        <p>
+          Of a request method, one whose intended effect on the server after
+          several identical requests is the same as after one.
+        </p>
+        <span class="attribution">
+          Defined by
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+            >RFC 9110 §9.2.2</a
+          >. Avoid: repeatable, retry-safe, “returns the same response”.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">safe</span>
+        <p>
+          Of a request method, one whose defined semantics are essentially
+          read-only. Every safe method is idempotent; the converse fails, which is
+          why <code>DELETE</code> is idempotent and not safe.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.1"
+            >RFC 9110 §9.2.1</a
+          >. Avoid: read-only, harmless, non-mutating.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">idempotence of an effect</span>
+        <p>
+          A property of a system’s state after a message is processed, possibly
+          more than once, across a channel that can lose, delay, duplicate and
+          reorder. Engineered, never checkable by inspection — as distinct from
+          idempotence of a function, which is a property of a pure mapping.
+        </p>
+        <span class="attribution">
+          Avoid: real idempotency, practical idempotency.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">effectively-once</span>
+        <p>
+          The guarantee an idempotency key actually delivers: the externally
+          observable effect occurs once, while the handler may run more than once.
+        </p>
+        <span class="attribution">
+          Avoid: exactly-once, once-only, deduplicated delivery.
+        </span>
+      </div>
+
+      <h2>The failure</h2>
+
+      <div class="definition">
+        <span class="term">ambiguous failure</span>
+        <p>
+          The state a client is left in when a request produces no response: the
+          operation was performed either once or not at all, and the client is not
+          told which.
+        </p>
+        <span class="attribution">
+          Named in
+          <a
+            class="citation"
+            href="http://www.bitsavers.org/pdf/xerox/parc/techReports/CSL-83-7_Implementing_Remote_Procedure_Calls.pdf"
+            >Birrell &amp; Nelson, 1983</a
+          >. Avoid: timeout, network error, unknown state.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">at-least-once</span>
+        <p>
+          A delivery policy under which the client retries on ambiguity, so work
+          is never lost but may be applied twice.
+        </p>
+        <span class="attribution">Avoid: guaranteed delivery, reliable delivery.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">at-most-once</span>
+        <p>
+          A delivery policy under which the client never retries, so work is never
+          applied twice but is silently dropped whenever a response is lost.
+        </p>
+        <span class="attribution">Avoid: fire-and-forget, best effort.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">exactly-once</span>
+        <p>
+          Not a selectable delivery policy. Where it is achieved it is always
+          at-least-once delivery plus deduplication at the receiver, and vendor
+          claims to the contrary warrant reading the fine print.
+        </p>
+        <span class="attribution">
+          Use the term only to name the thing that does not exist as advertised.
+        </span>
+      </div>
+
+      <h2>The machinery</h2>
+
+      <div class="definition">
+        <span class="term">idempotency key</span>
+        <p>
+          “A unique value generated by the client which the resource uses to
+          recognize subsequent retries of the same request.” It identifies a
+          request, never a resource.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2"
+            >draft-07 §2</a
+          >, work in progress. Avoid: request ID, token, nonce, dedupe key.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">idempotency fingerprint</span>
+        <p>
+          A checksum or field match computed <strong>by the resource</strong> over
+          the request payload, used to detect the same idempotency key arriving
+          with a different request. The client never sends it.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-07#section-2.4"
+            >draft-07 §2.4</a
+          >. Avoid: request hash, payload checksum, body signature.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">key record</span>
+        <p>
+          The server-side row holding the idempotency key, the idempotency
+          fingerprint, the state, and the stored response. The thing the atomic
+          claim creates.
+        </p>
+        <span class="attribution">Avoid: lock row, cache entry, dedupe record.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">atomic claim</span>
+        <p>
+          The single indivisible operation that creates a key record only if none
+          exists, deciding in one step whether this request owns the idempotency
+          key or is a duplicate. A read followed by a write is not one of these.
+        </p>
+        <span class="attribution">
+          Avoid: lock acquisition, check-and-insert, reservation.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">replay</span>
+        <p>
+          Returning a key record’s stored status and body without invoking the
+          handler. The step at which the second request produces no second effect.
+        </p>
+        <span class="attribution">Avoid: cache hit, re-serve, idempotent response.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">retention window</span>
+        <p>
+          How long a key record survives before it is deleted. Must exceed the
+          client’s maximum retry horizon, because an expired key record is
+          indistinguishable from one never seen.
+        </p>
+        <span class="attribution">Avoid: TTL, expiry, cache lifetime.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">lease</span>
+        <p>
+          A time bound on an in-flight claim, so a key is not bricked forever when
+          its holder dies. An optimisation for liveness; never the safety
+          mechanism.
+        </p>
+        <span class="attribution">Avoid: lock timeout, deadline, in-progress expiry.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">fencing token</span>
+        <p>
+          A number that strictly increases each time a lock is acquired, sent with
+          every write so the storage layer can reject a write whose token has gone
+          backwards.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"
+            >Kleppmann, 2016</a
+          >. Avoid: version number, sequence, epoch.
+        </span>
+      </div>
+
+      <h2>Where the effect lives</h2>
+
+      <div class="definition">
+        <span class="term">foreign state mutation</span>
+        <p>
+          “Calling out and manipulating data on another system” — a side effect
+          that no local transaction can roll back, and therefore the point at which
+          the effect and the key record can no longer commit together.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://brandur.org/idempotency-keys"
+            >Brandur Leach</a
+          >, practitioner writing. Avoid: external call, side effect, third-party
+          write.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">atomic phase</span>
+        <p>
+          “A set of local state mutations that occur in transactions between
+          foreign state mutations.”
+        </p>
+        <span class="attribution">
+          Brandur Leach, practitioner writing. Avoid: step, stage, unit of work.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">recovery point</span>
+        <p>
+          A named checkpoint reached after an atomic phase or a foreign state
+          mutation completes, so a retry can resume from just before the last
+          failure rather than from the beginning.
+        </p>
+        <span class="attribution">
+          Brandur Leach, practitioner writing. Avoid: checkpoint, resume marker,
+          saga step.
+        </span>
+      </div>
+
+      <h2>Notes on usage</h2>
+
+      <div class="aside note">
+        <span class="label">Key versus record</span>
+        <p>
+          The <strong>idempotency key</strong> names the client’s value; the
+          <strong>key record</strong> names the server’s row. Conflating them makes
+          the lifecycle impossible to describe, because the whole mechanism is
+          about what the server does with a row the client never sees.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">State names in this workspace</span>
+        <p>
+          A key record’s states are <code>IN_FLIGHT</code> and
+          <code>COMPLETE</code> throughout. Real implementations disagree on
+          spelling — AWS Lambda Powertools uses <code>INPROGRESS</code>,
+          <code>COMPLETED</code> and <code>EXPIRED</code> in its source constants
+          while its own documentation page writes <code>COMPLETE</code> and
+          <code>IN_PROGRESS</code> elsewhere. Vendor spellings appear here only
+          inside quotations.
+        </p>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">“Expired” is not a third state</span>
+        <p>
+          An expired key record is deleted, so the atomic claim succeeds and the
+          operation runs again as if the key had never been seen.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Back to the <a href="../index.html">topic contents</a>.
+      </p>
+    </main>
+  </body>
+</html>
