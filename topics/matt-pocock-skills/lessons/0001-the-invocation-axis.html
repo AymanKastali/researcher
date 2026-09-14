@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>1. The invocation axis — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0001</span>
+        <h1>The invocation axis</h1>
+        <p class="lesson-mission">
+          One line of YAML splits the twenty-five skills into two populations
+          that behave completely differently. Everything confusing about this set
+          — and most of what looks broken in it — follows from that line.
+        </p>
+      </header>
+
+      <p class="lead">
+        Start here rather than with a workflow. A flow is a sequence of skill
+        names, and until you know which names the agent can act on and which only
+        you can, you cannot tell a step that was skipped from a step that was
+        never runnable.
+      </p>
+
+      <h2>What a skill is</h2>
+
+      <p>
+        The set defines itself in one sentence, in a file written for its own
+        maintainers rather than for users:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Every <code>SKILL.md</code> in this repo is a skill. The one axis
+            that splits them is <strong>invocation</strong> — who can reach it
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>.agents/invocation.md:3</code>, plugin 1.2.3.
+        </figcaption>
+      </figure>
+
+      <p>
+        So a skill is a directory with a <code>SKILL.md</code> in it. The
+        frontmatter names it and the body is the instruction. There is no code,
+        no registration step, and nothing clever — which is why the one axis
+        carries so much weight.
+      </p>
+
+      <h2>The two populations</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The split, quoted from <code>.agents/invocation.md:5-6</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th></th>
+              <th>User-invoked</th>
+              <th>Model-invoked</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Who can fire it</td>
+              <td>
+                <strong>Only the human typing its name</strong>
+              </td>
+              <td>The model <em>or</em> the user</td>
+            </tr>
+            <tr>
+              <td>Frontmatter</td>
+              <td><code>disable-model-invocation: true</code></td>
+              <td>The flag is simply absent</td>
+            </tr>
+            <tr>
+              <td>What <code>description:</code> is for</td>
+              <td>
+                A human reading a list of slash-commands. Trigger phrasing is
+                stripped
+              </td>
+              <td>
+                Matching against your request. Trigger phrasing is kept and
+                tuned
+              </td>
+            </tr>
+            <tr>
+              <td>Its job</td>
+              <td>Orchestrate</td>
+              <td>Hold reusable discipline</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Here is the whole of one skill, so you can see how little there is to it:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">YAML + Markdown</span>
+          <span>skills/productivity/grill-me/SKILL.md, complete</span>
+        </div>
+        <pre><code class="language-yaml">---
+name: grill-me
+description: A relentless interview to sharpen a plan or design.
+disable-model-invocation: true
+---
+
+Run a `/grilling` session.</code></pre>
+      </div>
+
+      <p>
+        Four lines of frontmatter and one line of body. That flag on line four is
+        the entire difference between a skill the agent will reach for and one it
+        will never touch.
+      </p>
+
+      <h2>The invariant</h2>
+
+      <p>
+        This is the sentence to memorise. It is stated twice in the tree, once
+        for maintainers and once in the public README, in nearly identical words:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Each harness excludes a user-invoked skill from the model's reach in
+            its own way, so nothing but the human can fire it — no other skill
+            can. A user-invoked skill may invoke model-invoked skills, but it can
+            never reach another user-invoked skill.
+          </p>
+        </blockquote>
+        <figcaption><code>.agents/invocation.md:8</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >A user-invoked skill can be fired by exactly one thing in the
+            universe: you, typing its name.</strong
+          >
+        </p>
+        <p>
+          Not the agent reasoning that it would be useful. Not another skill
+          naming it. Not a chain that lists it as step three. You.
+        </p>
+      </div>
+
+      <h2>Which is which, counted from the files</h2>
+
+      <p>
+        Do not take this from a table someone wrote. The tree answers the
+        question directly, and the command is worth running yourself the first
+        time you doubt any of this:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Bash</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-bash"># From the plugin root. Which skills can only you fire?
+grep -l 'disable-model-invocation: true' \
+  skills/engineering/*/SKILL.md skills/productivity/*/SKILL.md
+
+# 14 of them. The complement -- the ones the agent can reach -- is 11.</code></pre>
+      </div>
+
+      <p>
+        Twenty-five promoted skills. <strong>Fourteen</strong> can only be fired
+        by you. <strong>Eleven</strong> the agent can also reach on its own, and
+        it is worth knowing them by name, because these are the only ones that
+        will ever fire without you asking:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The eleven model-invoked skills, from the frontmatter of each
+            <code>SKILL.md</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Skill</th>
+              <th>What it is for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>grilling</code></td><td>The interview primitive</td></tr>
+            <tr><td><code>domain-modeling</code></td><td>Glossary and decision records</td></tr>
+            <tr><td><code>codebase-design</code></td><td>Deep-module vocabulary</td></tr>
+            <tr><td><code>tdd</code></td><td>The red-green loop</td></tr>
+            <tr><td><code>diagnosing-bugs</code></td><td>The diagnosis phases</td></tr>
+            <tr><td><code>code-review</code></td><td>Two-axis review of a diff</td></tr>
+            <tr><td><code>prototype</code></td><td>Throwaway code answering a question</td></tr>
+            <tr><td><code>research</code></td><td>Background agent, cited findings</td></tr>
+            <tr><td><code>resolving-merge-conflicts</code></td><td>Working an in-progress conflict</td></tr>
+            <tr><td><code>wizard</code></td><td>A script for steps only a human can take</td></tr>
+            <tr><td><code>writing-for-agents</code></td><td>Writing documents agents consume</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Everything else in the set — <code>implement</code>,
+        <code>to-spec</code>, <code>to-tickets</code>, <code>wayfinder</code>,
+        <code>triage</code>, <code>grill-with-docs</code>,
+        <code>setup-matt-pocock-skills</code>, and seven more — waits for you.
+      </p>
+
+      <h2>Why the split exists at all</h2>
+
+      <p>
+        It would be simpler to make everything model-invoked. The set declines to,
+        and the reason is a budget:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A <strong>model-invoked</strong> skill keeps a
+            <code>description</code>, so the agent can fire it autonomously — and
+            other skills can reach it. […] The description is the skill's
+            top-level context pointer, forced to stay loaded at all times —
+            permanent context load in exchange for discoverability.
+          </p>
+          <p>
+            A <strong>user-invoked</strong> skill strips the description from the
+            agent's reach: only the human typing its name can invoke it, and no
+            other skill can. Zero context load, but it spends cognitive load —
+            you are the index that must remember it exists.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/productivity/writing-for-agents/SKILL-MECHANICS.md:9-12</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">"You are the index"</span>
+        <p>
+          That phrase is the honest cost of this design, and it is the reason this
+          topic exists. Fourteen skills have been deliberately made invisible to
+          the agent so they do not eat context. The trade only pays off if
+          <em>you</em> remember them — which is why lesson 7, the routing lesson,
+          is the one that matters most.
+        </p>
+      </div>
+
+      <h2>The description is the trigger, not a summary</h2>
+
+      <p>
+        For the eleven model-invoked skills, one more thing follows. The
+        <code>description:</code> string is not documentation about the skill — it
+        is the matching surface the agent uses to decide whether to reach for it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The pointer's <em>wording</em>, not its target, decides when the agent
+            reaches the material — and how reliably.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/productivity/writing-for-agents/SKILL.md:12</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        Compare the two styles in the actual frontmatter. The model-invoked one
+        lists trigger phrasings on purpose; the user-invoked one has had them
+        stripped, because nothing is matching against it:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">YAML</span>
+          <span>Both quoted from their SKILL.md frontmatter</span>
+        </div>
+        <pre><code class="language-yaml"># model-invoked -- written to be matched against
+description: Test-driven development. Use when the user wants to build
+  features or fix bugs test-first, mentions "red-green-refactor", or
+  wants integration tests.
+
+# user-invoked -- written to be read by a human browsing a menu
+description: A relentless interview to sharpen a plan or design.</code></pre>
+      </div>
+
+      <p>
+        The practical consequence is sharper than it looks: asking for "a
+        relentless interview to sharpen my plan" will <strong>not</strong> fire
+        <code>/grill-me</code>, because nothing is listening to that string. It
+        may well fire <code>grilling</code>, whose description
+        <em>is</em> written to trigger.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which single line in a skill's frontmatter decides whether the agent can
+          fire it on its own?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The name field, which the harness indexes
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>The disable-model-invocation flag, when set to true</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The description string, when it omits triggers
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The bucket folder the skill directory occupies
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>disable-model-invocation: true</code> is the whole mechanism.
+          The bucket folder decides whether a skill ships at all, and the
+          description decides <em>when</em> a model-invoked skill fires — but
+          only the flag decides <em>whether</em> it can.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          <code>grill-with-docs</code> is user-invoked and its entire body reads
+          "Run a <code>/grilling</code> session, using the
+          <code>/domain-modeling</code> skill." Is that legal?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Yes, both of the named skills are model-invoked</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">No, because a skill may never name another</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">No, a user-invoked skill cannot reach any others</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Yes, because any skill may reach any other</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The invariant runs one way only: <em>"A user-invoked skill may invoke
+          model-invoked skills, but it can never reach another user-invoked
+          skill."</em> <code>grilling</code> and <code>domain-modeling</code> are
+          both model-invoked, so the delegation is well-formed. Whether it
+          <em>works</em> reliably is a separate question, and lesson 2 takes it up.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        One axis, one flag, one invariant. Now apply it to the tree you actually
+        have installed and three things fall out of it — one of which looks
+        exactly like a broken installation and is not:
+        <a href="0002-reading-your-install-honestly.html">lesson 2</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>.agents/invocation.md</code> in your own install, at
+            <code>~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/1.2.3/</code>.
+            It is under thirty lines and it is the constitution of the whole set.
+            Read it before any <code>SKILL.md</code>, because every skill is
+            written on the assumption that you already have.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: have it list every skill it
+          can see from this set, then compare that list against
+          <code>plugin.json</code>. The difference between the two lists is the
+          subject of the next lesson, and watching it appear is much more
+          convincing than being told about it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, try to state the invariant out loud with no notes,
+            and then name three skills on each side of the split. If the second
+            half is hard, that is expected — the
+            <a href="../reference/skill-index.html">skill index</a> is built for
+            exactly that lookup, and the point is to notice which names you
+            reach for it to find.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="../index.html">Topic index</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0002-reading-your-install-honestly.html"
+              >2. Reading your install honestly</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

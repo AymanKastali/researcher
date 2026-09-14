@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>19. When the set has misfired — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0019</span>
+        <h1>When the set has misfired</h1>
+        <p class="lesson-mission">
+          Every flow in this topic has a way of looking like it worked when it did
+          not. This lesson is the tells, the four things you must always do
+          yourself, and the one judgement nothing in the set will make for you.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is the lesson that makes the other eighteen safe to rely on. A flow
+        that fails loudly costs you an afternoon; a flow that reports success
+        having skipped its own gate costs you the thing you were trying to build.
+      </p>
+
+      <h2>The tells</h2>
+
+      <p>
+        Each row is a symptom you can notice from the outside, without reading any
+        <code>SKILL.md</code>.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>What a misfire looks like, per skill.</caption>
+          <thead>
+            <tr><th>Skill</th><th>The tell</th><th>What to say</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>grill-with-docs</code></td>
+              <td>
+                Everything asked at once, <strong>no recommendations attached</strong>
+              </td>
+              <td>"Did you load grilling and domain-modeling?"</td>
+            </tr>
+            <tr>
+              <td><code>grilling</code></td>
+              <td>
+                It asks you something it could have looked up; or it answers its
+                own question
+              </td>
+              <td>"That's a fact — go and find it."</td>
+            </tr>
+            <tr>
+              <td><code>diagnosing-bugs</code></td>
+              <td>
+                It starts <em>explaining</em> the bug before showing a red command
+              </td>
+              <td>"What command goes red, and have you run it?"</td>
+            </tr>
+            <tr>
+              <td><code>to-tickets</code></td>
+              <td>A ticket you cannot demo when it is done</td>
+              <td>"What can I demo when this is finished?"</td>
+            </tr>
+            <tr>
+              <td><code>to-tickets</code></td>
+              <td>Twelve tickets for a small change</td>
+              <td>"Merge these — the granularity is too fine."</td>
+            </tr>
+            <tr>
+              <td><code>implement</code></td>
+              <td>A clean review report, before any commit</td>
+              <td>Nothing — commit, then review yourself</td>
+            </tr>
+            <tr>
+              <td><code>wayfinder</code></td>
+              <td>A <code>task</code> ticket that is writing product code</td>
+              <td>"That's implementation — it belongs past the map."</td>
+            </tr>
+            <tr>
+              <td>Any skill</td>
+              <td>"That skill isn't installed"</td>
+              <td>Type it anyway — see <a href="0002-reading-your-install-honestly.html">lesson 2</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The four manual patches</h2>
+
+      <p>
+        Nothing in the set performs these, and each one stalls or corrupts a flow:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Collected from lessons 3, 8, 15 and 16.</caption>
+          <thead>
+            <tr><th>Do this</th><th>Before / after</th><th>Or else</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Create the <code>wayfinder:*</code> labels</td>
+              <td>Before the first chart</td>
+              <td><code>gh issue create</code> fails outright</td>
+            </tr>
+            <tr>
+              <td>Check your branch</td>
+              <td>Before <code>/implement</code></td>
+              <td>The feature commits onto <code>main</code></td>
+            </tr>
+            <tr>
+              <td>Commit, then review</td>
+              <td>After <code>/implement</code></td>
+              <td>The review reads an empty diff and finds nothing</td>
+            </tr>
+            <tr>
+              <td><strong>Close the ticket</strong></td>
+              <td>After each <code>/implement</code></td>
+              <td><strong>The frontier never advances</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">If you remember one</span>
+        <p>
+          <strong>Close the ticket.</strong>
+        </p>
+        <p>
+          The others produce a bad commit or a useless report — recoverable in
+          minutes. This one silently halts a multi-week build while every ticket
+          still reads as blocked, and nothing anywhere reports a problem.
+        </p>
+      </div>
+
+      <h2>Gaps the set admits to</h2>
+
+      <p>
+        These are quoted from the repo's own docs pages. Knowing them is what stops
+        you waiting for behaviour that is not coming.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Documented, open, and unlikely to change soon.</caption>
+          <thead>
+            <tr><th>Gap</th><th>Source's words</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>implement</code> never closes anything</td>
+              <td><em>"It ends at the commit and never touches the work item"</em></td>
+            </tr>
+            <tr>
+              <td><code>implement</code> cannot batch or parallelise</td>
+              <td><em>"One invocation, one ticket"</em></td>
+            </tr>
+            <tr>
+              <td><code>implement</code> cannot open a PR</td>
+              <td><em>"no configuration flag and no PR mode"</em></td>
+            </tr>
+            <tr>
+              <td><code>tdd</code> never decides <em>whether</em> to test</td>
+              <td><em>"nothing in it decides whether a change is worth the loop at all"</em></td>
+            </tr>
+            <tr>
+              <td><code>tdd</code> has no refactor step</td>
+              <td><em>"the refactor step was removed and the description was not"</em></td>
+            </tr>
+            <tr>
+              <td><code>code-review</code> never converges</td>
+              <td><em>"do not run it in a loop until it comes back clean, because it will not"</em></td>
+            </tr>
+            <tr>
+              <td><code>code-review</code> can fan out uncontrollably</td>
+              <td><em>"one report reached 50-plus agents"</em></td>
+            </tr>
+            <tr>
+              <td><code>research</code> can duplicate itself</td>
+              <td><em>"roughly 450k tokens across three overlapping runs"</em></td>
+            </tr>
+            <tr>
+              <td><code>research</code> has no stopping criterion</td>
+              <td><em>"Scoping is on you"</em></td>
+            </tr>
+            <tr>
+              <td>Nothing re-reads a past research file</td>
+              <td><em>"a document sitting in the repo until a human or a skill points at it"</em></td>
+            </tr>
+            <tr>
+              <td><code>setup</code> creates no labels, holds no preferences</td>
+              <td><em>"Config is death"</em></td>
+            </tr>
+            <tr>
+              <td>Grilling has no question cap</td>
+              <td><em>"A fixed cap would either cut off useful exploration… or feel arbitrary"</em></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Where the customisation goes</h2>
+
+      <p>
+        Several fixes above are one sentence long — "just answer this, don't
+        diagnose", "one question at a time", "don't spawn more agents". There is
+        exactly one right place to put them, and the docs page explains why the
+        obvious place is wrong:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p><strong>It told me to edit a SKILL.md.</strong></p>
+          <p>
+            That advice is often correct and rarely durable. […]
+            <code>npx skills update</code> overwrites the file, and the plugin
+            install is read-only. Put standing behaviour in your own
+            <code>CLAUDE.md</code> or <code>AGENTS.md</code>, or say it in the
+            invocation. Prompt-level adaptations survive updates.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/ask-matt.md</code>.</figcaption>
+      </figure>
+
+      <h2>Four gaps filled from elsewhere</h2>
+
+      <p>
+        This machine's global <code>CLAUDE.md</code> declares these skills the
+        default workflow, and then names four it keeps from another set. Each one
+        lands on a gap above:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            From <code>~/.claude/CLAUDE.md</code>, checked against each skill's own
+            <code>description</code>.
+          </caption>
+          <thead>
+            <tr><th>Kept skill</th><th>The gap it covers</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>superpowers:using-git-worktrees</code></td>
+              <td>
+                <code>implement</code> commits to "the current branch" and never
+                creates one; parallel runs in one checkout corrupt git state
+              </td>
+            </tr>
+            <tr>
+              <td><code>superpowers:executing-plans</code></td>
+              <td>
+                <code>implement</code> has no review checkpoints and no completion
+                step
+              </td>
+            </tr>
+            <tr>
+              <td><code>superpowers:verification-before-completion</code></td>
+              <td>
+                Nothing in the chain gates the completion claim. Its own rule:
+                <em>"If you haven't run the verification command in this message,
+                you cannot claim it passes."</em>
+              </td>
+            </tr>
+            <tr>
+              <td><code>superpowers:dispatching-parallel-agents</code></td>
+              <td>
+                <code>to-tickets</code> produces a frontier of independently
+                runnable tickets and then stops
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The judgement nothing will make for you</h2>
+
+      <p>
+        <a href="0007-choosing-the-flow.html">Lesson 7</a> ended here and it is
+        worth ending the topic here too. The router routes by situation, and
+        <strong>every route lands on a skill</strong>. There is no branch that
+        terminates in "do it yourself".
+      </p>
+
+      <p>
+        The set's own floor is the context window — <em>"if the whole change fits
+        in one context window, you don't need this skill at all"</em>. Below that
+        floor, for a typo or a config bump, the honest answer is no skill, and no
+        document in the set says so.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >Deciding whether a change is worth the ceremony is yours, and always
+            will be.</strong
+          >
+        </p>
+        <p>
+          That is not a defect in the set. A router cannot know what a change is
+          worth; it can only know what shape it is. The judgement was always going
+          to be the human's, and knowing that it is missing — rather than looking
+          for it — is the last thing this topic has to teach.
+        </p>
+      </div>
+
+      <h2>What this topic could not tell you</h2>
+
+      <p>
+        One honest limit, stated plainly because it applies to every page you have
+        read. <strong>None of these flows was run.</strong> Every lesson describes
+        what a skill's text instructs, and separately quotes what the repo's own
+        docs pages report that users observed. Neither is a report of the flow
+        working.
+      </p>
+
+      <p>
+        So treat this topic as a map of the territory drawn from the survey
+        documents, not from walking it. The first real
+        <code>/to-tickets</code> or <code>/wayfinder</code> session you run is
+        worth writing down — it is the evidence these pages do not have.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You want the agent to stop over-triggering <code>diagnosing-bugs</code>.
+          Where does that instruction go?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Into the skill's own frontmatter, disabling its description</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Into your own CLAUDE.md, or into the invocation
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Into the repo's docs/agents directory, beside the tracker
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Into setup, which holds your standing preferences already
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The plugin install is read-only and an update overwrites edits, so the
+          <code>SKILL.md</code> is out. Setup explicitly declines to hold
+          preferences — "Config is death". What survives an update is a
+          prompt-level adaptation: your own <code>CLAUDE.md</code>, or saying it
+          when you invoke.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which omission halts a build while everything still looks fine?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Forgetting to branch before the first implement run
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Forgetting to close each ticket once it's built</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Forgetting to commit before running the review skill
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Forgetting to create the labels before charting maps
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The frontier is <em>defined</em> as tickets whose blockers are closed, so
+          an unclosed ticket leaves everything downstream reading as blocked with
+          no error anywhere. The label omission fails loudly, the branch omission
+          leaves a visible bad commit, and the review omission produces an
+          obviously empty report.
+        </p>
+      </div>
+
+      <h2>Where to go from here</h2>
+
+      <p>
+        Back to <a href="0007-choosing-the-flow.html">lesson 7</a>, which is the
+        one worth rereading — everything else in this topic is a branch of it. The
+        <a href="../reference/routing-table.html">routing table</a>,
+        <a href="../reference/flow-chains.html">flow chains</a> and
+        <a href="../reference/manual-patches.html">manual patches</a> are built for
+        keeping open while you work; the
+        <a href="../reference/skill-index.html">skill index</a> answers "can the
+        agent fire this, and what is its exact trigger".
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>docs/engineering/</code> and <code>docs/productivity/</code> in
+            your own install — all twenty pages, one per promoted skill, each a
+            list of problems real users hit. Read the page for whichever skill you
+            are about to use for the first time. It is the cheapest hour in this
+            whole topic, and it is the half of the truth the
+            <code>SKILL.md</code> files do not carry.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher — and for this topic, it is also the subject.
+          The most useful question you can ask from here on is mid-flow rather than
+          about it: <em>"which skill are you running right now, and which step are
+          you on?"</em> A confident answer that does not match what you have read
+          here is exactly the misfire this lesson is about.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the end of the topic, so space the review rather than the
+            reading. In a week, try to reconstruct: the invocation axis, the one
+            routing measurement, the Phase 1 gate, and the four manual patches. The
+            ones that come back slowly are the lessons to reread — and they will
+            not be the ones you expect.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0018-the-three-detours.html">18. The three detours</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="../index.html">Topic index</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

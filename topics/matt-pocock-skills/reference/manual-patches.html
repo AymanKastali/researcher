@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manual patches — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Manual patches</h1>
+        <p class="page-blurb">
+          The four things no skill does for you, the misfire tells, and where a
+          customisation has to live to survive an update.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is the checklist page. Everything here is a gap the set documents
+        about itself — nothing is speculation about what might go wrong.
+      </p>
+
+      <h2>The four patches</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Each one stalls or corrupts a flow.</caption>
+          <thead>
+            <tr><th>#</th><th>Do this</th><th>When</th><th>Otherwise</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Create the <code>wayfinder:*</code> labels</td>
+              <td>Before the first chart</td>
+              <td>
+                <code>gh issue create --label</code> <strong>fails
+                outright</strong> — the issue is never created
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Check your branch</td>
+              <td>Before every <code>/implement</code></td>
+              <td>
+                It commits to whatever you are on. It <em>"does not create one,
+                and it does not ask"</em>
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Commit, <em>then</em> review</td>
+              <td>After <code>/implement</code> builds</td>
+              <td>
+                <code>code-review</code> reads
+                <code>&lt;point&gt;...HEAD</code>, which excludes staged and
+                working-tree changes — it reviews nothing and reports nothing
+              </td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td><strong>Close the ticket</strong></td>
+              <td>After every ticket</td>
+              <td>
+                <strong>The frontier never advances.</strong> Everything
+                downstream stays blocked, silently
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">If you remember one</span>
+        <p><strong>Close the ticket.</strong></p>
+        <p>
+          The other three produce a visible bad result. This one halts a
+          multi-week build while every ticket still reads as blocked and nothing
+          reports a problem.
+        </p>
+      </div>
+
+      <h2>Patch 1, as a command</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Bash</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-bash"># Label names from issue-tracker-github.md, "Wayfinding operations":
+# the map carries wayfinder:map; each ticket carries wayfinder:&lt;type&gt;.
+for l in map research prototype grilling task; do
+  gh label create "wayfinder:$l" --force
+done</code></pre>
+      </div>
+
+      <h2>Patch 4, as a frontier query</h2>
+
+      <p>
+        The frontier is every open ticket with no open blocker and no assignee. On
+        GitHub the tracker template gives the mechanism — native issue
+        dependencies, with <code>issue_dependencies_summary.blocked_by</code>
+        reporting <strong>open blockers only</strong>, which is the live gate.
+        That field is why closing matters: it is the only thing that moves a
+        ticket onto the frontier.
+      </p>
+
+      <h2>The misfire tells</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Symptoms visible from outside, and the sentence that recovers.</caption>
+          <thead>
+            <tr><th>Skill</th><th>Tell</th><th>Say</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>grill-with-docs</code></td>
+              <td>Everything asked at once, no recommendations</td>
+              <td>"Did you load grilling and domain-modeling?"</td>
+            </tr>
+            <tr>
+              <td><code>grilling</code></td>
+              <td>Asks you a fact, or answers its own question</td>
+              <td>"That's a fact — go and find it."</td>
+            </tr>
+            <tr>
+              <td><code>grilling</code></td>
+              <td>Slides from the last answer into building</td>
+              <td>"I haven't confirmed shared understanding yet."</td>
+            </tr>
+            <tr>
+              <td><code>diagnosing-bugs</code></td>
+              <td>Theorises before showing a red command</td>
+              <td>"What command goes red, and have you run it?"</td>
+            </tr>
+            <tr>
+              <td><code>diagnosing-bugs</code></td>
+              <td>Fires on a question you just wanted answered</td>
+              <td>"Just answer this, don't diagnose."</td>
+            </tr>
+            <tr>
+              <td><code>to-tickets</code></td>
+              <td>A ticket with nothing to demo</td>
+              <td>"What can I demo when this is done?"</td>
+            </tr>
+            <tr>
+              <td><code>to-tickets</code></td>
+              <td>Twelve tickets for a small change</td>
+              <td>"Merge these — too fine."</td>
+            </tr>
+            <tr>
+              <td><code>code-review</code></td>
+              <td>Agent count climbing</td>
+              <td>"Don't spawn additional agents — review directly."</td>
+            </tr>
+            <tr>
+              <td><code>wayfinder</code></td>
+              <td>A <code>task</code> ticket writing product code</td>
+              <td>"That's implementation — it belongs past the map."</td>
+            </tr>
+            <tr>
+              <td>Any</td>
+              <td>"That skill isn't installed"</td>
+              <td>Nothing. Type it anyway</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Where a customisation has to live</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            That advice is often correct and rarely durable. […]
+            <code>npx skills update</code> overwrites the file, and the plugin
+            install is read-only. Put standing behaviour in your own
+            <code>CLAUDE.md</code> or <code>AGENTS.md</code>, or say it in the
+            invocation. Prompt-level adaptations survive updates.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/ask-matt.md</code>.</figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Three places, one of which works.</caption>
+          <thead><tr><th>Place</th><th>Verdict</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Editing a <code>SKILL.md</code></td>
+              <td><strong>No.</strong> Read-only; overwritten on update</td>
+            </tr>
+            <tr>
+              <td><code>docs/agents/</code> via setup</td>
+              <td>
+                <strong>No.</strong> It configures three things only —
+                <em>"Config is death"</em>
+              </td>
+            </tr>
+            <tr>
+              <td>Your own <code>CLAUDE.md</code>, or the invocation</td>
+              <td><strong>Yes.</strong> Survives updates</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Things to stop waiting for</h2>
+
+      <p>
+        Each is documented as absent. Planning around any of them is planning
+        around something that does not exist.
+      </p>
+
+      <ul>
+        <li><code>implement</code> closing a ticket, or ticking its criteria</li>
+        <li><code>implement</code> opening a PR — <em>"no configuration flag and no PR mode"</em></li>
+        <li><code>implement</code> running more than one ticket, or several in parallel</li>
+        <li><code>tdd</code> deciding <em>whether</em> a change is worth testing</li>
+        <li><code>tdd</code> refactoring, despite its description saying so</li>
+        <li><code>code-review</code> converging on a clean pass</li>
+        <li><code>research</code> stopping on its own, or re-reading a past file</li>
+        <li><code>setup</code> creating labels, holding preferences, or running at user level</li>
+        <li>A question cap on grilling — refused by policy</li>
+        <li>Anything at all firing a user-invoked skill on your behalf</li>
+      </ul>
+
+      <p class="small-print">
+        Patches 1–4 and the tells are this workspace's synthesis from gaps the
+        set's own docs pages document; each is traced to its source in
+        <a href="../lessons/0019-when-the-set-has-misfired.html">lesson 19</a>.
+        Plugin 1.2.3, git <code>8b78b53</code>. None of these flows has been
+        executed — the tells describe what the documents say goes wrong, not what
+        was observed here.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

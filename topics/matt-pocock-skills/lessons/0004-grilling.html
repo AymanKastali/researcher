@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4. Grilling — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0004</span>
+        <h1>Grilling</h1>
+        <p class="lesson-mission">
+          The interview primitive that five other skills run inside themselves.
+          Sixteen lines long, and the only skill in the set with a contract
+          binding both sides — what the agent owes you, and what you owe it.
+        </p>
+      </header>
+
+      <p class="lead">
+        More paths through this set pass through <code>grilling</code> than
+        through anything else. Learn it once here and four later lessons get
+        shorter, because they all say "and then it grills you".
+      </p>
+
+      <h2>Who reaches it</h2>
+
+      <p>
+        The router states the topology in one sentence, and it is worth holding
+        because it explains why <code>grilling</code> itself is model-invoked
+        while its two front doors are not:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>/grill-me</code> and <code>/grill-with-docs</code> are the two
+            named ways in, and <code>/triage</code>, <code>/wayfinder</code> and
+            <code>/improve-codebase-architecture</code> all run it internally.
+            Reach for it directly only when you want the interview with no wrapper
+            around it.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:78</code>.</figcaption>
+      </figure>
+
+      <h2>The mechanism: a tree worked in rounds</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Interview the user relentlessly until you reach a shared
+            understanding. Map this as a <strong>design tree</strong>: every
+            decision branches into the decisions that hang off it.
+          </p>
+          <p>
+            Work the tree in <strong>rounds</strong>. The
+            <strong>frontier</strong> is every decision whose prerequisites are
+            already settled — the questions you can ask <em>now</em> without
+            guessing at answers you haven't heard yet. Ask the whole frontier in
+            one round: number each question and give your recommended answer. Then
+            wait for the user's answers before the next round.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/productivity/grilling/SKILL.md:6-8</code>.</figcaption>
+      </figure>
+
+      <p>
+        Three things are being specified there at once, and it helps to separate
+        them:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The three moving parts of a grilling session.</caption>
+          <thead>
+            <tr><th>Part</th><th>What it means</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Design tree</strong></td>
+              <td>
+                The shape of the problem. Decisions hang off decisions, so most
+                questions are not askable yet
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Frontier</strong></td>
+              <td>
+                The subset askable <em>right now</em> — every decision whose
+                prerequisites are settled
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Round</strong></td>
+              <td>
+                The whole frontier asked at once, then a hard stop until you
+                answer
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Even the question format is specified:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Markdown</span>
+          <span>grilling/SKILL.md:12-16, verbatim</span>
+        </div>
+        <pre><code class="language-markdown">❓ **Q1** - **&lt;question title&gt;**: &lt;question body, might be multiple paragraphs, including multiple choices&gt;
+
+➡️ &lt;your recommended answer&gt;</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Why every question carries a recommendation</span>
+        <p>
+          That <code>➡️</code> line is not decoration. A frontier of eleven
+          questions with no recommendations is an interrogation; the same eleven
+          each carrying a proposed answer is a document you can approve in a word
+          and argue with in three.
+        </p>
+        <p>
+          It is also the tell for a misfire. A session that asks everything at
+          once with <strong>no recommendations attached</strong> is not running
+          this skill — it is improvising an interview.
+        </p>
+      </div>
+
+      <h2>The contract: facts are the agent's, decisions are yours</h2>
+
+      <p>This paragraph is the skill's real content:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Finding <em>facts</em> is your job, never the user's. When a frontier
+            question needs a fact from the environment (filesystem, tools, etc.),
+            dispatch a sub-agent to find it — don't ask the user for anything you
+            could look up yourself. Don't block on it: a running exploration is an
+            unsettled prerequisite, so only the questions downstream of it wait
+            for the sub-agent to report — ask the rest of the frontier now. The
+            <em>decisions</em> are the user's — put each to them and wait.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/productivity/grilling/SKILL.md:20</code>.</figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The split, and what a violation looks like on each side.</caption>
+          <thead>
+            <tr><th></th><th>Whose job</th><th>Violation</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Facts</strong></td>
+              <td>The agent's, always</td>
+              <td>
+                "Which test runner does this repo use?" — it could have looked
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Decisions</strong></td>
+              <td>Yours, always</td>
+              <td>
+                The agent picks, notes its own recommendation as settled, moves on
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The second violation is named elsewhere in the tree in unusually blunt
+        terms — <em>"a grilling agent that answers its own questions has broken
+        this"</em> (<code>wayfinder/SKILL.md:75</code>). Not <em>interpreted it
+        liberally</em>. Broken it.
+      </p>
+
+      <h2>The gate that ends it</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The session is done when the frontier is empty: every branch of the
+            design tree visited, nothing left silently assumed. Do not act on it
+            until the user confirms you have reached a shared understanding.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/productivity/grilling/SKILL.md:22</code>.</figcaption>
+      </figure>
+
+      <p>
+        Two separate conditions, and only one of them is automatic. An empty
+        frontier is a <em>state</em> the agent can detect. A shared understanding
+        is a <em>claim you make</em>, and nothing may proceed until you have made
+        it. If a session slides from the last answer straight into building, the
+        gate was skipped.
+      </p>
+
+      <h2>Which front door</h2>
+
+      <p>
+        Both wrappers run the same primitive. The difference is whether anything
+        survives the session:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The choice, from <code>ask-matt/SKILL.md:17</code> and <code>:77</code>.
+          </caption>
+          <thead>
+            <tr><th></th><th><code>/grill-with-docs</code></th><th><code>/grill-me</code></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>State</td>
+              <td>Stateful — writes <code>CONTEXT.md</code> and ADRs</td>
+              <td>Stateless — saves nothing</td>
+            </tr>
+            <tr>
+              <td>Reach for it when</td>
+              <td>You are in a working directory</td>
+              <td>There is no repo under the subject</td>
+            </tr>
+            <tr>
+              <td>Subject</td>
+              <td>Software, in a repo</td>
+              <td>A plan, a design, a piece of writing — anything</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The router does not present these as equals. Of
+        <code>/grill-with-docs</code>: <em>"it is strictly the better one"</em>
+        whenever a repo is there to leave a paper trail in.
+      </p>
+
+      <h2>The joint that slips</h2>
+
+      <p>
+        <code>grill-with-docs</code> is one line of prose delegating to two other
+        skills, and in the version you have installed that delegation is
+        documented as unreliable:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>grill-with-docs</code> ran, but it never loaded
+            <code>grilling</code>.
+          </p>
+          <p>
+            A real and unfixed rough edge […] a skill that names another skill
+            does not reliably cause that skill to load, and
+            <code>grill-with-docs</code> names two. The tell is a session that
+            asks everything at once with no recommendations attached — that is the
+            model improvising an interview rather than running this one. Asking
+            the agent directly whether it loaded <code>grilling</code> and
+            <code>domain-modeling</code> usually recovers it.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/productivity/grilling.md</code>, a user-report page.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The working practice</span>
+        <p>
+          When you type <code>/grill-with-docs</code>, check that the first round
+          arrives <strong>numbered, in one batch, with a recommendation on every
+          question</strong>. If it does not, say so: "did you load
+          <code>grilling</code> and <code>domain-modeling</code>?"
+        </p>
+        <p>
+          This is the rough edge the unreleased rewrite in
+          <a href="0002-reading-your-install-honestly.html">lesson 2</a> is
+          intended to fix. Until the pin moves, it is yours to catch.
+        </p>
+      </div>
+
+      <h2>Why it never stops on its own</h2>
+
+      <p>
+        There is no cap on the number of questions, and that is a refusal rather
+        than an omission. From the set's own record of things it has decided not
+        to build: <em>"A fixed cap would either cut off useful exploration on hard
+        problems or feel arbitrary on easy ones."</em>
+        (<code>.out-of-scope/question-limits.md</code>)
+      </p>
+
+      <p>
+        So pacing is your lever, and it belongs in your own
+        <code>CLAUDE.md</code> as a standing instruction rather than in the skill
+        — which, being a read-only plugin install, would be overwritten anyway.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Mid-grilling the agent asks: "does this project use Vitest or Jest?"
+          What is wrong?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Nothing, tooling choices are decisions you must make</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Discovering that fact was its job, never yours</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">The question belongs to a considerably later round</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">It arrived with no numbered question title attached</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Which runner a repo already uses is discoverable from the filesystem, so
+          the skill requires the agent to dispatch a sub-agent and find out rather
+          than spend your attention on it. Whether to <em>switch</em> runners
+          would be a decision, and that one is legitimately yours.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          The frontier is empty and the agent starts writing code. What was
+          skipped?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Nothing, an empty frontier ends the grilling session</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Your confirmation that a shared understanding was reached</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The final round of recommendations on each question
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The update writing resolved terms into the glossary
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The last sentence of the skill carries two conditions, not one: the
+          frontier empties, <em>and</em> "the user confirms you have reached a
+          shared understanding". The first is a state the agent observes; the
+          second is a thing only you can say. Sliding from one into building skips
+          the only gate the skill has.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        <code>/grill-with-docs</code> is grilling plus a second skill running
+        alongside it, writing things down as decisions land. That second skill has
+        one rule about what its file may contain, and a three-part test for when
+        to write anything at all: <a href="0005-domain-modeling.html">lesson 5</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/productivity/grilling/SKILL.md</code> — all sixteen lines
+            of it. It is the shortest high-value read in the whole set, and every
+            sentence is load-bearing. Read it twice: once for the mechanism, once
+            noticing how much of it is about what the agent is
+            <em>forbidden</em> to do.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth trying: give it a half-formed idea and
+          ask it to run <code>grilling</code> on you for exactly one round, then
+          stop and explain which questions it left out of that round and why. The
+          frontier is much easier to understand from the questions that were
+          <em>withheld</em> than from the ones that were asked.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, state the facts/decisions split out loud and give
+            one example of each from work you actually do. Then name the two
+            conditions that end a session. The
+            <a href="../reference/glossary.html">glossary</a> has
+            <em>frontier</em> defined in both its senses — the one here, and the
+            ticket sense you meet in lesson 14 — and they are worth keeping
+            apart.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0003-what-setup-writes.html">3. What setup writes</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0005-domain-modeling.html">5. Domain modelling</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

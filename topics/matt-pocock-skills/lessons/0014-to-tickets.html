@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>14. To-tickets — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0014</span>
+        <h1>To-tickets</h1>
+        <p class="lesson-mission">
+          Cutting a spec into slices that each land green, declaring what blocks
+          what — and a quiz step that exists because this skill gets it wrong in
+          two specific, predictable ways.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> a spec exists, or a plan is in the conversation,
+        and it will not fit one context window. Run it in the
+        <strong>same window</strong> as <code>/to-spec</code>.
+      </p>
+
+      <h2>The unit</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ul>
+            <li>
+              Each slice cuts a narrow but COMPLETE path through every layer
+              (schema, API, UI, tests) — vertical, NOT a horizontal slice of one
+              layer
+            </li>
+            <li>A completed slice is demoable or verifiable on its own</li>
+            <li>Each slice is sized to fit in a single fresh context window</li>
+            <li>Any prefactoring should be done first</li>
+          </ul>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/to-tickets/SKILL.md:31-36</code>, the
+          <code>&lt;vertical-slice-rules&gt;</code> block.
+        </figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">  HORIZONTAL -- wrong                 VERTICAL -- right
+
+  +---------------------+             +------+------+------+
+  | UI        ticket 3  |             |  UI  |  UI  |  UI  |
+  +---------------------+             +------+------+------+
+  | API       ticket 2  |             | API  | API  | API  |
+  +---------------------+             +------+------+------+
+  | schema    ticket 1  |             |schema|schema|schema|
+  +---------------------+             +------+------+------+
+                                         #1     #2     #3
+  Nothing is demoable until           Each ticket is demoable
+  all three are done.                 on its own.</code></pre>
+      </div>
+
+      <p>
+        The third rule is the one that ties this lesson to lesson 7. A slice is
+        sized <strong>to fit one fresh context window</strong> — the same
+        measurement that decided whether you needed this skill at all, now applied
+        to each piece.
+      </p>
+
+      <h2>Blocking edges</h2>
+
+      <p>
+        <em>"Give each ticket its <strong>blocking edges</strong> — the other
+        tickets that must complete before it can start. A ticket with no blockers
+        can start immediately."</em> And the edges are what make the
+        <strong>frontier</strong> computable:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Work the <strong>frontier</strong>: any ticket whose blockers are all
+            done. For a purely linear chain that means top to bottom.
+          </p>
+          <p>Do NOT close or modify any parent issue.</p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/to-tickets/SKILL.md:66-68</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Two senses of "frontier", and they rhyme</span>
+        <p>
+          In <a href="0004-grilling.html">grilling</a> the frontier is every
+          question whose prerequisites are settled. Here it is every ticket whose
+          blockers are done. Same idea — the set of things actionable
+          <em>now</em> — applied to questions in one case and work in the other.
+        </p>
+      </div>
+
+      <p>
+        How the edges are stored depends entirely on what
+        <code>/setup-matt-pocock-skills</code> configured, which is why
+        <a href="0003-what-setup-writes.html">lesson 3</a> called this flow a hard
+        dependency:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>to-tickets/SKILL.md:60-64</code>.</caption>
+          <thead>
+            <tr><th>Tracker</th><th>What you get</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Local files</td>
+              <td>
+                One file per ticket under
+                <code>.scratch/&lt;feature-slug&gt;/issues/</code>, numbered from
+                <code>01</code> in dependency order. Edges are
+                <strong>text</strong>, worked by hand
+              </td>
+            </tr>
+            <tr>
+              <td>A real tracker</td>
+              <td>
+                One issue per ticket, published blockers-first, using the
+                platform's <strong>native blocking relationship</strong>. The
+                frontier becomes a query
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Prefactoring</h2>
+
+      <p>
+        Step 2 carries an instruction that is easy to skim past and changes the
+        shape of the whole breakdown:
+        <em>"Look for opportunities to prefactor the code to make the
+        implementation easier. 'Make the change easy, then make the easy
+        change.'"</em> Prefactoring tickets come first and block the rest.
+      </p>
+
+      <h2>The exception: a wide refactor</h2>
+
+      <p>
+        One shape of work cannot be cut into vertical slices, and the skill
+        handles it explicitly rather than pretending otherwise:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A <strong>wide refactor</strong> is one mechanical change — rename a
+            column, retype a shared symbol — whose <strong>blast radius</strong>
+            fans across the whole codebase, so a single edit breaks thousands of
+            call sites at once and no vertical slice can land green. Don't force
+            it into a tracer bullet; sequence it as
+            <strong>expand–contract</strong>. First expand: add the new form
+            beside the old so nothing breaks. Then migrate the call sites over in
+            batches sized by blast radius (per package, per directory), each batch
+            its own ticket blocked by the expand, keeping CI green batch to batch
+            because the old form still exists. Finally contract: delete the old
+            form once no caller remains, in a ticket blocked by every migrate
+            batch.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/to-tickets/SKILL.md:40</code>.
+        </figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">#1 EXPAND    add the new form beside the old     (blocks everything)
+                     |
+      +--------------+--------------+
+      v              v              v
+#2 migrate      #3 migrate      #4 migrate        (each green on its own)
+   pkg-a           pkg-b           pkg-c
+      +--------------+--------------+
+                     v
+#5 CONTRACT  delete the old form   (blocked by #2, #3, #4)</code></pre>
+      </div>
+
+      <p>
+        And the fallback when even the batches cannot stay green alone: keep the
+        sequence, but let them share an integration branch that all block a final
+        integrate-and-verify ticket — <em>"green is promised only there."</em>
+      </p>
+
+      <h2>The quiz step is yours to use</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>Ask the user:</p>
+          <ul>
+            <li>Does the granularity feel right? (too coarse / too fine)</li>
+            <li>
+              Are the blocking edges correct — does each ticket only depend on
+              tickets that genuinely gate it?
+            </li>
+            <li>Should any tickets be merged or split further?</li>
+          </ul>
+          <p>Iterate until the user approves the breakdown.</p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/to-tickets/SKILL.md:50-56</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        Those three questions exist because the skill fails in two known ways, and
+        the quiz is where you catch both.
+      </p>
+
+      <h3>Failure one — over-decomposition</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Over-decomposition is the most reported friction on this skill, and it
+            is consistent across practitioners: the model defaults to atomic units
+            and loses the grouping that would make them meaningful. The quiz step
+            exists for exactly this — ask it to merge, and it will.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/to-tickets.md:59</code>.</figcaption>
+      </figure>
+
+      <h3>Failure two — horizontal slices, despite the rule</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This is the failure the vertical-slice rule is written against, and
+            the skill still produces it sometimes. Catch it at the quiz step by
+            asking one question per ticket: <strong>what can I demo when this is
+            done?</strong> A ticket with no answer is a horizontal slice.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/to-tickets.md:62</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The one question to ask at the quiz</span>
+        <p>
+          <strong>"What can I demo when this ticket is done?"</strong>
+        </p>
+        <p>
+          Ask it of every ticket. A ticket with no answer is a horizontal slice,
+          and you have caught it at the only cheap moment there is.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A ticket reads "add the database columns for the new billing fields".
+          What is wrong?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It names a schema, which specs may not reference
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Nothing is demoable when this one is done alone</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">It is too large for one fresh context window</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It declares no blocking edges to any other ticket
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          It is a horizontal slice — one layer, no path through the others. Apply
+          the demo question and there is no answer, which is the tell. The fix at
+          the quiz step is to merge it into the vertical slice that needs those
+          columns, so the ticket delivers behaviour rather than a layer.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Renaming a type used in 900 files. How should this be sequenced?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              One ticket, since the change is entirely mechanical
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Expand first, then migrate in batches, then contract</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Vertical slices grouped by the feature each touches
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One ticket per package, each blocking the next
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          This is the wide-refactor exception: blast radius means no vertical
+          slice can land green. Add the new form beside the old, migrate call
+          sites in batches each blocked by the expand — CI stays green throughout
+          because the old form still exists — then delete the old form in a ticket
+          blocked by every batch.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        The tickets are published and the frontier is defined. Working it is
+        mostly mechanical — except for one step nothing in the set performs, which
+        stops the frontier advancing at all:
+        <a href="0015-working-the-frontier.html">lesson 15</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/to-tickets/SKILL.md</code> — and specifically
+            the two templates at the bottom, for a local file and for a tracker
+            issue. Reading the fields a ticket is expected to carry
+            (<em>Parent</em>, <em>What to build</em>, <em>Acceptance
+            criteria</em>, <em>Blocked by</em>) tells you what a good one looks
+            like faster than the prose does.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. At the quiz step, do not just answer the
+          three questions — ask it the demo question back, once per ticket, and
+          make it answer in one concrete sentence each time. The tickets where the
+          answer comes out vague are the ones to merge.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, draw the expand–migrate–contract graph from memory
+            and say which ticket blocks which. Then state the demo question. Those
+            two things are most of what this skill asks you to bring.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0013-to-spec.html">13. To-spec</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0015-working-the-frontier.html">15. Working the frontier</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

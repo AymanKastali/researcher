@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3. What setup writes — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0003</span>
+        <h1>What setup writes</h1>
+        <p class="lesson-mission">
+          One skill runs once per repository and configures the three things the
+          rest assume. Skipping it does not produce an error — it produces a
+          confident wrong answer, and that is the more expensive failure.
+        </p>
+      </header>
+
+      <p class="lead">
+        <code>/setup-matt-pocock-skills</code> was five of the six inoperative
+        instructions in
+        <a href="0002-reading-your-install-honestly.html">lesson 2</a>. Every one
+        of those lines is a skill telling you, through the agent, that it needs
+        something you have not given it. This lesson is what that something is.
+      </p>
+
+      <h2>What it configures</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>Scaffold the per-repo configuration that the engineering skills assume:</p>
+          <ul>
+            <li>
+              <strong>Issue tracker</strong> — where issues live (GitHub by
+              default; local markdown is also supported out of the box)
+            </li>
+            <li>
+              <strong>Triage labels</strong> — the strings used for the five
+              canonical triage roles
+            </li>
+            <li>
+              <strong>Domain docs</strong> — where <code>CONTEXT.md</code> and
+              ADRs live, and the consumer rules for reading them
+            </li>
+          </ul>
+          <p>
+            This is a prompt-driven skill, not a deterministic script. Explore,
+            present what you found, confirm with the user, then write.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/setup-matt-pocock-skills/SKILL.md:9-15</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        Its own frontmatter carries the sequencing rule, and it is the last clause
+        of the <code>description</code>: <em>"Run once before first use of the
+        other engineering skills."</em>
+      </p>
+
+      <h2>What actually breaks if you skip it</h2>
+
+      <p>
+        Not everything. The set has thought about this precisely enough to have
+        written a decision record about it, and the answer has two grades:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We split these into <strong>hard-dependency</strong> and
+            <strong>soft-dependency</strong> skills:
+          </p>
+          <ul>
+            <li>
+              <strong>Hard dependency</strong> (<code>to-tickets</code>,
+              <code>to-spec</code>, <code>triage</code>) — include an explicit
+              one-liner […] Without the mapping, output is wrong, not just fuzzy.
+            </li>
+            <li>
+              <strong>Soft dependency</strong> (<code>diagnose</code>,
+              <code>tdd</code>, <code>improve-codebase-architecture</code>) —
+              reference "the project's domain glossary" and "ADRs in the area
+              you're touching" in vague prose only. If the docs aren't there, the
+              skill still works; output is just less sharp.
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption>
+          <code>.agents/adr/0001-explicit-setup-pointer-only-for-hard-dependencies.md</code>.
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Which flows need setup, and which merely prefer it.</caption>
+          <thead>
+            <tr>
+              <th>Flow</th>
+              <th>Without setup</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Small feature — grill, implement, review</td>
+              <td>Works. Output is less sharp</td>
+            </tr>
+            <tr>
+              <td>Bug fix — <code>/diagnosing-bugs</code></td>
+              <td>Works. Output is less sharp</td>
+            </tr>
+            <tr>
+              <td>Big feature — <code>/to-spec</code>, <code>/to-tickets</code></td>
+              <td><strong>Wrong, not fuzzy</strong></td>
+            </tr>
+            <tr>
+              <td>Greenfield — <code>/wayfinder</code></td>
+              <td><strong>Wrong, not fuzzy</strong></td>
+            </tr>
+            <tr>
+              <td>Incoming issues — <code>/triage</code></td>
+              <td><strong>Wrong, not fuzzy</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>"Wrong, not fuzzy" — the actual failure</h2>
+
+      <p>
+        This is the part worth committing to memory, because the symptom is
+        silence. <code>/wayfinder</code> states its own fallback in the open:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong
+              >Where the map, its child tickets, blocking, and frontier queries
+              physically live is tracker-specific.</strong
+            >
+            The issue tracker should have been provided to you — run
+            <code>/setup-matt-pocock-skills</code> if not. […] If no tracker has
+            been provided, default to the local-markdown tracker.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/wayfinder/SKILL.md:25</code>.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The silent wrong default</span>
+        <p>
+          A repository with a live GitHub issue tracker, but no
+          <code>docs/agents/issue-tracker.md</code>, gets
+          <strong>markdown files written into <code>.scratch/</code></strong>.
+        </p>
+        <p>
+          No error. No warning. The flow completes and reports success. Your
+          tickets exist — just not anywhere your team is looking, and with plain
+          text where the native blocking links should have been. The frontier that
+          <a href="0014-to-tickets.html">lesson 14</a> depends on is not
+          computable from text.
+        </p>
+      </div>
+
+      <h2>What it writes</h2>
+
+      <p>
+        Four artifacts. The first is a block injected into your
+        <code>CLAUDE.md</code> or <code>AGENTS.md</code>, and it is the load-bearing
+        one:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Markdown</span>
+          <span>setup-matt-pocock-skills/SKILL.md:86-100, verbatim</span>
+        </div>
+        <pre><code class="language-markdown">## Agent skills
+
+### Issue tracker
+
+[one-line summary of where issues are tracked]. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+[one-line summary of the label vocabulary]. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+[one-line summary of layout -- "single-context" or "multi-context"]. See `docs/agents/domain.md`.</code></pre>
+      </div>
+
+      <p>
+        Notice what that block is: three pointers and no content. It is an
+        <strong>indirection layer</strong>, and skills are supposed to resolve the
+        tracker <em>through</em> it rather than hard-coding a path. The set learned
+        this the hard way:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Wayfinder instead pinned the literal
+            <code>docs/agents/issue-tracker.md</code>, so in a repo that keeps its
+            agent docs elsewhere it silently fell back to the local-markdown
+            tracker — even one whose <code>CLAUDE.md</code> clearly declares
+            GitHub issues.
+          </p>
+        </blockquote>
+        <figcaption><code>CHANGELOG.md</code>, 1.1.0 patch notes, PR #472.</figcaption>
+      </figure>
+
+      <p>Then three files under <code>docs/agents/</code>:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The three documents, and what each carries.</caption>
+          <thead>
+            <tr><th>File</th><th>Carries</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>issue-tracker.md</code></td>
+              <td>
+                CLI conventions, what "publish to the issue tracker" and "fetch
+                the relevant ticket" mean here, a PRs-as-requests flag defaulting
+                to <strong>no</strong>, and a <strong>Wayfinding operations</strong>
+                section
+              </td>
+            </tr>
+            <tr>
+              <td><code>triage-labels.md</code></td>
+              <td>
+                A two-column table mapping the five canonical triage roles onto
+                this tracker's label strings. Written only if
+                <code>triage</code> is installed
+              </td>
+            </tr>
+            <tr>
+              <td><code>domain.md</code></td>
+              <td>
+                Where <code>CONTEXT.md</code> and ADRs live, and the instruction
+                to read them before exploring
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Why a freshly set-up repo looks empty</h2>
+
+      <p>
+        Setup does not create <code>CONTEXT.md</code> and does not create any
+        ADRs, and it instructs every skill not to complain about that:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If any of these files don't exist, <strong>proceed silently</strong>.
+            Don't flag their absence; don't suggest creating them upfront. The
+            <code>/domain-modeling</code> skill […] creates them lazily when terms
+            or decisions actually get resolved.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/setup-matt-pocock-skills/domain.md:11</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >Setup writes where things live. It never writes what is in
+            them.</strong
+          >
+        </p>
+        <p>
+          The glossary and the decision records are grown by
+          <a href="0005-domain-modeling.html"><code>/domain-modeling</code></a>
+          during real conversations, one term at a time. An empty
+          <code>CONTEXT.md</code> after setup is not an unfinished step.
+        </p>
+      </div>
+
+      <h2>A worked example: this repository</h2>
+
+      <p>
+        The repository you are reading this in has been through setup. Its
+        <code>CLAUDE.md</code> carries the block, filled in:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p><strong>Issue tracker</strong></p>
+          <p>
+            Issues live as GitHub issues in <code>AymanKastali/researcher</code>,
+            driven by the <code>gh</code> CLI. See
+            <code>docs/agents/issue-tracker.md</code>.
+          </p>
+          <p><strong>Domain docs</strong></p>
+          <p>
+            Single-context: <code>CONTEXT.md</code> + <code>docs/adr/</code> at
+            the repo root. See <code>docs/agents/domain.md</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>CLAUDE.md</code> at this repository's root, compressed to the same
+          three sub-headings.
+        </figcaption>
+      </figure>
+
+      <p>
+        And its <code>docs/agents/triage-labels.md</code> is an identity table —
+        every canonical role mapped to a label of the same name. That looks like a
+        step someone forgot to finish, and it is not:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If your tracker already uses the canonical names, the mapping is an
+            identity table and there is nothing to configure. That is the intended
+            common case, not a missing step.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/setup-matt-pocock-skills.md</code>.</figcaption>
+      </figure>
+
+      <h2>Three things it will not do for you</h2>
+
+      <ul>
+        <li>
+          <strong>It does not create labels.</strong> The mapping file is a
+          mapping — it never runs <code>gh label create</code>. On a fresh GitHub
+          repository the labels genuinely do not exist, and
+          <code>gh issue create --label &lt;missing&gt;</code>
+          <em>fails outright</em> rather than creating it. This is the first of
+          <a href="../reference/manual-patches.html">the four manual patches</a>,
+          and it is the one that stops <a href="0016-charting-a-map.html">lesson
+          16</a> dead.
+        </li>
+        <li>
+          <strong>It does not hold your preferences.</strong>
+          <em>"Config is death."</em> Standing instructions — how you want
+          grilling paced, whether to diagnose or just answer — belong in your own
+          <code>CLAUDE.md</code> as plain prose.
+        </li>
+        <li>
+          <strong>There is no user-level mode.</strong> Every repository carries
+          its own <code>docs/agents/</code>. Running the skills across ten repos
+          means running setup ten times.
+        </li>
+      </ul>
+
+      <div class="aside note">
+        <span class="label">There is no verify mode either, and that is deliberate</span>
+        <p>
+          The intended way to check an existing setup is to run the skill again
+          and tell it what you want: <em>"don't rewrite anything, just check my
+          existing files against the current seed templates and report drift"</em>.
+          Because the skill is prompt-driven rather than a script, scoping it in
+          the invocation works.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You run <code>/to-tickets</code> in a GitHub repo that never had setup
+          run. What happens?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It pauses and asks you to run setup beforehand
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It writes markdown ticket files into a scratch directory
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It detects the git remote and uses GitHub issues
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It fails with an error about the missing tracker
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The documented fallback is the local-markdown tracker, and it is taken
+          silently. The skill cannot stop and run setup for you — setup is
+          user-invoked — and nothing in it infers a tracker from
+          <code>git remote</code>. You get a complete-looking result in the wrong
+          place, with text where the blocking links should be.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          After a successful setup run, <code>CONTEXT.md</code> does not exist.
+          What should you do?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Re-run setup, because a written file was clearly missed
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Nothing, because the glossary is grown one term later</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Create it by hand before the first engineering flow
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Copy the seed template from the skill's own folder</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Setup writes <em>where</em> the domain docs live, never their contents.
+          <code>domain.md</code> instructs every consumer to proceed silently when
+          they are absent, because <code>/domain-modeling</code> creates them
+          lazily when a term actually gets resolved. An empty glossary is the
+          correct state of a repo that has not yet argued about a word.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        The configuration is in place. Now the primitives the flows are built
+        from — and the first of them is the one five different skills run
+        internally: <a href="0004-grilling.html">lesson 4</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/setup-matt-pocock-skills/issue-tracker-github.md</code>
+            — the seed template, which is what your
+            <code>docs/agents/issue-tracker.md</code> is a copy of. Reading the
+            template and your own copy side by side shows you exactly which
+            decisions were made on your behalf, including the
+            PRs-as-a-request-surface flag that was left at its default.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: have it run setup in
+          verification mode against this repository — "don't rewrite anything,
+          report drift against the current seed templates". It is the only
+          supported way to check an existing configuration, and seeing it work
+          teaches something about prompt-driven skills that no amount of reading
+          will.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, try to state the difference between a hard and a
+            soft dependency, and give one flow on each side. Then name the failure
+            mode in one sentence — the word to reach for is
+            <strong>silent</strong>, not <strong>broken</strong>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0002-reading-your-install-honestly.html"
+              >2. Reading your install honestly</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0004-grilling.html">4. Grilling</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

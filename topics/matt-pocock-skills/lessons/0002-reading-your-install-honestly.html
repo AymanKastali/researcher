@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2. Reading your install honestly — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0002</span>
+        <h1>Reading your install honestly</h1>
+        <p class="lesson-mission">
+          Three things are true about the tree on your disk that no blog post
+          about these skills will tell you: half of them are invisible to the
+          agent, six instructions inside them cannot execute, and the version
+          number identifies nothing.
+        </p>
+      </header>
+
+      <p class="lead">
+        All three follow from
+        <a href="0001-the-invocation-axis.html">lesson 1</a>'s one axis, plus one
+        fact about how the plugin is shipped. None of them is a fault in your
+        installation, and each one produces a symptom you would otherwise
+        misread.
+      </p>
+
+      <h2>One: half the set looks uninstalled</h2>
+
+      <p>
+        A user-invoked skill is hidden from the model. That hiding is done by the
+        harness, and the harness hides it by leaving it out of the skill list it
+        shows the agent. The agent then reads that list as complete.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p><strong>It told me half the skills aren't installed.</strong></p>
+          <p>
+            A known bug, unfixed. Most of the skills the router routes you through
+            set <code>disable-model-invocation: true</code>, which means the
+            harness leaves them out of the skill list it injects into the agent's
+            context. The agent reads that list as exhaustive and reports them
+            missing. One reported session had it declare the whole
+            spec-and-tickets flow absent and reroute to bare
+            <code>/grilling</code> and <code>/tdd</code>. […] They are installed.
+            Type the slash command anyway, or check
+            <code>.claude-plugin/plugin.json</code>, which is the authority on
+            what is present.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>docs/engineering/ask-matt.md</code>, the repo's own record of
+          reported problems.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The symptom, and the wrong conclusion</span>
+        <p>
+          You ask for the spec-and-tickets flow. The agent tells you those skills
+          are not installed and helpfully offers <code>/grilling</code> and
+          <code>/tdd</code> instead. <strong>Nothing is wrong.</strong>
+        </p>
+        <p>
+          The wrong move is to reinstall the plugin, which changes nothing. The
+          right move is to type <code>/to-spec</code> anyway. It is there.
+        </p>
+      </div>
+
+      <p>
+        This lesson can confirm the mechanism first-hand rather than quoting it.
+        The session that wrote these pages was shown a skill listing containing
+        exactly eleven entries under a <code>mattpocock-skills:</code> prefix —
+        <code>grilling</code>, <code>domain-modeling</code>,
+        <code>codebase-design</code>, <code>tdd</code>,
+        <code>diagnosing-bugs</code>, <code>code-review</code>,
+        <code>prototype</code>, <code>research</code>,
+        <code>resolving-merge-conflicts</code>, <code>wizard</code>,
+        <code>writing-for-agents</code>. That is precisely the model-invoked set
+        from lesson 1, and the fourteen user-invoked skills were absent.
+      </p>
+
+      <div class="aside note">
+        <span class="label">How strong is that evidence</span>
+        <p>
+          It is an observation of one harness in one session, not a documented
+          guarantee. The tree describes the mechanism and this session matched it
+          exactly — but if your own harness ever shows all twenty-five, believe
+          your harness and treat this paragraph as out of date rather than
+          explaining the difference away.
+        </p>
+      </div>
+
+      <h2>Two: six instructions in the set cannot execute</h2>
+
+      <p>
+        Apply the invariant to the tree itself and something awkward turns up.
+        Skills in 1.2.3 contain instructions telling the agent to run
+        <em>user-invoked</em> skills — which lesson 1 established is impossible.
+        Here is one, quoted whole:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The issue tracker and triage label vocabulary should have been
+            provided to you — run <code>/setup-matt-pocock-skills</code> if not.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/to-spec/SKILL.md:9</code>.</figcaption>
+      </figure>
+
+      <p>
+        <code>setup-matt-pocock-skills</code> carries
+        <code>disable-model-invocation: true</code>. No skill can reach it. That
+        sentence is sitting inside a skill, addressed to an agent, describing an
+        action the agent cannot take. Grep the tree and there are seven such
+        lines:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Every reference to a user-invoked skill from inside another skill,
+            plugin 1.2.3.
+          </caption>
+          <thead>
+            <tr>
+              <th>Location</th>
+              <th>Names</th>
+              <th>Kind</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>to-spec/SKILL.md:9</code></td><td><code>setup-…</code></td><td>Precondition</td></tr>
+            <tr><td><code>to-tickets/SKILL.md:11</code></td><td><code>setup-…</code></td><td>Precondition</td></tr>
+            <tr><td><code>code-review/SKILL.md:13</code></td><td><code>setup-…</code></td><td>Precondition</td></tr>
+            <tr><td><code>wayfinder/SKILL.md:25</code></td><td><code>setup-…</code></td><td>Precondition</td></tr>
+            <tr><td><code>triage/SKILL.md:43</code></td><td><code>setup-…</code></td><td>Precondition</td></tr>
+            <tr><td><code>diagnosing-bugs/SKILL.md:140</code></td><td><code>improve-codebase-architecture</code></td><td>Hand-off</td></tr>
+            <tr>
+              <td><code>to-tickets/SKILL.md:60</code></td>
+              <td><code>setup-…</code></td>
+              <td><strong>Not an instruction</strong> — see below</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The last row is the one worth looking at closely, because it teaches the
+        distinction. It reads: <em>"Publish the approved tickets.
+        <strong>How</strong> depends on the tracker
+        <code>/setup-matt-pocock-skills</code> configured"</em>. That names the
+        skill without telling anyone to run it, so it is perfectly fine.
+        <strong>Six</strong> lines are instructions the agent cannot carry out;
+        the seventh merely mentions a skill.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >Any instruction inside a skill that tells the agent to run a
+            user-invoked skill is addressed to you.</strong
+          >
+        </p>
+        <p>
+          Read it as a note in the margin, not a step in the process. Nothing will
+          happen at that line unless you make it happen.
+        </p>
+      </div>
+
+      <p>
+        That this is a genuine defect rather than a subtlety is confirmed by the
+        fix, which exists but has not shipped. In an unreleased changeset on the
+        public repository:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>to-spec</code>, <code>wayfinder</code>,
+            <code>to-tickets</code>, <code>triage</code>, and
+            <code>code-review</code> each carried a precondition […]
+            <code>setup-matt-pocock-skills</code> is user-invoked, so none of
+            these skills (user-invoked or model-invoked) can call it. Reworded all
+            five as instructions for the agent to tell the human to run it
+            instead.
+          </p>
+          <p>
+            <code>diagnosing-bugs</code>'s Phase 6 post-mortem hand off to
+            <code>improve-codebase-architecture</code> (also user-invoked) the
+            same way, from an autonomous, often-unattended bug-fixing flow with no
+            human in the loop to catch the failed call. Removed the hand-off
+            outright rather than softening it, since it rarely fired in practice.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>.changeset/user-invoked-skill-invocation.md</code> on
+          <code>mattpocock/skills@main</code>, unreleased as of 2026-09-14.
+        </figcaption>
+      </figure>
+
+      <h2>Three: the version number identifies nothing</h2>
+
+      <p>
+        This is the one that will bite you when you read anything written about
+        these skills elsewhere. Your install says it is 1.2.3. The public
+        repository's <code>main</code> also says it is 1.2.3. They are
+        <strong>34 commits apart</strong>.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Two trees, one version string. Checked 2026-09-14.</caption>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Installed</th>
+              <th>Public <code>main</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Version</td>
+              <td><code>1.2.3</code></td>
+              <td><code>1.2.3</code></td>
+            </tr>
+            <tr>
+              <td>Commit</td>
+              <td><code>8b78b53</code></td>
+              <td><code>3cca18b</code></td>
+            </tr>
+            <tr>
+              <td>Date</td>
+              <td>2026-08-13</td>
+              <td>2026-09-04</td>
+            </tr>
+            <tr>
+              <td>Distance</td>
+              <td>—</td>
+              <td>34 commits ahead</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The cause is in the set's own decision record. The marketplace listing
+        does not track a tag; it pins a commit:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The listing's <code>source</code> is […] the <strong>sha is
+            pinned</strong>, so a release reaches installed users when that pin
+            moves, not the moment we tag.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>.agents/adr/0002-ship-as-a-claude-code-plugin.md</code>, 2026-08-05
+          update.
+        </figcaption>
+      </figure>
+
+      <p>Two of the differences change instructions you will actually read:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Where the trees disagree, and it matters.</caption>
+          <thead>
+            <tr>
+              <th>Thing</th>
+              <th>Your install</th>
+              <th>Public <code>main</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>How a skill names another</td>
+              <td>Run a <code>/grilling</code> session.</td>
+              <td>Call the Skill tool with "grilling".</td>
+            </tr>
+            <tr>
+              <td><code>diagnosing-bugs</code> Phase 6</td>
+              <td>Ends in a hand-off you cannot use</td>
+              <td>The hand-off is deleted</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The first of those is not cosmetic. The changeset that makes the change
+        says why, and in doing so admits a weakness in the version you are
+        running:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A skill that names another skill in prose ("run the
+            <code>/grilling</code> skill") does not reliably cause it to load.
+            This is the documented rough edge behind
+            <code>grill-with-docs</code>'s most-reported problem. Naming the tool
+            directly (<code>Call the Skill tool with "grilling"</code>) is
+            intended to raise the hit rate.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>.changeset/skill-tool-invocation-terminology.md</code>, unreleased.
+        </figcaption>
+      </figure>
+
+      <h2>What to do about all three</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Bash</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-bash">P=~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills
+
+# Which version directory is actually installed, and what commit is it?
+ls "$P" && git -C "$P"/*/ rev-parse --short HEAD
+
+# The authority on what is present -- not the agent's skill listing.
+python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['skills']))" \
+  "$P"/*/.claude-plugin/plugin.json</code></pre>
+      </div>
+
+      <ul>
+        <li>
+          <strong>When the agent says a skill is missing</strong> — type it
+          anyway, and check <code>plugin.json</code> rather than asking the agent
+          again.
+        </li>
+        <li>
+          <strong>When a skill's text tells the agent to run another skill</strong>
+          — check whether the named skill is user-invoked. If it is, the line is
+          for you.
+        </li>
+        <li>
+          <strong>When something you read elsewhere does not match</strong> — the
+          file on your disk is what runs. Open it. The version string will not
+          settle the disagreement.
+        </li>
+      </ul>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          The agent reports that <code>/to-tickets</code> is not installed. What
+          has actually happened?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">The plugin install is incomplete and must be repaired</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>It is absent from the listing the agent received</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The skill was retired and renamed in release 1.1.0
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The marketplace pin is behind and omits that skill
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>to-tickets</code> is user-invoked, so the harness leaves it out of
+          the list it injects into the agent's context, and the agent reads that
+          list as exhaustive. It is installed. The third answer is a real
+          phenomenon for other names — <code>to-plan</code> and
+          <code>to-issues</code> really were merged into <code>to-tickets</code>
+          in 1.1.0 — but it is not what is happening here.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can two trees both correctly report version <code>1.2.3</code> while
+          differing by 34 commits?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The listing pins a commit, and versions bump separately
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">The plugin cache went stale and refreshes on schedule</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One tree omits the changesets that bump its version
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Version strings are advisory and nothing ever checks them</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The marketplace listing carries a pinned sha, so work lands on
+          <code>main</code> continuously while installed users move only when that
+          pin advances. The version is bumped by a release, not by every commit —
+          so a month of unreleased work sits on <code>main</code> under the same
+          number.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        Five of the six inoperative instructions name the same skill, and it is
+        the one you are supposed to run before any engineering flow at all. What
+        it writes, and what silently goes wrong if you never do:
+        <a href="0003-what-setup-writes.html">lesson 3</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>.claude-plugin/plugin.json</code> in your own install. It is the
+            authority on what is present — the docs page above says so explicitly
+            — and reading the twenty-five names in one list is the fastest cure
+            for believing an agent that tells you something is missing.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth pushing on: ask it to grep the tree
+          for every line that names <code>setup-matt-pocock-skills</code>, then
+          ask it which of those lines it could actually act on. The answer is
+          none of them, and getting it to reach that conclusion itself is a good
+          test of whether lesson 1 landed.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is a good place to stop for a day. Lessons 1 and 2 are the model
+            of the machine; everything after them is what to do with it. Before
+            moving on, try to name the three consequences with no notes —
+            invisible skills, inoperative instructions, meaningless version — and
+            say which one would have cost you the most time if you had not known
+            it.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0001-the-invocation-axis.html">1. The invocation axis</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0003-what-setup-writes.html">3. What setup writes</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

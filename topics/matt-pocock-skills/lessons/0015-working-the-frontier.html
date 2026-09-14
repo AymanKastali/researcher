@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>15. Working the frontier — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0015</span>
+        <h1>Working the frontier</h1>
+        <p class="lesson-mission">
+          One ticket, one fresh window, one commit — repeated. Plus the single
+          missing step that stops the frontier advancing, which is the most
+          load-bearing gap in the whole set.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> tickets are published with their blocking edges.
+        Everything from here is a loop, and the loop has a hole in it you have to
+        fill by hand.
+      </p>
+
+      <h2>The loop</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">for each ticket on the frontier (blockers all closed):
+
+    /clear                       phase-boundary question 2: yes
+    /implement #N                drives /tdd, then commits
+    /code-review &lt;point&gt;         two axes
+    [ YOU ] close #N             <-- nothing in the set does this
+    [ YOU ] tick the criteria    <-- nor this
+
+then once, at the end:
+    /code-review &lt;branch-point&gt;  catches cross-ticket interactions</code></pre>
+      </div>
+
+      <h2>Clear between every ticket</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            kick off <strong><code>/implement</code></strong> per ticket,
+            <strong><code>/clear</code>ing context between each one</strong>. Each
+            ticket is self-contained, so the last one's context is disposable.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:23</code>.</figcaption>
+      </figure>
+
+      <p>
+        This is <a href="0006-phase-boundaries.html">the phase-boundary tree</a>
+        answering <em>yes</em> at question 2. It is only correct because
+        <code>/to-tickets</code> made each slice self-contained — the property that
+        makes clearing safe was built in the previous step.
+      </p>
+
+      <h2>One ticket per invocation, and no parallelism</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            No. One invocation, one ticket. Batch dispatch across a ticket queue
+            and subagent fan-out are both requested repeatedly, and neither
+            exists. Running several <code>/implement</code> sessions side by side
+            in one checkout is worse than unsupported: one field report describes
+            a <code>git commit --amend</code> in one session landing on another
+            session's commit, a stash vanishing from <code>refs/stash</code>, and
+            commits landing on the wrong branch, all in a single afternoon across
+            three issues. The sessions share one working directory, one index, and
+            one HEAD.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/implement.md:57</code>.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Worktrees help, but not completely</span>
+        <p>
+          The same page: <em>"Git worktrees are the community workaround, and note
+          that <code>refs/stash</code> is shared across worktrees too, so worktrees
+          alone do not fix the stash case. If you want parallelism today, you are
+          assembling it yourself."</em>
+        </p>
+        <p>
+          This is one of the four places
+          <a href="0019-when-the-set-has-misfired.html">lesson 19</a> shows the
+          superpowers set filling a gap — <code>using-git-worktrees</code> exists
+          for exactly this.
+        </p>
+      </div>
+
+      <h2>The gap</h2>
+
+      <p>
+        <code>/implement</code> ends at the commit. Read its nine lines again and
+        there is no step after <em>"Commit your work to the current branch"</em>.
+        The docs page states the consequence, and it is worth reading twice:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Correct, and expected. <code>implement</code> has no completion step.
+            It ends at the commit and never touches the work item, confirmed on
+            GitHub Issues and on the local markdown tracker, so it is not a
+            tracker integration problem. It also does not act on the findings
+            <code>code-review</code> produced, and does not tick the
+            <code>- [ ]</code> boxes on the originating issue. Close the ticket and
+            reconcile the criteria yourself.
+            <strong
+              >This bites hardest on a dependency chain, because
+              <code>to-tickets</code> defines the frontier as tickets whose
+              blockers are all closed. If nothing gets closed, nothing ever becomes
+              visibly unblocked.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/implement.md:53</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>If nothing gets closed, nothing ever becomes unblocked.</strong>
+        </p>
+        <p>
+          The frontier is <em>defined</em> as tickets whose blockers are closed.
+          An unclosed ticket is not a tidiness problem — it is a build that has
+          silently stopped, with every remaining ticket still showing as blocked.
+        </p>
+      </div>
+
+      <p>Three separate things are being left undone, and it is worth separating them:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>What <code>/implement</code> leaves for you, per ticket.</caption>
+          <thead>
+            <tr><th>Undone</th><th>Consequence if you forget</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Closing the ticket</td>
+              <td>
+                <strong>The frontier never advances.</strong> Everything downstream
+                stays blocked
+              </td>
+            </tr>
+            <tr>
+              <td>Ticking the acceptance criteria</td>
+              <td>
+                The ticket's own definition of done goes unchecked
+              </td>
+            </tr>
+            <tr>
+              <td>Acting on the review findings</td>
+              <td>
+                The review produced leads and nothing consumed them
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Review per ticket, or at the end?</h2>
+
+      <p>The skill declines to decide, and gives you the trade honestly:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Both work, and the skill does not decide for you. Per-ticket keeps each
+            diff small enough that the Spec axis has one clear spec to check
+            against, which is the mode <code>implement</code> uses. Batching to the
+            end of a branch catches interactions between tickets that the per-ticket
+            passes each miss. <strong>If you are unsure, review per ticket and run
+            one final pass against the branch point.</strong>
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/code-review.md:64</code>.</figcaption>
+      </figure>
+
+      <p>
+        Note why per-ticket review is sharper on the Spec axis specifically: one
+        ticket is one spec, so the axis has a single unambiguous thing to check
+        against. Reviewing eight tickets at once gives it eight, and the finding
+        "this doesn't match the spec" gets vaguer.
+      </p>
+
+      <h2>What the whole chain looks like</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">/setup-matt-pocock-skills (once, ever)
+  -> /grill-with-docs  --+
+  -> /to-spec            |--  ONE unbroken context window
+  -> /to-tickets       --+    (quiz: granularity, edges, merge/split)
+  -> per ticket, blockers first:
+        /clear -> /implement #N -> (commit) -> /code-review -> CLOSE #N
+  -> /code-review &lt;branch-point&gt;        one final pass</code></pre>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Three tickets are built and committed, but the fourth still shows as
+          blocked. Why?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Its blocking edges were wired in the wrong direction
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The first three were never closed on the tracker
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The parent spec issue is still holding the label
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Each implement run cleared its context before it finished</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The frontier is defined as tickets whose blockers are <em>closed</em>,
+          and <code>implement</code> has no completion step — it ends at the commit
+          and never touches the work item. Committed is not closed. On a dependency
+          chain this is the failure that stops everything while looking like
+          progress.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does the router say to <code>/clear</code> between tickets but not
+          before <code>/to-tickets</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because to-tickets rereads the spec from the tracker
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Because tickets are self-contained and specs are not</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because clearing early would drop the configured tracker
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Because implement needs a fresh window to commit</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Grilling, spec and split build on the same thinking, so clearing between
+          them destroys a primary source — phase-boundary question 1. Each ticket,
+          by construction, carries everything needed to build it, so the previous
+          ticket's context is genuinely disposable — question 2. The property that
+          makes clearing safe was created by <code>/to-tickets</code>.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        That is the big-feature flow, complete. One flow remains, for work too
+        foggy to write a spec about at all — where the output is decisions rather
+        than deliverables: <a href="0016-charting-a-map.html">lesson 16</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>docs/engineering/implement.md</code> — read as a list of things
+            a nine-line skill does not do. It is the best worked example in the set
+            of why reading the <code>SKILL.md</code> alone is not enough, and why
+            the docs pages exist despite being a lower authority.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth setting up once: ask it to give you a
+          single command that lists your open tickets whose blockers are all
+          closed — your frontier, as a query. On a real tracker that is one
+          <code>gh</code> invocation, and having it to hand makes the closing
+          discipline much easier to keep.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, state the three things <code>/implement</code> leaves
+            undone and which one stops the build. All four manual patches are
+            collected in the
+            <a href="../reference/manual-patches.html">manual patches</a>
+            reference — this lesson contributes two of them.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0014-to-tickets.html">14. To-tickets</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0016-charting-a-map.html">16. Charting a map</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

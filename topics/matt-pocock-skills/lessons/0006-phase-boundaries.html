@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>6. Phase boundaries — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0006</span>
+        <h1>Phase boundaries</h1>
+        <p class="lesson-mission">
+          Five things you can do with a context window, one ordered tree for
+          picking between them, and one reason the option most people reach for
+          first sits at the bottom.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is not a skill — it is a supporting document inside the router, and
+        it governs every flow in the set. The router calls the decision
+        <em>"the fuzziest decision in this whole map"</em>, which is unusually
+        candid and exactly right.
+      </p>
+
+      <h2>A phase, and its boundary</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A <strong>phase</strong> is a chunk of work inside a session — the
+            grilling, the implementation, the QA. The definition is fuzzy on
+            purpose: a phase ends when you think <em>"ok, we're done with
+            that"</em>.
+          </p>
+          <p>
+            The <strong>phase boundary</strong> is the gap between two phases, and
+            it is the only place this decision belongs. Mid-phase there is no
+            decision to make — continue, or split the work that's left into
+            subagents. Compacting mid-phase makes the agent lose the thread.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/ask-matt/PHASE-BOUNDARIES.md:3-5</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The timing rule, first</span>
+        <p>
+          <strong
+            >Make this decision at a boundary. Mid-phase there is no decision to
+            make.</strong
+          >
+        </p>
+        <p>
+          Compacting because the window is filling up, in the middle of the
+          implementation, is the move this rule exists to prevent.
+        </p>
+      </div>
+
+      <h2>The five options</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>PHASE-BOUNDARIES.md:9-15</code>, verbatim.</caption>
+          <thead>
+            <tr><th>Option</th><th>What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Continue</strong></td><td>Stay in the session. No context switch at all.</td></tr>
+            <tr><td><strong><code>/clear</code></strong></td><td>Empty the context window and start from nothing.</td></tr>
+            <tr><td><strong><code>/handoff</code></strong></td><td>Write a portable markdown file and seed a session anywhere with it.</td></tr>
+            <tr><td><strong>Subagent</strong></td><td>Send the task to its own context window and get a report back.</td></tr>
+            <tr><td><strong><code>/compact</code></strong></td><td>Compress this context and seed a fresh session with the summary.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The tree, in order</h2>
+
+      <p>
+        <em>"Work top to bottom at the boundary. The first <strong>yes</strong>
+        wins."</em> The order is the whole content — the options are obvious, the
+        sequence is not.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">1. Can you continue in this session?              -> Continue
+2. Is the context irrelevant to what comes next?  -> /clear
+3. Do you need to hand off?                       -> /handoff
+4. Can the task be done AFK?                      -> Subagent
+5. Otherwise                                      -> /compact</code></pre>
+      </div>
+
+      <h3>1 — Continue, and why it is ruled out first</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Two things make the answer yes: the next phase needs this phase as a
+            <strong>primary source</strong>, or you have enough smart zone left
+            (~150k tokens) for the next phase to fit. Grilling → implementation is
+            the standard yes: the implementation wants the reasoning verbatim, not
+            a summary of it. Continue costs nothing and loses nothing, so rule it
+            out before anything else.
+          </p>
+        </blockquote>
+        <figcaption><code>PHASE-BOUNDARIES.md:21</code>.</figcaption>
+      </figure>
+
+      <p>
+        That example is the one to remember, because it is the boundary you will
+        meet most often. After a grilling session, <strong>stay put</strong>. The
+        build wants the argument as it happened.
+      </p>
+
+      <h3>2 — Clear, the cheapest move with a one-way cost</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            It is the cheapest move on the board: it takes no time and hands back
+            the whole window. <code>/clear</code> also isn't terminal — the old
+            session stays resumable.
+          </p>
+          <p>
+            The cost of getting this wrong is one-way. Clear a <em>relevant</em>
+            context and you lose the <strong>why</strong> behind what you built,
+            and no amount of reading the diff back gets it returned.
+          </p>
+        </blockquote>
+        <figcaption><code>PHASE-BOUNDARIES.md:23-25</code>.</figcaption>
+      </figure>
+
+      <h3>3 — Handoff, and the closed list</h3>
+
+      <p>
+        <code>/handoff</code> is narrower than it sounds. Four situations, and the
+        document says so plainly: <em>"That list is the whole clause."</em>
+      </p>
+
+      <ul>
+        <li>Swapping to a <strong>new harness</strong> (Claude → Codex)</li>
+        <li>Moving to a <strong>new directory</strong> or repo</li>
+        <li>Sending the work to a <strong>colleague</strong></li>
+        <li>Forking a side task you found <strong>mid-phase</strong></li>
+      </ul>
+
+      <p>
+        <em>"What <code>/handoff</code> buys is <strong>portability</strong> — a
+        file that travels. If nothing is travelling, you don't need it."</em>
+        Note the fourth entry is the one exception to the timing rule: forking a
+        side task is explicitly a mid-phase move.
+      </p>
+
+      <h3>4 — Subagent, when you are not needed</h3>
+
+      <p>
+        <em>"Automated review is the standard case: the agent reads the diff and
+        reports, and you aren't needed while it does."</em> The test is whether
+        the task is scoped tightly enough to run with no steering.
+      </p>
+
+      <h3>5 — Compact, at the bottom on purpose</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>/compact</code> is the <strong>default, not the first
+            reach</strong>. It sits at the bottom because the four questions above
+            it are all cheaper or more precise. The failure mode when people start
+            here is a fresh session that is confidently wrong about a decision the
+            summary flattened.
+          </p>
+        </blockquote>
+        <figcaption><code>PHASE-BOUNDARIES.md:40</code>.</figcaption>
+      </figure>
+
+      <p>
+        And when you do land here, pass it an instruction —
+        <code>/compact we're going to QA this area</code> — so the summary keeps
+        what the next phase needs.
+      </p>
+
+      <h2>The cost that orders the tree</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Every move except <strong>Continue</strong> turns a
+            <strong>primary source</strong> into a <strong>secondary source</strong>
+            — the session as it happened, replaced by a summary of it.
+          </p>
+        </blockquote>
+        <figcaption><code>PHASE-BOUNDARIES.md:44</code>.</figcaption>
+      </figure>
+
+      <div class="table-wrap">
+        <table>
+          <caption>The trade, from <code>PHASE-BOUNDARIES.md:46-49</code>.</caption>
+          <thead>
+            <tr><th>Source</th><th>Information</th><th>Noise</th><th>Room to move</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Primary (Continue)</td><td>Full</td><td>Lots</td><td>Little</td></tr>
+            <tr>
+              <td>Secondary (<code>/compact</code>, <code>/handoff</code>)</td>
+              <td>Lossy</td><td>Less</td><td>Lots</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Two senses of "primary source" in this workspace</span>
+        <p>
+          This repository uses <em>primary source</em> for the authority a claim
+          is quoted from — a specification, a manual, a file on disk. The phase
+          boundary document uses it for <em>the session as it happened</em>,
+          before anyone summarised it.
+        </p>
+        <p>
+          The analogy is exact and the referents are different. The
+          <a href="../reference/glossary.html">glossary</a> keeps both entries and
+          says which is which.
+        </p>
+      </div>
+
+      <h2>The rule that governs the main flow</h2>
+
+      <p>
+        The router turns all of this into one instruction for the spec-and-tickets
+        chain, and it is the single most consequential application of the tree:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Keep steps 1–3 in <strong>one unbroken context window</strong> — don't
+            compact or clear until after <code>/to-tickets</code> — so the
+            grilling, spec, and tickets all build on the same thinking. Each
+            <code>/implement</code> then starts fresh, working from the ticket.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:30</code>.</figcaption>
+      </figure>
+
+      <p>
+        Grill, spec, split: one window. Then <code>/clear</code> before every
+        ticket — question 2 answering <em>yes</em>, because a self-contained
+        ticket makes the previous ticket's context genuinely disposable.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The budget you are spending</span>
+        <p>
+          The limit on "one unbroken window" is the <strong>smart zone</strong> —
+          about 150k tokens, <em>"the window within which the model still reasons
+          sharply"</em>. If a session approaches it before
+          <code>/to-tickets</code>, the router is explicit:
+          <em>"don't push on degraded — <code>/compact</code> at the nearest phase
+          boundary and carry on"</em>.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A long grilling session has just ended and you are about to build. What
+          does the tree say?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Continue, because the build wants that reasoning kept verbatim</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Compact, because the window is long and needs compressing</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Clear, because the decisions are recorded in CONTEXT.md already</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Handoff, because the implementation is a separate phase entirely</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The document names this exact boundary as the standard yes to question
+          one: "the implementation wants the reasoning verbatim, not a summary of
+          it". The glossary holds the resolved <em>terms</em>, never the argument
+          that resolved them — so clearing here loses the why while looking like
+          it kept everything.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does <code>/compact</code> sit at the bottom of the tree rather than
+          the top?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It is slow, and the other four run instantly
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The four above it are cheaper or more precise
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It is unavailable until a phase has fully ended
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">It discards context that all the others reliably keep</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Quoted directly: "It sits at the bottom because the four questions above
+          it are all cheaper or more precise." It is still the default — the tree
+          lands there often — but reaching for it first produces "a fresh session
+          that is confidently wrong about a decision the summary flattened".
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        You now have the machine and the primitives. The next lesson is the one
+        the whole topic is built around: standing at the start of a piece of work
+        with twenty-five skills available, and picking.
+        <a href="0007-choosing-the-flow.html">Lesson 7</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/ask-matt/PHASE-BOUNDARIES.md</code> — 55
+            lines, and the last section is the one to read slowly:
+            <em>"These are judgement calls."</em> It admits the questions are not
+            objective and that the same boundary can go two ways on two days. The
+            value it claims is only in asking them <em>in order</em>, which is a
+            modest and believable claim.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking at the end of any real session:
+          "we are at a phase boundary — walk the five questions in order and tell
+          me where it lands, and why it did not land higher." Getting the
+          reasoning for the <em>rejected</em> branches is where the tree actually
+          gets learned.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the end of the foundations. Before going on, try to write the
+            five questions out in order from memory, then state the one-sentence
+            cost that explains the ordering. Lessons 1–6 are the model; lesson 7
+            is where it starts paying.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0005-domain-modeling.html">5. Domain modelling</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0007-choosing-the-flow.html">7. Choosing the flow</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

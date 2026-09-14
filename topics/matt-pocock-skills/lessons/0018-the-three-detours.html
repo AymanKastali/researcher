@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>18. The three detours — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0018</span>
+        <h1>The three detours</h1>
+        <p class="lesson-mission">
+          What to do when a session stalls on a question that cannot be settled by
+          talking. Three skills, three different shapes of missing answer — and
+          picking the wrong one wastes the whole detour.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> you are mid-grilling, mid-map, or mid-spec, and a
+        frontier question will not resolve. The diagnosis is not "this is hard" —
+        it is <em>what kind of answer is missing</em>.
+      </p>
+
+      <h2>The triage</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Three shapes of missing answer.</caption>
+          <thead>
+            <tr><th>What's missing</th><th>Where it lives</th><th>Reach for</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A judgement you cannot make on paper</td>
+              <td>In something you would have to see running</td>
+              <td><code>/prototype</code></td>
+            </tr>
+            <tr>
+              <td>A fact about the outside world</td>
+              <td>In documentation, a spec, someone's source code</td>
+              <td><code>/research</code></td>
+            </tr>
+            <tr>
+              <td>A decision that is not yours to make</td>
+              <td>In another person's head</td>
+              <td><code>/to-questionnaire</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Detour one — <code>/prototype</code></h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A prototype is <strong>throwaway code that answers a question</strong>.
+            The question decides the shape.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/prototype/SKILL.md:8</code>.</figcaption>
+      </figure>
+
+      <p>
+        Two branches, and the skill warns that
+        <em>"getting this wrong wastes the whole prototype"</em>:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>prototype/SKILL.md:14-15</code>.</caption>
+          <thead>
+            <tr><th>Question</th><th>Artifact</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>"Does this logic / state model feel right?"</td>
+              <td>
+                <strong>One shareable HTML file</strong> — free-play buttons plus
+                tabbed guided walkthroughs, driveable by a non-developer
+              </td>
+            </tr>
+            <tr>
+              <td>"What should this look like?"</td>
+              <td>
+                <strong>Several radically different variants</strong> on one
+                route, switched by a URL search param and a floating bar
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The UI branch carries the rule that makes it worth doing at all:
+        <em>"Variants must be <strong>structurally different</strong> — different
+        layout, different information hierarchy, different primary affordance, not
+        just different colours. Three slightly-tweaked card grids isn't a UI
+        prototype, it's wallpaper."</em>
+      </p>
+
+      <p>
+        And the logic branch keeps the logic in a pure module:
+        <em>"If the pure module references the DOM, <code>document</code>, or
+        button handlers, it's no longer liftable."</em> The page is a thin shell;
+        the module behind it is the part worth keeping.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">"Throwaway" constrains how it is written, not what happens to it</span>
+        <p>
+          <em>"Fold any validated decision into the real code, then capture the
+          prototype itself as a <strong>primary source</strong>: commit it to a
+          throwaway branch, out of main, and leave a context pointer to that branch
+          on the implementation issue. Capture the answer too — the verdict and the
+          question it settled […] The main branch keeps only the validated
+          decision."</em>
+        </p>
+        <p>
+          So: no tests, no error handling, no abstractions — <em>and</em> it is
+          kept, on a branch, pointed at from the issue. Both halves.
+        </p>
+      </div>
+
+      <p>
+        The other anti-patterns are worth reading as a group, because each names a
+        way of accidentally building production code:
+        <em>"Don't add tests. A prototype that needs tests is no longer a
+        prototype."</em> ·
+        <em>"Don't generalise. No 'what if we wanted to support X later.'"</em> ·
+        <em>"Don't reach for a framework, bundler, or server."</em> ·
+        <em>"Promoting the prototype directly to production […] Rewrite it
+        properly when you fold it in."</em>
+      </p>
+
+      <h2>Detour two — <code>/research</code></h2>
+
+      <p>
+        The entire skill, which you have already seen the output of — this topic's
+        source document was produced by it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Spin up a <strong>background agent</strong> to do the research, so you
+            keep working while it reads.
+          </p>
+          <p>Its job:</p>
+          <ol>
+            <li>
+              Investigate the question against <strong>primary sources</strong> —
+              official docs, source code, specs, first-party APIs — not a secondary
+              write-up of them. Follow every claim back to the source that owns it.
+            </li>
+            <li>
+              Write the findings to a single Markdown file, citing each claim's
+              source.
+            </li>
+            <li>
+              Save it where the repo already keeps such notes; match the existing
+              convention, and if there is none, put it somewhere sensible and say
+              where.
+            </li>
+          </ol>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/research/SKILL.md:6-12</code>, complete body.
+        </figcaption>
+      </figure>
+
+      <p>
+        The background agent is the point: <em>"Keep working while it reads."</em>
+        Which is exactly what <a href="0004-grilling.html">grilling</a> requires —
+        a running exploration is an unsettled prerequisite, so only the questions
+        downstream of it wait.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Three known costs</span>
+        <p>
+          <strong>It can spawn a duplicate of itself.</strong> An open bug:
+          <em>"One reporter measured a single research task costing roughly 450k
+          tokens across three overlapping runs."</em>
+        </p>
+        <p>
+          <strong>It has no stopping criterion.</strong>
+          <em>"There is no stopping criterion in the skill… Scoping is on you."</em>
+        </p>
+        <p>
+          <strong>Nothing ever reads the file again.</strong>
+          <em>"Nothing auto-loads a past research file; it is a document sitting in
+          the repo until a human or a skill points at it."</em>
+        </p>
+      </div>
+
+      <p>
+        The router adds the routing rule for what to do with the file:
+        <em>"The file it produces is something to take <em>into</em> the main flow
+        at <code>/grill-with-docs</code> — research feeds the thinking, it doesn't
+        replace it."</em>
+      </p>
+
+      <h2>Detour three — <code>/to-questionnaire</code></h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Grill the send, not the subject.</strong> Interview the user
+            only about the <em>send</em>, which they can always answer: who it goes
+            to, and what they need back. The questions in the document then target
+            the <strong>gap</strong> between what the recipient knows and what the
+            user needs.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/productivity/to-questionnaire/SKILL.md:9</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>Grill the send, not the subject.</strong>
+        </p>
+        <p>
+          You are stuck precisely because you cannot answer questions about the
+          subject. So it asks you two things you can always answer — who is this
+          going to, and what do you need back — and aims the document at the gap
+          between them.
+        </p>
+      </div>
+
+      <p>
+        It writes <code>to-questionnaire-&lt;slug&gt;.md</code> in the current
+        directory, questions ordered most-important-first because
+        <em>"async means you may only get one pass"</em>. Run it in the
+        <strong>same conversation</strong> that stalled — it has no ingest step, so
+        a fresh session knows nothing about the thread.
+      </p>
+
+      <h2>The bridge: <code>/handoff</code>, in both directions</h2>
+
+      <p>
+        A prototype lives in its own directory, which is precisely the situation
+        <a href="0006-phase-boundaries.html">question 3 of the phase-boundary
+        tree</a> is for. The router spells out the round trip:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ul>
+            <li><strong><code>/handoff</code></strong> out, then open a fresh session against that file,</li>
+            <li><strong><code>/prototype</code></strong> to answer the question with throwaway code,</li>
+            <li>
+              <strong><code>/handoff</code></strong> back what you learned, and
+              reference it from the original idea thread.
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:19-21</code>.</figcaption>
+      </figure>
+
+      <p>
+        <code>/handoff</code> writes to the OS temporary directory —
+        <em>"not the current workspace"</em> — includes a <em>suggested
+        skills</em> section, and carries two rules that make the document worth
+        reading: <em>"Do not duplicate content already captured in other artifacts
+        (specs, plans, ADRs, issues, commits, diffs). Reference them by path or URL
+        instead."</em> and <em>"Redact any sensitive information."</em>
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You cannot decide whether a three-state or five-state machine is right.
+          Which detour?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A logic prototype, driveable through the awkward cases
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A research agent, reading how others model this
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A questionnaire, sent to whoever owns this domain
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">A UI prototype, showing every state as screens</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The missing answer is a judgement you cannot make on paper, which is the
+          logic branch exactly: a single HTML file that "pushes the state machine
+          through cases that are hard to reason about on paper". The UI branch
+          answers a different question and would produce the wrong artifact —
+          which the skill warns "wastes the whole prototype".
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why must <code>/to-questionnaire</code> run in the stalled conversation
+          rather than a fresh one?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Because the file lands in the current directory</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Because nothing in it ingests the prior thread</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the recipient's details were captured while grilling
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because handoff cannot carry an unresolved frontier question
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Its three steps interview you about the <em>send</em> and then draft
+          against the subject — but nothing in it fetches or reads the thread that
+          stalled. A fresh session would know the recipient and need, and nothing
+          about the actual gap. The current-directory detail is true and is not the
+          reason.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        One lesson remains, and it is the one that makes the rest safe to rely on:
+        what this set does not do, how to tell when a skill has misfired, and the
+        four things you must always do yourself.
+        <a href="0019-when-the-set-has-misfired.html">Lesson 19</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/prototype/LOGIC.md</code> — the fullest
+            specification of an artifact anywhere in the set: what the panel shows,
+            how the walkthroughs are tabbed, why the logic must stay liftable. It
+            is also the clearest demonstration of how much of a good skill is
+            spent describing the <em>output</em> rather than the process.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth practising: next time a decision
+          stalls, ask it to name which of the three shapes of missing answer you
+          are facing <em>before</em> proposing anything. The diagnosis is the skill
+          here; the detour follows from it mechanically.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before the last lesson, state the three detours by what is
+            <em>missing</em> rather than by skill name — a judgement, a fact, a
+            decision that is not yours. That framing is what makes the choice
+            automatic.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0017-working-a-map.html">17. Working a map</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0019-when-the-set-has-misfired.html"
+              >19. When the set has misfired</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7. Choosing the flow — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0007</span>
+        <h1>Choosing the flow</h1>
+        <p class="lesson-mission">
+          Twenty-five skills, five flows, and one measurement that settles most of
+          the choice. This is the lesson the rest of the topic is arranged around.
+        </p>
+      </header>
+
+      <p class="lead">
+        The hard part of this set is not remembering what any one skill does — the
+        tree is on disk and greppable. The hard part is standing at the start of a
+        piece of work and picking. Everything from here is a worked answer to this
+        lesson.
+      </p>
+
+      <h2>The shape of the set</h2>
+
+      <p>
+        The router describes the whole topology in one paragraph, and it is worth
+        having as a mental picture before any decision procedure:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A <strong>flow</strong> is a path through the skills. Most paths run
+            along one <strong>main flow</strong>, and two
+            <strong>on-ramps</strong> merge onto it. Everything else is
+            standalone, or a vocabulary layer that runs underneath.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:11</code>.</figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">                 ON-RAMPS                          MAIN FLOW
+
+  /triage           ─────────────┐
+  (issues you didn't create)     │
+                                 ├──>  grill-with-docs
+  /diagnosing-bugs  ─────────────┤            │
+  (something is broken)          │            v
+                                 │        to-spec  ──>  to-tickets
+  /wayfinder        ─────────────┘            │              │
+  (too big for one session)                   └──────┬───────┘
+                                                     v
+                                                 implement
+                                                     │
+                                                     v
+                                                code-review</code></pre>
+      </div>
+
+      <p>
+        That main flow is not a suggestion from one document. It appears
+        <strong>identically in four independent places</strong> in the tree — the
+        router, the engineering README, and the docs pages for five separate
+        skills, each printing it as the same literal line:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span>Quoted identically in four places in the tree</span>
+        </div>
+        <pre><code class="language-text">grill-with-docs -> to-spec -> to-tickets -> implement -> code-review</code></pre>
+      </div>
+
+      <h2>The one measurement</h2>
+
+      <p>
+        Almost the whole routing decision reduces to a single question, and it is
+        <em>not</em> about lines of code, difficulty, or importance:
+      </p>
+
+      <div class="definition">
+        <span class="term">The floor</span>
+        <p>
+          Does the work fit in <strong>one context window</strong>?
+        </p>
+        <span class="attribution">
+          The branch is put this way in <code>ask-matt/SKILL.md:22-24</code> and in
+          the trigger tables of both <code>docs/engineering/to-spec.md</code> and
+          <code>docs/engineering/to-tickets.md</code>.
+        </span>
+      </div>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Branch — is this a multi-session build?</strong>
+          </p>
+          <p>
+            <strong>Yes</strong> → <strong><code>/to-spec</code></strong> (turn
+            the thread into a spec), then <strong><code>/to-tickets</code></strong>
+            […]
+          </p>
+          <p>
+            <strong>No</strong> → <strong><code>/implement</code></strong> right
+            here, in the same context window.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:22-24</code>.</figcaption>
+      </figure>
+
+      <p>And the docs page states the same branch as a table you can read off:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>docs/engineering/to-spec.md:13-18</code>, verbatim.</caption>
+          <thead>
+            <tr><th>Where you are</th><th>What to run</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>You haven't decided anything yet</td>
+              <td><code>grill-with-docs</code> first</td>
+            </tr>
+            <tr>
+              <td>Decided, and the work fits one context window</td>
+              <td><code>implement</code> — <strong>skip the spec</strong></td>
+            </tr>
+            <tr>
+              <td>Decided, and the work spans several sessions</td>
+              <td><code>/to-spec</code>, then <code>to-tickets</code></td>
+            </tr>
+            <tr>
+              <td>A <code>wayfinder</code> map has cleared</td>
+              <td><code>/to-spec #&lt;map_issue&gt;</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >The question is never "is this big?" — it is "will this outlive one
+            context window?"</strong
+          >
+        </p>
+        <p>
+          A three-thousand-line mechanical rename can fit one window. A
+          forty-line change touching an unfamiliar subsystem may not. Size and
+          span are different measurements, and only one of them routes.
+        </p>
+      </div>
+
+      <h2>There is a floor below the floor</h2>
+
+      <p>
+        The set says this once, in a docs page, about over-decomposition — and it
+        is the most useful sentence in the whole routing story:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The deeper answer is that the tickets have a floor: if the whole
+            change fits in one context window, you don't need this skill at all.
+            Go straight to <code>implement</code>.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/to-tickets.md:59</code>.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">And below <em>that</em>, nothing at all</span>
+        <p>
+          This is synthesis, flagged as such, because no document in the set says
+          it. The router routes by situation and every route lands on a skill.
+          There is no route that terminates in "just do it".
+        </p>
+        <p>
+          For a typo, a config bump, a one-line fix — <strong>no skill is the
+          right answer</strong>. The ceremony has a cost, the set never names the
+          point at which the cost exceeds the benefit, and you have to supply that
+          judgement yourself.
+        </p>
+      </div>
+
+      <h2>The routing table</h2>
+
+      <p>
+        Read top to bottom; the first row that matches wins. Everything here is
+        assembled from the router's own sections, and the corresponding lesson is
+        named so you can follow the branch.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Situation to flow. Sourced from <code>ask-matt/SKILL.md</code> unless
+            noted.
+          </caption>
+          <thead>
+            <tr><th>Your situation</th><th>Reach for</th><th>Taught in</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A typo, a config bump, a one-line fix</td>
+              <td><strong>No skill.</strong> Just do it</td>
+              <td>Synthesis, above</td>
+            </tr>
+            <tr>
+              <td>Something is broken, flaky, or slow</td>
+              <td><code>/diagnosing-bugs</code></td>
+              <td><a href="0011-the-phase-1-gate.html">11</a>, <a href="0012-hypotheses-and-the-fix.html">12</a></td>
+            </tr>
+            <tr>
+              <td>Bug reports and requests you didn't write, piling up</td>
+              <td><code>/triage</code></td>
+              <td><a href="0011-the-phase-1-gate.html">11</a>, step 0</td>
+            </tr>
+            <tr>
+              <td>An idea, no repo under it</td>
+              <td><code>/grill-me</code></td>
+              <td><a href="0004-grilling.html">4</a></td>
+            </tr>
+            <tr>
+              <td>An idea, in a repo, one session's worth</td>
+              <td><code>/grill-with-docs</code></td>
+              <td><a href="0004-grilling.html">4</a>, <a href="0008-the-small-feature-loop.html">8</a></td>
+            </tr>
+            <tr>
+              <td>Decided, fits one window</td>
+              <td><code>/implement</code></td>
+              <td><a href="0008-the-small-feature-loop.html">8</a></td>
+            </tr>
+            <tr>
+              <td>Decided, spans several sessions</td>
+              <td><code>/to-spec</code> → <code>/to-tickets</code></td>
+              <td><a href="0013-to-spec.html">13</a>–<a href="0015-working-the-frontier.html">15</a></td>
+            </tr>
+            <tr>
+              <td>Too foggy to state as a plan at all</td>
+              <td><code>/wayfinder</code></td>
+              <td><a href="0016-charting-a-map.html">16</a>, <a href="0017-working-a-map.html">17</a></td>
+            </tr>
+            <tr>
+              <td>A question needing something runnable to react to</td>
+              <td><code>/prototype</code></td>
+              <td><a href="0018-the-three-detours.html">18</a></td>
+            </tr>
+            <tr>
+              <td>A question whose answer is an external fact</td>
+              <td><code>/research</code></td>
+              <td><a href="0018-the-three-detours.html">18</a></td>
+            </tr>
+            <tr>
+              <td>A question whose answer is in someone else's head</td>
+              <td><code>/to-questionnaire</code></td>
+              <td><a href="0018-the-three-detours.html">18</a></td>
+            </tr>
+            <tr>
+              <td>A step only a human's hands can perform</td>
+              <td><code>/wizard</code></td>
+              <td><a href="0016-charting-a-map.html">16</a></td>
+            </tr>
+            <tr>
+              <td>Already mid-merge, conflicts open</td>
+              <td><code>/resolving-merge-conflicts</code></td>
+              <td>Indexed only</td>
+            </tr>
+            <tr>
+              <td>You want to review a branch against a fixed point</td>
+              <td><code>/code-review</code></td>
+              <td><a href="0010-code-review-two-axes.html">10</a></td>
+            </tr>
+            <tr>
+              <td>A message from the agent that did not land</td>
+              <td><code>/wait-what</code></td>
+              <td>This lesson, below</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The three over-reaches</h2>
+
+      <p>
+        Routing wrongly upward is the expensive direction — you pay the ceremony
+        and get nothing back. The set names three by hand.
+      </p>
+
+      <h3>1. Wayfinder on a well-scoped feature</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Where <strong><code>/grill-with-docs</code></strong> sharpens an idea
+            you can hold in one session, wayfinder is for the idea you can't — and
+            it's slower and denser, so save it for exactly that, never a
+            well-scoped feature.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:44</code>.</figcaption>
+      </figure>
+
+      <h3>2. Looping a cleared map straight into the build</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Looping the map straight into <code>/implement</code> skips that
+            collapse and throws the linked detail away.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:46</code>.</figcaption>
+      </figure>
+
+      <p>
+        The <code>CHANGELOG</code> calls these two <em>"The two mistakes people
+        most often make with the heaviest, most cognitively demanding flow."</em>
+      </p>
+
+      <h3>3. Triaging your own tickets</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Triage is only for issues <strong>you didn't create</strong> — bug
+            reports, incoming feature requests, anything that arrives raw. Tickets
+            that <code>/to-tickets</code> produced are already agent-ready, so
+            <strong>don't triage them</strong>.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:40</code>.</figcaption>
+      </figure>
+
+      <h2>Two things available inside every flow</h2>
+
+      <p>
+        Neither routes anywhere; both can be reached at any moment without leaving
+        what you are doing.
+      </p>
+
+      <ul>
+        <li>
+          <strong><code>/wait-what</code></strong> — for a message that did not
+          land. Its entire body: <em>"Wait — I don't understand where you've got
+          to here. Re-pitch that: give me a little bit of context, talk in
+          ASD-STE100 Simplified Technical English, and use the ubiquitous language
+          from <code>CONTEXT.md</code>."</em> Four lines of frontmatter and one
+          sentence, and it is the most reusable thing in the set.
+        </li>
+        <li>
+          <strong><code>/ask-matt</code></strong> — the router itself, if you
+          cannot remember any of this. But note what its own docs page says of it:
+          it is <em>"a secondary source over the skills it describes"</em> and is
+          hand-maintained, so where it and a <code>SKILL.md</code> disagree, the
+          <code>SKILL.md</code> wins.
+        </li>
+      </ul>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A rename touching 400 call sites, entirely mechanical, that you could
+          finish in one sitting. Which flow?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Wayfinder, because the blast radius is genuinely huge
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>It depends entirely on whether one window suffices</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              To-spec then to-tickets, because 400 sites is many
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Implement it directly, because the change is mechanical</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Size is not the measurement — span is. Four hundred mechanical edits may
+          well fit one window, in which case <code>/implement</code> is right and
+          the spec is skipped. If they do not, this is the shape
+          <code>/to-tickets</code> calls a <strong>wide refactor</strong>, which
+          gets its own sequencing in <a href="0014-to-tickets.html">lesson 14</a>.
+          The honest answer is that you measure first.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Your <code>/wayfinder</code> map has cleared. What do you feed
+          <code>/to-spec</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The map issue, so its linked decisions collapse together
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Every resolved decision ticket, fed in one by one</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Nothing, a cleared map is already a buildable plan</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The conversation, since the map is only an index
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The trigger table says <code>/to-spec #&lt;map_issue&gt;</code>. The map
+          is an index pointing at the tickets that hold the detail, and
+          <code>/to-spec</code>'s job is to collapse those linked decisions into
+          one buildable plan. Going straight to <code>/implement</code> is named
+          as one of the two most common mistakes with this flow.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        Five branches, five worked answers. Start with the one you will run most
+        often and which has the fewest moving parts:
+        <a href="0008-the-small-feature-loop.html">lesson 8</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/ask-matt/SKILL.md</code> — all 89 lines. It is
+            the only document in the set that describes the whole thing at once,
+            and it is short enough to reread whenever routing feels uncertain.
+            Read it knowing it is hand-maintained and lags the skills, which is
+            exactly the caveat its own docs page attaches to it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. The best exercise for this lesson: describe
+          three pieces of work you actually have waiting, and ask it to route each
+          one — <em>and to say which row of the table it matched and what would
+          have to change for the answer to move</em>. The boundary cases are where
+          routing is learned.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the hinge of the topic, so it is worth a pause and a return.
+            Before going on, state the one measurement in a sentence, and name the
+            two things below the floor. The
+            <a href="../reference/routing-table.html">routing table</a> is the
+            reference document to come back to; this lesson is the argument for
+            why it is shaped the way it is.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0006-phase-boundaries.html">6. Phase boundaries</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0008-the-small-feature-loop.html"
+              >8. The small feature loop</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skill index — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Skill index</h1>
+        <p class="page-blurb">
+          All twenty-five promoted skills: who can fire each one, its exact
+          trigger string, and what it drives.
+        </p>
+      </header>
+
+      <p class="lead">
+        Every <code>description</code> below is quoted <strong>verbatim</strong>
+        from the frontmatter of the installed <code>SKILL.md</code>, because for a
+        model-invoked skill that string <em>is</em> the trigger — what the agent
+        matches your request against. Plugin <strong>1.2.3</strong>, git
+        <code>8b78b53</code>.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Reading the Fire column</span>
+        <p>
+          <strong>You</strong> means <code>disable-model-invocation: true</code> —
+          only a human typing the name can reach it, and no other skill can.
+          <strong>Either</strong> means the agent may also fire it on its own.
+          Fourteen are <strong>You</strong>; eleven are <strong>Either</strong>.
+        </p>
+      </div>
+
+      <h2>Engineering — only you can fire these (9)</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>skills/engineering/</code>, carrying
+            <code>disable-model-invocation: true</code>.
+          </caption>
+          <thead>
+            <tr><th>Skill</th><th><code>description:</code>, verbatim</th><th>Drives</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ask-matt</code></td>
+              <td>Ask which skill or flow fits your situation. A router over the skills in this repo.</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>grill-with-docs</code></td>
+              <td>A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.</td>
+              <td><code>grilling</code>, <code>domain-modeling</code></td>
+            </tr>
+            <tr>
+              <td><code>to-spec</code></td>
+              <td>Turn the current conversation into a spec and publish it to the project issue tracker — no interview, just synthesis of what you've already discussed.</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>to-tickets</code></td>
+              <td>Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker — edges as text in one file per ticket locally, or native blocking links on a real tracker.</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>implement</code></td>
+              <td>Implement a piece of work based on a spec or set of tickets.</td>
+              <td><code>tdd</code>, <code>code-review</code></td>
+            </tr>
+            <tr>
+              <td><code>wayfinder</code></td>
+              <td>Plan a huge chunk of work — more than one agent session can hold — as a shared map of decision tickets on your issue tracker, and resolve them one at a time until the way to the destination is clear.</td>
+              <td>
+                <code>grilling</code>, <code>domain-modeling</code>,
+                <code>research</code>, <code>prototype</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>triage</code></td>
+              <td>Move issues and external PRs through a state machine of triage roles — categorise, verify, grill if needed, and write agent-ready briefs.</td>
+              <td><code>grilling</code>, <code>domain-modeling</code></td>
+            </tr>
+            <tr>
+              <td><code>improve-codebase-architecture</code></td>
+              <td>Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.</td>
+              <td>
+                <code>codebase-design</code>, <code>grilling</code>,
+                <code>domain-modeling</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>setup-matt-pocock-skills</code></td>
+              <td>Configure this repo for the engineering skills — set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.</td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Engineering — the agent can fire these too (9)</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>No <code>disable-model-invocation</code> flag.</caption>
+          <thead>
+            <tr><th>Skill</th><th><code>description:</code>, verbatim</th><th>Sub-agents</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>grilling</code>
+                <span class="small-print">(in productivity/, listed here for the flow)</span>
+              </td>
+              <td>Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.</td>
+              <td>For facts</td>
+            </tr>
+            <tr>
+              <td><code>domain-modeling</code></td>
+              <td>Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR.</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td><code>codebase-design</code></td>
+              <td>Shared vocabulary for designing deep modules. Use when the user wants to design or improve a module's interface, find deepening opportunities, decide where a seam goes, make code more testable or AI-navigable, or when another skill needs the deep-module vocabulary.</td>
+              <td>yes, 3+</td>
+            </tr>
+            <tr>
+              <td><code>tdd</code></td>
+              <td>Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions "red-green-refactor", or wants integration tests.</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td><code>diagnosing-bugs</code></td>
+              <td>Diagnosis loop for hard bugs and performance regressions. Use when the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow.</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td><code>code-review</code></td>
+              <td>Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes — Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".</td>
+              <td><strong>yes, two</strong></td>
+            </tr>
+            <tr>
+              <td><code>prototype</code></td>
+              <td>Build a throwaway prototype to answer a design question. Use when the user wants to sanity-check whether a state model or logic feels right, or explore what a UI should look like.</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td><code>research</code></td>
+              <td>Investigate a question against high-trust primary sources and capture the findings as a Markdown file in the repo. Use when the user wants a topic researched, docs or API facts gathered, or reading legwork delegated to a background agent.</td>
+              <td><strong>yes, background</strong></td>
+            </tr>
+            <tr>
+              <td><code>resolving-merge-conflicts</code></td>
+              <td>Use when you need to resolve an in-progress git merge/rebase conflict.</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td><code>wizard</code></td>
+              <td>Generate an interactive bash wizard that walks a human through steps only they can perform. Use when provisioning infrastructure, setting up credentials or CI secrets, walking an unfamiliar third-party dashboard, or running a one-off migration or cutover. Don't invoke this for steps the agent can perform itself.</td>
+              <td>no</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Productivity (7)</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>skills/productivity/</code>.</caption>
+          <thead>
+            <tr><th>Skill</th><th>Fire</th><th><code>description:</code>, verbatim</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>grilling</code></td>
+              <td><strong>Either</strong></td>
+              <td>Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.</td>
+            </tr>
+            <tr>
+              <td><code>writing-for-agents</code></td>
+              <td><strong>Either</strong></td>
+              <td>Writing documents for agents. Use when creating or editing skills, or modifying AGENTS.md or CLAUDE.md.</td>
+            </tr>
+            <tr>
+              <td><code>grill-me</code></td>
+              <td>You</td>
+              <td>A relentless interview to sharpen a plan or design.</td>
+            </tr>
+            <tr>
+              <td><code>handoff</code></td>
+              <td>You</td>
+              <td>Compact the current conversation into a handoff document for another agent to pick up.</td>
+            </tr>
+            <tr>
+              <td><code>teach</code></td>
+              <td>You</td>
+              <td>Teach the user a new skill or concept, within this workspace.</td>
+            </tr>
+            <tr>
+              <td><code>to-questionnaire</code></td>
+              <td>You</td>
+              <td>Turn a decision you can't fully answer into a questionnaire for someone else to fill in.</td>
+            </tr>
+            <tr>
+              <td><code>wait-what</code></td>
+              <td>You</td>
+              <td>Stop. That last message did not land — re-pitch it.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Names that no longer fire anything</h2>
+
+      <p>
+        Collected from <code>CHANGELOG.md</code>. These still circulate in older
+        writing, and a prompt naming one now matches nothing.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Retired and renamed.</caption>
+          <thead><tr><th>Old name</th><th>Now</th></tr></thead>
+          <tbody>
+            <tr><td><code>/diagnose</code></td><td><code>/diagnosing-bugs</code></td></tr>
+            <tr><td><code>to-prd</code></td><td><code>to-spec</code></td></tr>
+            <tr><td><code>decision-mapping</code></td><td><code>wayfinder</code></td></tr>
+            <tr><td><code>writing-great-skills</code></td><td><code>writing-for-agents</code> — no alias</td></tr>
+            <tr><td><code>to-plan</code>, <code>to-issues</code></td><td>merged into <code>to-tickets</code></td></tr>
+            <tr><td><code>review</code></td><td><code>code-review</code></td></tr>
+            <tr><td><code>ubiquitous-language</code></td><td>absorbed by <code>/domain-modeling</code></td></tr>
+            <tr><td><code>design-an-interface</code></td><td>absorbed by <code>/codebase-design</code></td></tr>
+            <tr><td><code>qa</code></td><td>absorbed by <code>/triage</code> and <code>/to-tickets</code></td></tr>
+            <tr><td><code>request-refactor-plan</code></td><td>absorbed by <code>/to-spec</code> and <code>/improve-codebase-architecture</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Not shipped in the plugin</h2>
+
+      <p>
+        Ten further skills exist in the repository and <strong>none is reachable
+        through the plugin</strong>, so none belongs in a plan.
+        <code>misc/</code> holds four <em>"kept around but rarely used"</em>;
+        <code>in-progress/</code> holds six beta skills, installable one at a time
+        through skills.sh only; <code>deprecated/</code> is empty by policy —
+        <em>"a retired skill is deleted, and the changeset that removes it names
+        whatever replaced it."</em>
+      </p>
+
+      <h2>Checking this yourself</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Bash</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-bash">cd ~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/*/skills
+
+for f in engineering/*/SKILL.md productivity/*/SKILL.md; do
+  grep -q 'disable-model-invocation: true' "$f" &amp;&amp; who=YOU || who=EITHER
+  printf '%-7s %s\n' "$who" "${f%/SKILL.md}"
+done | sort</code></pre>
+      </div>
+
+      <p class="small-print">
+        Every <code>description</code> on this page was read from the installed
+        tree at <code>8b78b53</code> on 14 September 2026. Two of them
+        (<code>implement</code>, <code>resolving-merge-conflicts</code>) are
+        written as quoted YAML strings in the file; the quotation marks are not
+        part of the value and are omitted here.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

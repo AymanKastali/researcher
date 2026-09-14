@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>13. To-spec — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0013</span>
+        <h1>To-spec</h1>
+        <p class="lesson-mission">
+          A skill whose first instruction is to <em>not</em> ask you anything — and
+          which quietly contains the step where the whole feature's test seams get
+          agreed.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> you have decided what to build and the work
+        spans more than one context window. That is the
+        <a href="0007-choosing-the-flow.html">floor from lesson 7</a>, crossed.
+      </p>
+
+      <h2>Why the document exists</h2>
+
+      <p>
+        The most useful sentence about this skill is not in the skill. It is in
+        its docs page, and it explains the entire design:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The spec exists because context windows end. Everything you settled
+            while grilling — the shape of the solution, the choices you argued
+            through, what you deliberately refused — is in one conversation that
+            is about to be cleared. The spec is what survives that.
+          </p>
+          <p>
+            So it does not validate anything, and it does not decide anything. It
+            captures what was decided, in your project's own vocabulary, so that a
+            fresh session can pick the work up without you re-explaining it.
+            <strong
+              >Anything the spec asserts that you never actually said is a
+              defect.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/to-spec.md:26-28</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>The spec is a decision record, not a design document.</strong>
+        </p>
+        <p>
+          It is the grilling session, made portable. That is also the acceptance
+          test for reading one back: anything in it you do not recognise from the
+          conversation is a defect, not a helpful addition.
+        </p>
+      </div>
+
+      <h2>The defining constraint</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This skill takes the current conversation context and codebase
+            understanding and produces a spec. Do NOT interview the user — just
+            synthesize what you already know.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/to-spec/SKILL.md:7</code>.</figcaption>
+      </figure>
+
+      <p>
+        Which is the reason step 2 of the main flow has to happen before this one.
+        <code>/to-spec</code> has no discovery mechanism at all — if the thinking
+        has not happened, it will synthesise a spec out of a thin conversation and
+        it will look complete.
+      </p>
+
+      <h2>The three steps, and the middle one matters most</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ol>
+            <li>
+              Explore the repo to understand the current state of the codebase, if
+              you haven't already. Use the project's domain glossary vocabulary
+              throughout the spec, and respect any ADRs in the area you're
+              touching.
+            </li>
+            <li>
+              Sketch out the seams at which you're going to test the feature.
+              Existing seams should be preferred to new ones. Use the highest seam
+              possible. If new seams are needed, propose them at the highest point
+              you can. The fewer seams across the codebase, the better - the ideal
+              number is one.
+              <br /><br />
+              Check with the user that these seams match their expectations.
+            </li>
+            <li>
+              Write the spec using the template below, then publish it to the
+              project issue tracker. Apply the <code>ready-for-agent</code> triage
+              label - no need for additional triage.
+            </li>
+          </ol>
+        </blockquote>
+        <figcaption><code>skills/engineering/to-spec/SKILL.md:13-19</code>.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">This is where the seam gate is really satisfied</span>
+        <p>
+          <a href="0009-tdd-and-the-seam-gate.html">Lesson 9</a> established that
+          <code>/tdd</code> writes no test at an unconfirmed seam. In the full
+          chain, that confirmation happens <strong>here</strong> — once, for the
+          whole feature — rather than in the first exchange of every
+          <code>/implement</code> run.
+        </p>
+        <p>
+          Which is why this step deserves your attention even though it looks like
+          a formality. You are agreeing the test strategy for a multi-session
+          build in one answer.
+        </p>
+      </div>
+
+      <p>
+        Note the direction of the advice: <strong>fewer, higher</strong>. "The
+        ideal number is one" is an unusual thing for a testing instruction to say,
+        and it follows from the same reasoning as <code>/tdd</code>'s — you cannot
+        test everything, so the effort should land at as few places as possible,
+        as far from the internals as possible.
+      </p>
+
+      <h2>The template is fixed</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The seven sections of <code>&lt;spec-template&gt;</code>,
+            <code>to-spec/SKILL.md:21+</code>.
+          </caption>
+          <thead>
+            <tr><th>Section</th><th>Holds</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Problem Statement</td>
+              <td>The problem, <em>from the user's perspective</em></td>
+            </tr>
+            <tr>
+              <td>Solution</td>
+              <td>The solution, from the same perspective</td>
+            </tr>
+            <tr>
+              <td>User Stories</td>
+              <td>
+                <em>"A LONG, numbered list"</em>, <em>"extremely extensive"</em> —
+                as an actor, I want a feature, so that a benefit
+              </td>
+            </tr>
+            <tr>
+              <td>Implementation Decisions</td>
+              <td>
+                Modules, interfaces, schema changes, API contracts, architectural
+                decisions
+              </td>
+            </tr>
+            <tr>
+              <td>Testing Decisions</td>
+              <td>The seams agreed in step 2</td>
+            </tr>
+            <tr><td>Out of Scope</td><td>What was deliberately refused</td></tr>
+            <tr><td>Further Notes</td><td>Everything else</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The one prohibition</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Do NOT include specific file paths or code snippets. They may end up
+            being outdated very quickly.
+          </p>
+          <p>
+            Exception: if a prototype produced a snippet that encodes a decision
+            more precisely than prose can (state machine, reducer, schema, type
+            shape), inline it within the relevant decision and note briefly that it
+            came from a prototype. Trim to the decision-rich parts — not a working
+            demo, just the important bits.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/to-spec/SKILL.md:55-57</code>.</figcaption>
+      </figure>
+
+      <p>
+        The same rule appears in <code>/to-tickets</code> and in
+        <code>/triage</code>'s agent brief. It is the set's most consistent
+        instruction: <strong>a document that outlives a context window must not
+        name a file path</strong>, because the path will move and the document
+        will not.
+      </p>
+
+      <h2>Publishing, and the trap it sets</h2>
+
+      <p>
+        The spec is published as an issue carrying <code>ready-for-agent</code>.
+        That label is what makes tickets grabbable — and the spec now wears it
+        too:
+      </p>
+
+      <div class="aside warning">
+        <span class="label">A parent spec labelled agent-ready</span>
+        <p>
+          An unattended agent polling for <code>ready-for-agent</code> will find
+          the parent spec and try to build the <em>entire feature</em> in one run.
+        </p>
+        <p>
+          The docs page's fix: <em>"exclude the parent spec explicitly in your AFK
+          agent's prompt, or strip the label once <code>/to-tickets</code> has
+          run."</em> Only relevant if you run agents unattended — but total if you
+          do.
+        </p>
+      </div>
+
+      <h2>Do not clear before the next step</h2>
+
+      <p>
+        <a href="0006-phase-boundaries.html">Lesson 6</a>'s rule applies with
+        force here — grill, spec and split stay in one window. The reason is
+        specific to this skill: a very large spec can outgrow what a tracker
+        serves back cleanly, and <em>"there is no local copy to fall back
+        on"</em>. Run <code>/to-tickets</code> in the same window and the spec is
+        never re-fetched.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You invoke <code>/to-spec</code> after a two-message conversation. What
+          do you get?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A request to grill the idea properly first
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A complete-looking spec asserting things you never said
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              An interview covering the gaps in your thinking
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">A short spec with unsettled sections left empty</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          "Do NOT interview the user — just synthesize what you already know."
+          With little to synthesise, it fills the fixed template anyway. By the
+          docs page's own standard — "anything the spec asserts that you never
+          actually said is a defect" — the result is mostly defect, and it will
+          not look like one.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why are file paths banned from the spec?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Because the tracker renders long paths badly inline</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because the document outlives the layout it describes
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the implementing agent explores the repo anyway
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Because paths leak structure the spec should abstract</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          "They may end up being outdated very quickly." The same rule governs
+          <code>/to-tickets</code> and <code>/triage</code>'s agent briefs, for
+          the same reason: a ticket may sit for weeks while files are renamed and
+          moved. Describe interfaces and contracts, which survive; not paths,
+          which do not.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        The spec is published and still in the window. Splitting it is the step
+        with the most reported friction in the whole set:
+        <a href="0014-to-tickets.html">lesson 14</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/to-spec/SKILL.md</code> — and specifically the
+            <code>&lt;spec-template&gt;</code> block, read as a checklist. The
+            sections you find hardest to fill honestly from your last grilling
+            session are the parts of that session that were not finished.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth doing on your first real spec: ask it
+          to go through the finished document line by line and mark every claim
+          with where in the conversation it came from. Anything it cannot place is
+          exactly what the docs page calls a defect, and catching one is the
+          fastest way to learn what this skill is for.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, answer this in one sentence: what is a spec
+            <em>for</em>? If the answer involves planning or design, reread the
+            first excerpt — the answer this set gives is narrower and more useful
+            than either.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0012-hypotheses-and-the-fix.html">12. Hypotheses and the fix</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0014-to-tickets.html">14. To-tickets</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

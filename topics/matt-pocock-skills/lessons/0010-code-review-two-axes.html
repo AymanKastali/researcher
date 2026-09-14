@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>10. Code review's two axes — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0010</span>
+        <h1>Code review's two axes</h1>
+        <p class="lesson-mission">
+          Two sub-agents that must never see each other's findings, a report you
+          are forbidden to merge, and a loop that will never come back clean.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> you want a branch, a PR, or the work since a
+        fixed point reviewed. It is model-invoked, so describing that situation
+        can fire it — and it is the last step of every flow in this topic.
+      </p>
+
+      <h2>The two axes, and why they are two</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Two-axis review of the diff between <code>HEAD</code> and a fixed
+            point the user supplies:
+          </p>
+          <ul>
+            <li>
+              <strong>Standards</strong> — does the code conform to this repo's
+              documented coding standards?
+            </li>
+            <li>
+              <strong>Spec</strong> — does the code faithfully implement the
+              originating issue / spec?
+            </li>
+          </ul>
+          <p>
+            Both axes run as <strong>parallel sub-agents</strong> so they don't
+            pollute each other's context, then this skill aggregates their
+            findings.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/code-review/SKILL.md:6-11</code>.</figcaption>
+      </figure>
+
+      <p>The justification is a two-line argument at the bottom of the file:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>A change can pass one axis and fail the other:</p>
+          <ul>
+            <li>
+              Code that follows every standard but implements the wrong thing →
+              <strong>Standards pass, Spec fail.</strong>
+            </li>
+            <li>
+              Code that does exactly what the issue asked but breaks the project's
+              conventions → <strong>Spec pass, Standards fail.</strong>
+            </li>
+          </ul>
+          <p>Reporting them separately stops one axis from masking the other.</p>
+        </blockquote>
+        <figcaption><code>skills/engineering/code-review/SKILL.md:82-87</code>.</figcaption>
+      </figure>
+
+      <h2>The fixed point</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Capture the diff command once:
+            <code>git diff &lt;fixed-point&gt;...HEAD</code> (three-dot, so the
+            comparison is against the merge-base). […] Before going further,
+            confirm the fixed point resolves and the diff is non-empty. A bad ref
+            or empty diff should fail here — not inside two parallel sub-agents.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/code-review/SKILL.md:21-23</code>.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Three dots, and committed work only</span>
+        <p>
+          <code>&lt;fixed-point&gt;...HEAD</code> compares against the
+          <strong>merge-base</strong>, so work that landed on <code>main</code>
+          after you branched is excluded — which is what you want.
+        </p>
+        <p>
+          It also means <strong>staged and working-tree changes are
+          invisible</strong>. This is the collision from
+          <a href="0008-the-small-feature-loop.html">lesson 8</a>: commit first,
+          then review.
+        </p>
+      </div>
+
+      <h2>What it looks for when your repo documents nothing</h2>
+
+      <p>
+        The Standards axis reads whatever the repo has —
+        <code>CODING_STANDARDS.md</code>, <code>CONTRIBUTING.md</code> — and on
+        top of that always carries a fixed baseline of twelve code smells from
+        Fowler's <em>Refactoring</em>, chapter 3. Two rules bind it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ul>
+            <li>
+              <strong>The repo overrides.</strong> A documented repo standard
+              always wins; where it endorses something the baseline would flag,
+              suppress the smell.
+            </li>
+            <li>
+              <strong>Always a judgement call.</strong> Each smell is a labelled
+              heuristic ("possible Feature Envy"), never a hard violation — and,
+              like any standard here, skip anything tooling already enforces.
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption><code>skills/engineering/code-review/SKILL.md:40-41</code>.</figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The twelve, abbreviated from <code>SKILL.md:45-56</code>. Each entry
+            in the skill reads <em>what it is</em> → <em>how to fix</em>.
+          </caption>
+          <thead>
+            <tr><th>Smell</th><th>What it is</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Mysterious Name</td><td>A name that doesn't reveal what it does or holds</td></tr>
+            <tr><td>Duplicated Code</td><td>The same logic shape in more than one hunk</td></tr>
+            <tr><td>Feature Envy</td><td>A method reaching into another object's data more than its own</td></tr>
+            <tr><td>Data Clumps</td><td>The same fields travelling together — a type wanting to be born</td></tr>
+            <tr><td>Primitive Obsession</td><td>A string standing in for a domain concept</td></tr>
+            <tr><td>Repeated Switches</td><td>The same cascade on the same type, recurring</td></tr>
+            <tr><td>Shotgun Surgery</td><td>One logical change forcing scattered edits</td></tr>
+            <tr><td>Divergent Change</td><td>One module edited for several unrelated reasons</td></tr>
+            <tr><td>Speculative Generality</td><td>Abstraction for needs the spec doesn't have</td></tr>
+            <tr><td>Message Chains</td><td>Long navigation the caller shouldn't depend on</td></tr>
+            <tr><td>Middle Man</td><td>A class that mostly just delegates onward</td></tr>
+            <tr><td>Refused Bequest</td><td>A subclass ignoring most of what it inherits</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The aggregation rule</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Present the two reports under <code>## Standards</code> and
+            <code>## Spec</code> headings, verbatim or lightly cleaned. Do
+            <strong>not</strong> merge or rerank findings — the two axes are
+            deliberately separate […]
+          </p>
+          <p>
+            End with a one-line summary: total findings per axis, and the worst
+            issue <em>within each axis</em> (if any). Don't pick a single winner
+            across axes — that's the reranking the separation exists to prevent.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/code-review/SKILL.md:76-78</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>Two reports, two worst issues, no overall verdict.</strong>
+        </p>
+        <p>
+          A review that hands you one ranked list has undone the entire design.
+          The separation is the product.
+        </p>
+      </div>
+
+      <h2>No spec is a legitimate outcome</h2>
+
+      <p>
+        The skill looks for the originating spec in a fixed order — issue
+        references in commit messages, then a path you passed, then a file under
+        <code>docs/</code>, <code>specs/</code> or <code>.scratch/</code>, then it
+        asks you. And then:
+        <em>"If they say there isn't one, the <strong>Spec</strong> sub-agent will
+        skip and report 'no spec available'."</em>
+        (<code>SKILL.md:32</code>)
+      </p>
+
+      <p>
+        Which is what happens after <a href="0012-hypotheses-and-the-fix.html">a
+        bug fix</a> with no originating issue. It is a reported result, not a
+        failure.
+      </p>
+
+      <h2>Three things to know before you run it unattended</h2>
+
+      <h3>It never converges</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Because fixes create new surface, and because the judgement-call half
+            of the Standards axis is not deterministic between runs. […] There is
+            no convergence guarantee. Treat a pass as a list of leads, act on the
+            ones with a cited rule behind them, and stop — do not run it in a loop
+            until it comes back clean, because it will not.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/code-review.md:72</code>.</figcaption>
+      </figure>
+
+      <h3>Its sub-agents can rediscover it and fan out</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Known open bug, reproduced by several people and in more than one
+            harness. The Standards and Spec prompts do not forbid delegation, so a
+            sub-agent can rediscover the skill and fan out again — one report
+            reached 50-plus agents. The fix people have applied on forks is one
+            line appended to both sub-agent briefs: "Do not invoke
+            <code>/code-review</code> or spawn additional agents — perform this
+            review directly." […] If you run this unattended, watch the agent
+            count.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/code-review.md:56</code>.</figcaption>
+      </figure>
+
+      <h3>There are two skills called <code>code-review</code></h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This is the most reported problem with the skill, and it is not fixed.
+            Claude Code ships its own <code>/code-review</code>, which does
+            something different — it hunts bugs in the diff, where this one checks
+            spec compliance and repo standards. […] Via the plugin marketplace,
+            everything is aliased under a <code>mattpocock-skills:</code> prefix
+            and the built-in becomes hard to reach at the unqualified name
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/code-review.md:52</code>.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">They do different jobs — use both</span>
+        <p>
+          Bugs in the diff, versus spec compliance and repo standards. These are
+          not competing implementations of one idea; they are two reviews, and a
+          branch can want both. The <code>mattpocock-skills:</code> prefix is what
+          lets you name which one you mean.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          The review returns four Standards findings and one Spec finding. What
+          should the summary line say?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">The single most serious finding taken from across both axes</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A count per axis, and the worst within each axis
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">A merged list of all five findings, ranked by severity</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A pass or fail verdict derived from both axis results
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          "Don't pick a single winner across axes — that's the reranking the
+          separation exists to prevent." The whole design is that one axis must
+          not be able to mask the other, and a cross-axis ranking is exactly the
+          masking mechanism.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You have fixed everything the review found. Should you rerun it until it
+          is clean?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Yes, a clean pass is the intended stopping condition</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>No, it will not converge, so stop deliberately here</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Yes, but only on the standards axis, not spec</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">No, rerunning is blocked once all findings are resolved</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Fixes create new surface, and half the Standards axis is
+          judgement-based and non-deterministic between runs. The guidance is to
+          treat a pass as a list of leads, act on the ones with a cited rule
+          behind them, and stop. Looping burns tokens for an outcome that cannot
+          arrive.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        That is the small-feature flow complete. The second daily loop begins
+        somewhere else entirely — with a skill that refuses to think about your
+        bug until it can make it fail on demand:
+        <a href="0011-the-phase-1-gate.html">lesson 11</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/code-review/SKILL.md</code>, section 3 — the
+            twelve smells with their fixes, each in one line. It is a compressed
+            reading of Fowler's chapter 3 and it is useful well beyond this skill;
+            if you only ever read one section of one <code>SKILL.md</code> in this
+            set for its own sake, this is the one.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking on a real branch: run the
+          review, then ask it which findings had a <em>cited rule</em> behind them
+          and which were baseline judgement calls. That distinction is what makes
+          a pass actionable, and the skill's own text insists on it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            You are a third of the way through and the first flow is complete.
+            Before moving on, state the two axes and give the failure each one
+            catches that the other cannot. The full
+            <a href="../reference/flow-chains.html">flow chains</a> are collected
+            for reference; try to reproduce this one from memory first.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0009-tdd-and-the-seam-gate.html">9. TDD and the seam gate</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0011-the-phase-1-gate.html">11. The Phase 1 gate</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

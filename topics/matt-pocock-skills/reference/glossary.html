@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glossary — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Glossary</h1>
+        <p class="page-blurb">
+          The vocabulary of the <code>mattpocock-skills</code> plugin at 1.2.3 —
+          the set's own words where it has one, and this workspace's where it
+          does not.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Canonical source: <code>GLOSSARY.md</code> in this topic. The two are kept
+        in step; this page is the readable rendering.
+      </p>
+
+      <h2>Invocation</h2>
+
+      <div class="definition">
+        <span class="term">Skill</span>
+        <p>
+          A directory holding a <code>SKILL.md</code> whose frontmatter names it
+          and whose body is the instruction an agent follows. The unit the plugin
+          ships.
+        </p>
+        <span class="attribution">Avoid: command, prompt, macro.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Promoted skill</span>
+        <p>
+          A skill in the <code>engineering/</code> or <code>productivity/</code>
+          bucket, and therefore listed in <code>plugin.json</code> and shipped by
+          the plugin. There are twenty-five.
+        </p>
+        <span class="attribution">Avoid: installed skill, available skill.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">User-invoked skill</span>
+        <p>
+          A skill carrying <code>disable-model-invocation: true</code>, reachable
+          only by a human typing its name. No other skill can reach it. Fourteen
+          of the twenty-five.
+        </p>
+        <span class="attribution">
+          <code>.agents/invocation.md:5</code>. Avoid: manual skill, slash command.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Model-invoked skill</span>
+        <p>
+          A skill with no such flag, reachable by the agent on its own as well as
+          by the human. Eleven of the twenty-five.
+        </p>
+        <span class="attribution">
+          <code>.agents/invocation.md:6</code>. Avoid: automatic skill, auto-skill.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Context pointer</span>
+        <p>
+          The <code>description:</code> string in a model-invoked skill's
+          frontmatter. It is permanently loaded and it is what the agent matches a
+          request against, so it is the trigger rather than a summary.
+        </p>
+        <span class="attribution">
+          <code>writing-for-agents/SKILL.md:12</code>. Avoid: summary, blurb,
+          docstring.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Inoperative instruction</span>
+        <p>
+          A line inside a skill telling the agent to run a user-invoked skill. The
+          invocation invariant makes it unexecutable, so it can only be read as a
+          message to the human. Six exist in 1.2.3.
+        </p>
+        <span class="attribution">
+          This workspace's term; the set has none. Avoid: broken link, bug, dead
+          reference.
+        </span>
+      </div>
+
+      <h2>Structure</h2>
+
+      <div class="definition">
+        <span class="term">Flow</span>
+        <p>
+          A path through several skills. The set has one <strong>main flow</strong>
+          and three <strong>on-ramps</strong> that merge onto it.
+        </p>
+        <span class="attribution">
+          <code>ask-matt/SKILL.md:11</code>. Avoid: workflow, pipeline, process.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Main flow</span>
+        <p>
+          <code>grill-with-docs → to-spec → to-tickets → implement → code-review</code>.
+          The route most work travels, printed identically in four places in the
+          tree.
+        </p>
+        <span class="attribution">Avoid: the chain, the happy path.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">On-ramp</span>
+        <p>
+          A starting situation that generates work and then merges onto the main
+          flow: <code>/triage</code>, <code>/diagnosing-bugs</code>,
+          <code>/wayfinder</code>.
+        </p>
+        <span class="attribution">Avoid: entry point, trigger.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Vocabulary layer</span>
+        <p>
+          A model-invoked skill that runs beneath the others as the single source
+          of truth for a set of words — <code>/domain-modeling</code> for the
+          domain, <code>/codebase-design</code> for module shape. Consulted, not
+          run as a session.
+        </p>
+        <span class="attribution">
+          <code>ask-matt/SKILL.md:56</code>. Avoid: helper, library, utility skill.
+        </span>
+      </div>
+
+      <h2>The interview</h2>
+
+      <div class="definition">
+        <span class="term">Grilling</span>
+        <p>
+          The interview primitive: relentless questioning in rounds until a shared
+          understanding is reached. Five skills run it internally.
+        </p>
+        <span class="attribution">Avoid: interview, Q&amp;A, discovery.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Design tree</span>
+        <p>
+          The structure grilling maps a problem onto — every decision branching
+          into the decisions that hang off it.
+        </p>
+        <span class="attribution">
+          <code>grilling/SKILL.md:6</code>. Avoid: decision tree, outline.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Frontier</span>
+        <p>
+          Every decision whose prerequisites are already settled — the questions
+          askable now without guessing. The word carries a second, related sense
+          in <code>/to-tickets</code> and <code>/wayfinder</code>:
+          <strong>every ticket whose blockers are all done</strong>. Same idea,
+          applied to questions in one case and work in the other.
+        </p>
+        <span class="attribution">
+          <code>grilling/SKILL.md:8</code>; <code>to-tickets/SKILL.md:66</code>.
+          Avoid: open questions, backlog, next up.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Facts/decisions split</span>
+        <p>
+          Grilling's contract. Finding facts is the agent's job, always; making
+          decisions is the human's, always. An agent that answers its own question
+          has broken the skill rather than interpreted it liberally.
+        </p>
+        <span class="attribution">
+          <code>grilling/SKILL.md:20</code>; <code>wayfinder/SKILL.md:75</code>.
+          Avoid: division of labour, roles.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Shared understanding</span>
+        <p>
+          The state that ends a grilling session, and it must be confirmed by the
+          human before anything is acted on. The frontier being empty is the
+          condition; the confirmation is the gate.
+        </p>
+        <span class="attribution">
+          <code>grilling/SKILL.md:22</code>. Avoid: agreement, sign-off, alignment.
+        </span>
+      </div>
+
+      <h2>Building</h2>
+
+      <div class="definition">
+        <span class="term">Spec</span>
+        <p>
+          The document <code>/to-spec</code> synthesises from a conversation
+          without interviewing, and publishes to the tracker labelled
+          <code>ready-for-agent</code>. It exists because context windows end.
+        </p>
+        <span class="attribution">Avoid: PRD, requirements, design doc.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Seam</span>
+        <p>
+          The public boundary you test at: the interface where you observe
+          behaviour without reaching inside. Agreed with the human before any test
+          is written.
+        </p>
+        <span class="attribution">
+          <code>tdd/SKILL.md:20</code>. Avoid: boundary, interface, test point.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Tracer-bullet ticket</span>
+        <p>
+          A slice cutting a narrow but complete path through every layer, demoable
+          on its own, sized to fit one fresh context window.
+        </p>
+        <span class="attribution">
+          <code>to-tickets/SKILL.md:31-34</code>. Avoid: story, task, issue.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Blocking edge</span>
+        <p>
+          A declared dependency from one ticket to another, native on a real
+          tracker and plain text on a local one. What makes a frontier computable.
+        </p>
+        <span class="attribution">Avoid: dependency, link, blocker.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Wide refactor</span>
+        <p>
+          One mechanical change whose blast radius fans across the codebase, so no
+          vertical slice can land green. Sequenced expand–migrate–contract
+          instead.
+        </p>
+        <span class="attribution">
+          <code>to-tickets/SKILL.md:40</code>. Avoid: big refactor, sweeping change.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Fixed point</span>
+        <p>
+          The commit, branch, tag or merge-base <code>/code-review</code> compares
+          against, via <code>git diff &lt;fixed-point&gt;...HEAD</code>. Committed
+          work only.
+        </p>
+        <span class="attribution">
+          <code>code-review/SKILL.md:21</code>. Avoid: base, baseline, start point.
+        </span>
+      </div>
+
+      <h2>Mapping</h2>
+
+      <div class="definition">
+        <span class="term">Map</span>
+        <p>
+          The <code>wayfinder:map</code> issue holding a destination and pointers
+          to its decision tickets. An index, never a store — a decision lives in
+          exactly one place.
+        </p>
+        <span class="attribution">
+          <code>wayfinder/SKILL.md:23</code>. Avoid: plan, roadmap, epic.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Destination</span>
+        <p>
+          What a map is finding its way to, settled first because it fixes the
+          scope.
+        </p>
+        <span class="attribution">Avoid: goal, outcome, target.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Fog</span>
+        <p>
+          The part of the work that cannot yet be stated as a question, held in the
+          map's <strong>Not yet specified</strong> section. The test for graduating
+          it is whether the question can be <em>stated</em> precisely now, not
+          whether it can be answered.
+        </p>
+        <span class="attribution">
+          <code>wayfinder/SKILL.md:85-91</code>. Avoid: unknowns, TBD, backlog.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Decision ticket</span>
+        <p>
+          A child of the map that produces a decision rather than a deliverable.
+          One of four types: research, prototype, grilling, task.
+        </p>
+        <span class="attribution">Avoid: spike, investigation, chore.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">HITL / AFK</span>
+        <p>
+          Whether a ticket resolves through live exchange with a human, or is
+          driven by the agent alone.
+        </p>
+        <span class="attribution">
+          <code>wayfinder/SKILL.md:75</code>. Avoid: manual/automatic,
+          interactive/batch.
+        </span>
+      </div>
+
+      <h2>Sessions</h2>
+
+      <div class="definition">
+        <span class="term">Phase</span>
+        <p>
+          A chunk of work inside a session — the grilling, the implementation, the
+          QA. It ends when you think "ok, we're done with that".
+        </p>
+        <span class="attribution">
+          <code>PHASE-BOUNDARIES.md:3</code>. Avoid: stage, step, sprint.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Phase boundary</span>
+        <p>
+          The gap between two phases, and the only place the
+          continue/clear/handoff/subagent/compact decision belongs.
+        </p>
+        <span class="attribution">
+          <code>PHASE-BOUNDARIES.md:5</code>. Avoid: checkpoint, breakpoint.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Smart zone</span>
+        <p>
+          The window — about 150k tokens — within which the model still reasons
+          sharply. The budget the context-hygiene rules are spending.
+        </p>
+        <span class="attribution">
+          <code>ask-matt/SKILL.md:32</code>. Avoid: context window, token limit.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Primary source (of a session)</span>
+        <p>
+          The session as it happened, unsummarised. Every phase-boundary move
+          except Continue converts it into a secondary source.
+          <strong>Distinct</strong> from a primary source of <em>knowledge</em>,
+          which is what this repository cites claims to.
+        </p>
+        <span class="attribution">
+          <code>PHASE-BOUNDARIES.md:44</code>. Avoid: full context, raw history.
+        </span>
+      </div>
+
+      <p class="small-print">
+        Definitions are quoted or compressed from the installed tree at plugin
+        1.2.3, git <code>8b78b53</code>, with the file and line given where the
+        term has one. Two entries — <em>inoperative instruction</em>, and the
+        ticket sense of <em>frontier</em> — name things the set uses without
+        naming; both say so.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+  </body>
+</html>

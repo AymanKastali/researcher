@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>17. Working a map — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0017</span>
+        <h1>Working a map</h1>
+        <p class="lesson-mission">
+          One ticket per session, resolved by conversation and recorded in three
+          places — and then a hand-off you must not skip, because skipping it
+          throws away everything the map was for.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> a map exists. You invoke
+        <code>/wayfinder &lt;map&gt;</code>, optionally naming a ticket. Without
+        one, <em>"you pick the next decision, not the user"</em>.
+      </p>
+
+      <h2>The session rule</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Two modes. Either way, <strong>never resolve more than one ticket per
+            session</strong> — with the exception of research tickets.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/wayfinder/SKILL.md:107</code>.</figcaption>
+      </figure>
+
+      <p>
+        The exception is consistent: research tickets are AFK and resolved by
+        subagents, so several can run in parallel without consuming the session's
+        attention. Every other type is a conversation, and conversations do not
+        share a window well.
+      </p>
+
+      <h2>The five steps</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ol>
+            <li>Load the <strong>map</strong> — the low-res view, not every ticket body.</li>
+            <li>
+              Choose the ticket. If the user named one, use it. Otherwise take the
+              first frontier ticket in order. <strong>Claim it</strong>: assign it
+              to yourself before any work.
+            </li>
+            <li>
+              Resolve it — <strong>zoom as needed</strong>: fetch the full body of
+              any related or closed ticket on demand; invoke the skills the
+              <code>## Notes</code> block names. If in doubt, use
+              <code>/grilling</code> and <code>/domain-modeling</code>.
+            </li>
+            <li>
+              Record the resolution: post the answer as a <strong>resolution
+              comment</strong>, <strong>close</strong> the issue, and
+              <strong>append a context pointer</strong> to the map's
+              Decisions-so-far.
+            </li>
+            <li>
+              Add newly-surfaced tickets (create-then-wire); graduate any fog the
+              answer has made specifiable […] If the answer reveals a ticket […]
+              sits beyond the destination, <strong>rule it out of scope</strong>
+              rather than resolving it on the route.
+            </li>
+          </ol>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/wayfinder/SKILL.md:122-126</code>.
+        </figcaption>
+      </figure>
+
+      <h3>Load low-res, zoom on demand</h3>
+
+      <p>
+        Steps 1 and 3 are a context-budget strategy. The map is loaded whole
+        because it is an index; individual ticket bodies are fetched only when
+        that ticket turns out to matter. This is how a plan too big for one window
+        gets worked <em>from</em> one window.
+      </p>
+
+      <h3>Claim before working</h3>
+
+      <p>
+        <em>"assign it to yourself before any work"</em> — on GitHub,
+        <code>gh issue edit &lt;n&gt; --add-assignee @me</code>, described in the
+        tracker template as <em>"the session's first write"</em>. The reason is at
+        the bottom of the skill: <em>"The user may run unblocked tickets in
+        parallel, so expect other sessions to be editing the tracker
+        concurrently."</em> The assignment is the lock.
+      </p>
+
+      <h3>Recording is three writes, not one</h3>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Step 4, unpacked.</caption>
+          <thead>
+            <tr><th>Write</th><th>Where</th><th>Why</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>The answer, in full</td>
+              <td>A resolution comment on the ticket</td>
+              <td>A decision lives in exactly one place</td>
+            </tr>
+            <tr>
+              <td>Closing</td>
+              <td>The ticket</td>
+              <td>
+                A closed ticket is unambiguously off the frontier — and unblocks
+                its dependents
+              </td>
+            </tr>
+            <tr>
+              <td>A gist plus a link</td>
+              <td>The map's <em>Decisions so far</em></td>
+              <td>
+                The map is an index; it never restates the decision
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Contrast this with lesson 15</span>
+        <p>
+          <code>/implement</code> has <strong>no</strong> completion step and
+          leaves closing to you. <code>/wayfinder</code> has closing written into
+          step 4 as a named instruction.
+        </p>
+        <p>
+          Same tracker, same frontier mechanism, two skills — and only one of them
+          closes the loop. Knowing which is which is the difference between a flow
+          that advances and one that stalls.
+        </p>
+      </div>
+
+      <h3>Ruling out of scope is not resolving</h3>
+
+      <p>
+        When a ticket turns out to sit past the destination:
+        <em>"<strong>close it</strong> (a closed ticket is unambiguously off the
+        frontier) and leave one line in the <strong>Out of scope</strong> section:
+        the gist plus why it's out of scope, linking the closed ticket. It stays
+        out of <strong>Decisions so far</strong>, which records the route actually
+        walked — a scope boundary isn't a step on it."</em>
+      </p>
+
+      <h2>The hand-off, and the mistake</h2>
+
+      <p>Repeat until nothing is left to decide. Then:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When the map clears, <strong>it hands off, it doesn't build</strong>:
+            merge onto the main flow at <strong><code>/to-spec</code></strong>,
+            which collapses the map's linked decisions into a buildable plan, then
+            <code>/to-tickets</code> and <code>/implement</code> as usual.
+            <strong
+              >Looping the map straight into <code>/implement</code> skips that
+              collapse and throws the linked detail away</strong
+            >
+            — go straight to <code>/implement</code> only when the effort turned
+            out genuinely small.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:46</code>.</figcaption>
+      </figure>
+
+      <p>
+        Feed <code>/to-spec</code> the <strong>map issue</strong>, not the
+        individual decision tickets — <code>/to-spec #&lt;map_issue&gt;</code>,
+        per its own trigger table. The map's job was to point at things; the spec's
+        job is to collapse what it points at into one document. Then
+        <a href="0014-to-tickets.html">lesson 14</a> onward.
+      </p>
+
+      <h2>Plan, don't do</h2>
+
+      <p>
+        One more instruction governs everything above, and it names its own failure
+        mode with unusual precision:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Wayfinder is <strong>planning</strong> by default: each ticket resolves
+            a decision, and the map is done when the way is clear — nothing left to
+            decide before someone goes and does the thing.
+            <strong
+              >The pull to just do the work is usually the signal you've reached
+              the edge of the map and it's time to hand off.</strong
+            >
+            An effort can override this in its <strong>Notes</strong> […] but absent
+            that, produce decisions, not deliverables.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/wayfinder/SKILL.md:13</code>.</figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">A feeling reinterpreted as a signal</span>
+        <p>
+          The urge to stop planning and start building is normally a distraction to
+          resist. Here it is read as <em>information</em>: it usually means the fog
+          has cleared and the map is finished. The right response is to hand off,
+          not to push through.
+        </p>
+      </div>
+
+      <h2>The chain, whole</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">/setup-matt-pocock-skills  +  [ YOU ] create the wayfinder:* labels
+
+  -> /wayfinder                    CHART, one session
+       1 name the destination      (grilling + domain-modeling)
+       2 breadth-first grill       -> no fog? stop, you did not need this
+       3 create the map
+       4 create tickets, THEN wire the edges (second pass)
+       5 fire /research subagents
+       6 stop -- charting resolves nothing
+
+  -> /wayfinder &lt;map&gt;              WORK, one ticket per session
+       load low-res -> claim -> resolve -> comment, close, point
+       -> graduate fog / rule out of scope
+
+  -> map clear -> /to-spec #&lt;map_issue&gt;     <- hand off, do NOT build
+  -> /to-tickets -> per ticket: /clear -> /implement -> review -> close
+       (/wizard whenever a step needs a human's hands)</code></pre>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A grilling ticket resolves and you still have most of the session left.
+          What now?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Take the next frontier ticket and resolve that</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Stop, because one ticket per session, research aside</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Chart the fog the resolution just made specifiable
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Begin implementing whatever the decision has now unblocked</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          "Never resolve more than one ticket per session — with the exception of
+          research tickets." Graduating newly-specifiable fog <em>is</em> part of
+          step 5 of this ticket's resolution, so that much happens; taking a second
+          ticket does not. And building is the thing wayfinder exists not to do.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why must the cleared map go through <code>/to-spec</code> rather than
+          straight to <code>/implement</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because implement cannot read issues carrying that label
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Because the linked detail collapses into one plan</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Because the map must close before building starts</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because tickets need the ready-for-agent label applied first
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The map is an index — the decisions live scattered across closed
+          tickets. <code>/to-spec</code> is what gathers them into a buildable
+          document. "Looping the map straight into <code>/implement</code> skips
+          that collapse and throws the linked detail away", and the CHANGELOG names
+          it one of the two most common mistakes with this flow.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        All five flows are now covered. What remains is what happens when a flow
+        stalls mid-session on a question it cannot settle by talking — three
+        detours, each with a different shape of answer:
+        <a href="0018-the-three-detours.html">lesson 18</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/wayfinder/SKILL.md</code> — the whole thing,
+            about 130 lines, and the most carefully written document in the set.
+            Read the <em>Fog of war</em> and <em>Out of scope</em> sections
+            together; the distinction between them is the idea the skill is built
+            on, and it does not survive summarising.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking once a map exists: "show me the
+          map at low resolution, then tell me which ticket is first on the frontier
+          and why." Watching it choose — rather than choosing for it — is how you
+          find out whether the blocking edges were wired correctly.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, state the one-ticket rule and its single exception,
+            and name the three writes that record a resolution. Then say what
+            happens when the map clears — in the skill's own three words, which
+            are <em>it hands off</em>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0016-charting-a-map.html">16. Charting a map</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0018-the-three-detours.html">18. The three detours</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

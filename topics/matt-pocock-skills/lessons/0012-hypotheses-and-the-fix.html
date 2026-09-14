@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>12. Hypotheses and the fix — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0012</span>
+        <h1>Hypotheses and the fix</h1>
+        <p class="lesson-mission">
+          Four phases that consume the loop from lesson 11 — containing the only
+          checkpoint in the skill, one instruction that makes cleanup a single
+          grep, and a finding you are allowed to return instead of a fix.
+        </p>
+      </header>
+
+      <p class="lead">
+        By the skill's own account these phases are <em>"mechanical"</em>. That is
+        true of their difficulty, not their content — three of the four contain a
+        rule that changes the outcome.
+      </p>
+
+      <h2>Phase 3 — hypothesise, plural, and falsifiably</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Generate <strong>3–5 ranked hypotheses</strong> before testing any of
+            them. Single-hypothesis generation anchors on the first plausible
+            idea.
+          </p>
+          <p>
+            Each hypothesis must be <strong>falsifiable</strong>: state the
+            prediction it makes.
+          </p>
+          <blockquote>
+            <p>
+              Format: "If &lt;X&gt; is the cause, then &lt;changing Y&gt; will
+              make the bug disappear / &lt;changing Z&gt; will make it worse."
+            </p>
+          </blockquote>
+          <p>
+            If you cannot state the prediction, the hypothesis is a vibe — discard
+            or sharpen it.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/diagnosing-bugs/SKILL.md:90-96</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>If you cannot state the prediction, it is a vibe.</strong>
+        </p>
+        <p>
+          "It might be a race condition" makes no prediction and rules nothing
+          out. "If it is a race between the cache write and the read, adding a
+          10ms sleep before the read will make it disappear" can be run in a
+          minute and is worth having.
+        </p>
+      </div>
+
+      <h2>The only checkpoint in the skill</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Show the ranked list to the user before testing.</strong> They
+            often have domain knowledge that re-ranks instantly ("we just deployed
+            a change to #3"), or know hypotheses they've already ruled out. Cheap
+            checkpoint, big time saver. Don't block on it — proceed with your
+            ranking if the user is AFK.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/diagnosing-bugs/SKILL.md:98</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Worth knowing before you walk away</span>
+        <p>
+          This is the <em>only</em> point in six phases where the skill pauses for
+          you — and it explicitly does not block. If you are away, it takes its own
+          ranking and proceeds.
+        </p>
+        <p>
+          Which makes this the moment to be present for. Your re-ranking is
+          usually the cheapest information in the entire session.
+        </p>
+      </div>
+
+      <h2>Phase 4 — instrument, one variable at a time</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Tool preference, <code>SKILL.md:104-106</code>.</caption>
+          <thead>
+            <tr><th>Order</th><th>Tool</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>
+                Debugger / REPL inspection if the env supports it.
+                <em>"One breakpoint beats ten logs."</em>
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Targeted logs at the boundaries that distinguish hypotheses</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Never <em>"log everything and grep"</em></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>And one instruction that solves a problem most debugging leaves behind:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Tag every debug log</strong> with a unique prefix, e.g.
+            <code>[DEBUG-a4f2]</code>. Cleanup at the end becomes a single grep.
+            Untagged logs survive; tagged logs die.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/diagnosing-bugs/SKILL.md:108</code>.
+        </figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python"># Every probe carries the same session-unique tag.
+log.debug("[DEBUG-a4f2] cache read  key=%s hit=%s", key, hit)
+log.debug("[DEBUG-a4f2] cache write key=%s ttl=%s", key, ttl)
+
+# Cleanup is then one command, and it cannot miss one:
+#   grep -rn "DEBUG-a4f2" .</code></pre>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The performance branch</span>
+        <p>
+          <em>"For performance regressions, logs are usually wrong. Instead:
+          establish a baseline measurement (timing harness,
+          <code>performance.now()</code>, profiler, query plan), then bisect.
+          Measure first, fix second."</em>
+        </p>
+        <p>
+          A slow system instrumented with logs tells you what ran, never what took
+          the time.
+        </p>
+      </div>
+
+      <h2>Phase 5 — the regression test, and the seam that may not exist</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Write the regression test <strong>before the fix</strong> — but only
+            if there is a <strong>correct seam</strong> for it.
+          </p>
+          <p>
+            A correct seam is one where the test exercises the <strong>real bug
+            pattern</strong> as it occurs at the call site. If the only available
+            seam is too shallow (single-caller test when the bug needs multiple
+            callers, unit test that can't replicate the chain that triggered the
+            bug), a regression test there gives false confidence.
+          </p>
+          <p>
+            <strong>If no correct seam exists, that itself is the finding.</strong>
+            Note it. The codebase architecture is preventing the bug from being
+            locked down.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/diagnosing-bugs/SKILL.md:116-120</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        That middle paragraph is a permission most debugging processes do not
+        grant. A test at the wrong seam is worse than no test, because it will
+        pass forever while the bug pattern remains reachable.
+      </p>
+
+      <p>When the seam does exist, five steps, in order:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span>skills/engineering/diagnosing-bugs/SKILL.md:124-128</span>
+        </div>
+        <pre><code class="language-text">1. Turn the minimised repro into a failing test at that seam.
+2. Watch it fail.
+3. Apply the fix.
+4. Watch it pass.
+5. Re-run the Phase 1 feedback loop against the original (un-minimised) scenario.</code></pre>
+      </div>
+
+      <p>
+        Step 5 is the one people drop. The minimised repro is not the bug the user
+        reported — it is a stripped-down cousin of it. The original scenario is
+        what has to come back green.
+      </p>
+
+      <h2>Phase 6 — cleanup, and a checklist item about the future</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>SKILL.md:134-138</code> — required before declaring done.
+          </caption>
+          <thead>
+            <tr><th>Check</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Original repro no longer reproduces — re-run the Phase 1 loop</td></tr>
+            <tr><td>Regression test passes, <em>or</em> absence of seam is documented</td></tr>
+            <tr><td>All <code>[DEBUG-…]</code> instrumentation removed — grep the prefix</td></tr>
+            <tr><td>Throwaway prototypes deleted, or moved somewhere clearly marked</td></tr>
+            <tr>
+              <td>
+                <strong
+                  >The hypothesis that turned out correct is stated in the commit
+                  or PR message — so the next debugger learns</strong
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The last one is the only item on the list that costs nothing now and pays
+        someone else later. It is also the one no tooling can check.
+      </p>
+
+      <h2>The hand-off at the end that cannot fire</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Then ask: what would have prevented this bug?</strong> If the
+            answer involves architectural change (no good test seam, tangled
+            callers, hidden coupling) hand off to the
+            <code>/improve-codebase-architecture</code> skill with the specifics.
+            Make the recommendation <strong>after</strong> the fix is in, not
+            before — you have more information now than when you started.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/diagnosing-bugs/SKILL.md:140</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">This is one of the six from lesson 2</span>
+        <p>
+          <code>improve-codebase-architecture</code> is <strong>user-invoked</strong>.
+          Nothing can hand off to it. Read this as a note to yourself: if Phase 5
+          found no correct seam, that is the finding, and acting on it is your
+          move to make.
+        </p>
+        <p>
+          On the public <code>main</code> this hand-off has been
+          <strong>deleted outright</strong> — <em>"since it rarely fired in
+          practice"</em> — so when your install catches up, this paragraph will
+          simply be gone.
+        </p>
+      </div>
+
+      <h2>The one thing to configure before you rely on this skill</h2>
+
+      <p>
+        <code>diagnosing-bugs</code> is model-invoked, and the docs page records
+        the consequence as its most-reported problem:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This is the most-reported problem with the skill, and it is real. […]
+            users report it triggering on a plain description of a problem: "the
+            model triggers the rather formal diagnosing-bugs skill instead. It
+            then goes on to construct a reproduction scenario — often building a
+            mock scenario with limited value — before giving me a response or
+            suggestion. This results in considerable reply delays." […] the
+            practical fix is to say what you want ("just answer this, don't
+            diagnose") or to disable model invocation for it in your harness.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/diagnosing-bugs.md:59</code>.</figcaption>
+      </figure>
+
+      <p>
+        Note where that fix belongs. Not in the <code>SKILL.md</code> — the plugin
+        is read-only and <code>npx skills update</code> would overwrite it. In
+        your own <code>CLAUDE.md</code>, or in the invocation.
+      </p>
+
+      <h2>The chain, whole</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">(did someone else file it?) -> /triage    verify, brief, ready-for-agent
+  -> /diagnosing-bugs
+       Phase 1  tight red-capable loop        &lt;- hard gate: no theory before this
+       Phase 2  reproduce, then minimise
+       Phase 3  3-5 ranked falsifiable guesses &lt;- the only checkpoint
+       Phase 4  instrument, [DEBUG-xxxx] tags
+       Phase 5  regression test first, if a correct seam exists
+       Phase 6  cleanup; record the winning hypothesis
+  -> [ YOU ] act on the architectural finding, if there was one
+  -> [ YOU ] commit
+  -> /code-review &lt;fixed-point&gt;             Spec axis may report "no spec"</code></pre>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Phase 5 finds that the only available test seam cannot reproduce the bug
+          pattern. What now?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Write the test at the shallow seam, noting the limit</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Record the absence of a seam as the finding itself
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Refactor the code first, so that a correct seam exists</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Skip it and rely on the Phase 1 loop instead</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          "If no correct seam exists, that itself is the finding. Note it. The
+          codebase architecture is preventing the bug from being locked down." A
+          test at a seam that cannot exercise the real bug pattern gives false
+          confidence — which is worse than an honest gap. Refactoring may well
+          follow, but after the fix is in, not instead of the finding.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does Phase 3 require three to five hypotheses rather than the best
+          one?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because testing several at once is faster overall
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Because single-hypothesis generation anchors on the first idea</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the user needs options to choose between
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Because most hypotheses turn out to be unfalsifiable</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Quoted exactly: "Single-hypothesis generation anchors on the first
+          plausible idea." The requirement is a debiasing device, not a
+          throughput one — the probes still change one variable at a time, and
+          each must map to a specific prediction.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        Both daily loops are now complete. The remaining flows are for work that
+        will not fit one window — starting with the document that exists precisely
+        because context windows end:
+        <a href="0013-to-spec.html">lesson 13</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/diagnosing-bugs/SKILL.md</code> — all six
+            phases, about 140 lines. It is the longest skill in the set and the
+            most self-aware; read it noticing how many sentences exist to stop the
+            agent doing the natural thing. That ratio is what makes it work.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking at Phase 3 on a real bug: "give
+          me the ranked list, and for each one tell me the prediction and how you
+          would falsify it in under a minute." The cheap-to-test ones should move
+          up the ranking regardless of how likely they are, and that is a judgement
+          worth practising together.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is a natural long pause — the two flows you will run most often
+            are now covered end to end. Before going on, try to tell the whole bug
+            chain out loud, naming the hard gate and the single checkpoint. Both
+            chains are written out in the
+            <a href="../reference/flow-chains.html">flow chains</a> reference.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0011-the-phase-1-gate.html">11. The Phase 1 gate</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0013-to-spec.html">13. To-spec</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

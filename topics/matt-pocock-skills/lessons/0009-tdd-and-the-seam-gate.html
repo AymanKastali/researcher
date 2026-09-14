@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>9. TDD and the seam gate — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0009</span>
+        <h1>TDD and the seam gate</h1>
+        <p class="lesson-mission">
+          The one place a build stops and hands control back to you — plus the
+          three bad tests the skill names, and the step its own description
+          promises that it does not contain.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> reached automatically by
+        <code>/implement</code>, or typed directly when you want one behaviour
+        built test-first without a spec. It is model-invoked, so a request phrased
+        around building something test-first can fire it on its own.
+      </p>
+
+      <h2>What the skill actually is</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            TDD is the red → green loop. This skill is the reference that makes
+            that loop produce tests worth keeping: what a good test is, where
+            tests go, the anti-patterns, and the rules of the loop. Every section
+            applies on every cycle — consult them before and during the loop, not
+            after.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/tdd/SKILL.md:8</code>.</figcaption>
+      </figure>
+
+      <p>
+        Note what it does <em>not</em> claim to be: a procedure. The loop is
+        assumed known. What the file contains is the set of judgements that make
+        the loop worth running.
+      </p>
+
+      <h2>The gate</h2>
+
+      <div class="definition">
+        <span class="term">Seam</span>
+        <p>
+          The public boundary you test at: the interface where you observe
+          behavior without reaching inside. Tests live at seams, never against
+          internals.
+        </p>
+        <span class="attribution"><code>skills/engineering/tdd/SKILL.md:20</code>.</span>
+      </div>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Test only at pre-agreed seams.</strong> Before writing any
+            test, write down the seams under test and confirm them with the user.
+            No test is written at an unconfirmed seam. You can't test everything —
+            agreeing the seams up front is how testing effort lands on the
+            critical paths and complex logic instead of every edge case.
+          </p>
+          <p>
+            Ask: "What's the public interface, and which seams should we test?"
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/tdd/SKILL.md:22-24</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>No test is written at an unconfirmed seam.</strong>
+        </p>
+        <p>
+          This is the only hard stop in the small-feature flow. When
+          <code>/implement</code> pauses to ask you about interfaces, this is why
+          — and answering it carelessly is the cheapest way to get a suite you
+          will later delete.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">In the full chain, this gate fires earlier</span>
+        <p>
+          Running <a href="0013-to-spec.html">the big-feature flow</a>, the seams
+          are agreed during <code>/to-spec</code> step 2 rather than in each
+          <code>/implement</code> run — which is how one negotiation covers a
+          whole feature instead of recurring per ticket.
+        </p>
+      </div>
+
+      <h2>The loop, in three rules</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ul>
+            <li>
+              <strong>Red before green.</strong> Write the failing test first,
+              then only enough code to pass it. Don't anticipate future tests or
+              add speculative features.
+            </li>
+            <li>
+              <strong>One slice at a time.</strong> One seam, one test, one
+              minimal implementation per cycle.
+            </li>
+            <li>
+              <strong>Refactoring is not part of the loop.</strong> It belongs to
+              the review stage (see the <code>code-review</code> skill), not the
+              red → green implementation cycle.
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption><code>skills/engineering/tdd/SKILL.md:36-38</code>.</figcaption>
+      </figure>
+
+      <h2>The missing R</h2>
+
+      <p>
+        The <code>description</code> says <em>"mentions 'red-green-refactor'"</em>
+        and the body has no refactor step. That is not an oversight in the reading
+        — it is a known mismatch, and the docs page is unusually straightforward
+        about it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Because the refactor step was removed and the description was not. The
+            removal was deliberate: agents essentially never did it, and keeping
+            implementation and review in separate sessions works better. […] The
+            mismatch between the trigger phrase and the body is filed as issue
+            #589 and is still open, so "red-green-refactor" continues to work as a
+            phrase that fires the skill. What you get is red → green, and
+            refactoring in <code>code-review</code>.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/tdd.md:51</code>.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Read this as a lesson about descriptions</span>
+        <p>
+          <a href="0001-the-invocation-axis.html">Lesson 1</a> established that
+          the <code>description</code> is a <em>trigger</em>, not documentation.
+          Here is that fact with consequences: a phrase survives in the trigger
+          string precisely <strong>because</strong> it makes the skill fire, long
+          after the body stopped doing what the phrase names.
+        </p>
+      </div>
+
+      <h2>The three anti-patterns</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>skills/engineering/tdd/SKILL.md:30-32</code>.</caption>
+          <thead>
+            <tr><th>Anti-pattern</th><th>What it is</th><th>The tell</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Implementation-coupled</strong></td>
+              <td>
+                Mocks internal collaborators, tests private methods, or verifies
+                through a side channel — querying the database instead of using
+                the interface
+              </td>
+              <td>
+                The test breaks when you refactor but behavior hasn't changed
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Tautological</strong></td>
+              <td>
+                The assertion recomputes the expected value the way the code does,
+                so it passes by construction
+              </td>
+              <td>
+                It can never disagree with the code
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Horizontal slicing</strong></td>
+              <td>
+                Writing all tests first, then all implementation
+              </td>
+              <td>
+                Bulk tests verify <em>imagined</em> behavior — the shape of
+                things, not user-facing behaviour
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The tautological one is worth dwelling on, because it is the one an agent
+        produces most naturally. The skill gives the fix in one clause:
+        <em>"Expected values must come from an independent source of truth — a
+        known-good literal, a worked example, the spec."</em>
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python"># Tautological: the assertion recomputes the value the way the code does.
+# It passes by construction and can never disagree with the implementation.
+def test_prorated_refund_tautological():
+    assert prorated_refund(1200, 9, 30) == 1200 * 9 // 30
+
+# Independent: the expected value comes from a worked example in the spec,
+# so the test can disagree with the code -- which is the only reason to have it.
+def test_prorated_refund():
+    # Spec, section 4.2: "a 1200-unit annual plan cancelled with 9 of 30
+    # days remaining in the final month refunds 360 units."
+    assert prorated_refund(1200, 9, 30) == 360</code></pre>
+      </div>
+
+      <p>
+        And on mocking, the rule is three words long
+        (<code>tdd/mocking.md:10-14</code>): <em>"Don't mock: Your own
+        classes/modules · Internal collaborators · Anything you control."</em>
+      </p>
+
+      <h2>The gap: it never asks whether to test at all</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            That last row is a real hole, not a stylistic preference. The skill
+            decides <em>where</em> the seams go; nothing in it decides
+            <em>whether</em> a change is worth the loop at all. Run it on a change
+            with no independent source of truth to assert against and you get a
+            test that restates the implementation — the tautological anti-pattern
+            the skill itself warns about, arrived at from the other direction. It
+            is issue #746 and it is open.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/tdd.md:21</code>.</figcaption>
+      </figure>
+
+      <p>
+        The row in question was: <em>"Config, wiring, glue, type annotations,
+        straight CRUD delegation"</em>. For that kind of change the honest answer
+        is no test, and the skill will not reach it — <em>"that judgement is yours
+        or your <code>CLAUDE.md</code>'s"</em>.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          <code>/implement</code> asks "which seams should we test?" — what
+          happens if you shrug?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">It picks sensible defaults and carries on building anyway</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Nothing is written, because the gate holds until confirmed</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It falls back to testing every public exported function
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It defers the question until the review stage runs
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The rule is absolute: "No test is written at an unconfirmed seam." It is
+          the only hard stop in the flow, and it exists so testing effort lands on
+          critical paths rather than every edge case — a choice the skill
+          explicitly will not make for you.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Where does refactoring happen, if not in the loop?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">At the very end of every red-green implementation cycle</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              In the review stage, run as a separate session
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">During the seam agreement, before any test is written</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Nowhere at all, because the set has dropped it</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The rule names its destination: "It belongs to the review stage (see the
+          <code>code-review</code> skill)". The removal was deliberate — agents
+          essentially never did it in the loop, and separating implementation from
+          review was judged to work better. The description still says
+          "red-green-refactor" only because that phrase fires the skill.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        Refactoring was handed to the review stage, and the branch check and
+        commit ordering from <a href="0008-the-small-feature-loop.html">lesson
+        8</a> both land there too. What that review actually does:
+        <a href="0010-code-review-two-axes.html">lesson 10</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/tdd/mocking.md</code> — the shortest of the
+            three <code>tdd</code> files and the most opinionated. It is where the
+            implementation-coupled anti-pattern stops being an abstraction and
+            becomes a list of things not to do.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth trying on real code: hand it a test
+          you already have and ask which of the three anti-patterns it exhibits,
+          and why. The tautological one is the most instructive to find in your
+          own work, because it always looked fine when it was written.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, name the three anti-patterns and give the
+            <em>tell</em> for each — the observable symptom, not the definition.
+            The tells are what you will actually use; the definitions are in the
+            <a href="../reference/glossary.html">glossary</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0008-the-small-feature-loop.html">8. The small feature loop</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0010-code-review-two-axes.html">10. Code review's two axes</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

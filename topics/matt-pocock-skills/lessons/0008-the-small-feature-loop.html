@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>8. The small feature loop — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0008</span>
+        <h1>The small feature loop</h1>
+        <p class="lesson-mission">
+          Three skills, one context window, and two steps you have to insert
+          yourself because nothing in the set does them for you.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> you have decided what to build, and the work
+        fits one context window. That is the whole entry condition — the
+        <a href="0007-choosing-the-flow.html">floor from lesson 7</a> — and if it
+        is met, the spec is skipped entirely.
+      </p>
+
+      <h2>The chain</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-text">/setup-matt-pocock-skills           (once per repo, ever)
+  -> /grill-with-docs               sharpen it; CONTEXT.md grows
+  -> [ stay in the window ]         phase-boundary question 1: continue
+  -> [ check your branch ]          YOU. nothing does this
+  -> /implement                     drives /tdd, then commits
+  -> [ commit exists now ]          YOU, if implement did not
+  -> /code-review &lt;branch-point&gt;    two axes, reported separately</code></pre>
+      </div>
+
+      <p>
+        The two bracketed lines with <strong>YOU</strong> on them are the subject
+        of half this lesson. They are not optional and no skill performs them.
+      </p>
+
+      <h2>Step 1 — <code>/grill-with-docs</code></h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong><code>/grill-with-docs</code></strong> — sharpen the idea by
+            interview. Start here whenever you are <strong>working in a working
+            directory</strong>: it's stateful, retaining what it learns in
+            <code>CONTEXT.md</code> and ADRs.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:17</code>.</figcaption>
+      </figure>
+
+      <p>
+        This is <a href="0004-grilling.html">lesson 4</a> and
+        <a href="0005-domain-modeling.html">lesson 5</a> in practice. Expect terms
+        appended to <code>CONTEXT.md</code> as they resolve, and expect
+        <strong>zero ADRs</strong> — a small feature rarely clears all three
+        gates, and that is the correct outcome rather than a skipped step.
+      </p>
+
+      <h2>Step 2 — do not clear</h2>
+
+      <p>
+        The phase-boundary tree lands on <em>Continue</em> here, and the router
+        states it as a rule rather than a preference:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Grilling → implementation is the standard yes: the implementation
+            wants the reasoning verbatim, not a summary of it.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/ask-matt/PHASE-BOUNDARIES.md:21</code>.
+        </figcaption>
+      </figure>
+
+      <h2>Step 3 — check your branch <span class="small-print">[synthesis]</span></h2>
+
+      <p>
+        <code>implement</code>'s final line is <em>"Commit your work to the
+        current branch"</em>, and the skill contains no step that creates one. The
+        docs page states the consequence flatly:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>implement</code> commits to the branch you are on. It does not
+            create one, and it does not ask. Check you are on the branch you want
+            the work on before you start.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/implement.md:27</code>.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The default case is the bad one</span>
+        <p>
+          If you have not branched, you are on <code>main</code>, and
+          <code>/implement</code> will commit a feature onto it without comment.
+        </p>
+        <p>
+          This is manual patch two of
+          <a href="../reference/manual-patches.html">four</a>, and it is the one
+          with the shortest fix and the worst consequence.
+        </p>
+      </div>
+
+      <h2>Step 4 — <code>/implement</code>, which is nine lines long</h2>
+
+      <p>
+        It is worth seeing the whole skill, because its brevity explains most of
+        its behaviour:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Markdown</span>
+          <span>skills/engineering/implement/SKILL.md:7-15, complete body</span>
+        </div>
+        <pre><code class="language-markdown">Implement the work described by the user in the spec or tickets.
+
+Use /tdd where possible, at pre-agreed seams.
+
+Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+
+Once done, use /code-review to review the work.
+
+Commit your work to the current branch.</code></pre>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Say where the plan is</span>
+        <p>
+          The first line says <em>"the spec or tickets"</em>, and in this flow
+          there is neither — the plan is in the conversation. The docs page names
+          the failure: <em>"which nudges the model to go hunting for a file that
+          doesn't exist. If the plan lives only in the thread, say so when you
+          invoke it."</em>
+        </p>
+      </div>
+
+      <h2>Step 5 — the seam gate fires inside step 4</h2>
+
+      <p>
+        <code>/implement</code> drives <code>/tdd</code>, and
+        <code>/tdd</code> will stop and ask you something before it writes
+        anything. That gate is
+        <a href="0009-tdd-and-the-seam-gate.html">lesson 9</a>, and it is the one
+        place in this flow the agent hands control back mid-build.
+      </p>
+
+      <h2>Step 6 — commit first, <em>then</em> review <span class="small-print">[synthesis]</span></h2>
+
+      <p>
+        Here is a genuine collision between two skills in the set, reported by
+        multiple users and unfixed on both sides:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>code-review</code> reviews
+            <code>git diff &lt;fixed-point&gt;...HEAD</code>, which excludes staged
+            and working-tree changes. <code>implement</code> runs it before
+            committing, so unless an interim commit already exists there is
+            nothing in that diff to review. Multiple people have reported this and
+            it is unfixed on both sides. Commit first, then review against the
+            point you branched from.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/implement.md:65</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >The review step inside <code>/implement</code> reviews an empty
+            diff.</strong
+          >
+        </p>
+        <p>
+          It runs. It reports. It finds nothing, because there is nothing in
+          <code>&lt;fixed-point&gt;...HEAD</code> yet. A clean review here is not
+          evidence of anything.
+        </p>
+      </div>
+
+      <p>There is a second, independent reason to run the review yourself:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            an agent reviewing the code it just wrote is biased toward its own
+            solution. Running <code>code-review</code> in a fresh session against
+            a fixed point is a legitimate alternative, and is the same reason that
+            skill runs its two axes in separate sub-agents.
+          </p>
+        </blockquote>
+        <figcaption><code>docs/engineering/implement.md:67</code>.</figcaption>
+      </figure>
+
+      <p>
+        So the working order is: let <code>/implement</code> build and commit,
+        then invoke <code>/code-review</code> yourself against the point you
+        branched from. <a href="0010-code-review-two-axes.html">Lesson 10</a> is
+        what it does when you do.
+      </p>
+
+      <h2>What this flow will not do</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Three limits, each from <code>docs/engineering/implement.md</code>.
+          </caption>
+          <thead>
+            <tr><th>It does not</th><th>So</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Create a branch</td>
+              <td>Check before you start</td>
+            </tr>
+            <tr>
+              <td>Open a PR — <em>"no configuration flag and no PR mode"</em></td>
+              <td>Push and open it yourself</td>
+            </tr>
+            <tr>
+              <td>Run more than one ticket per invocation</td>
+              <td>
+                Matters in <a href="0015-working-the-frontier.html">lesson 15</a>,
+                not here
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          <code>/implement</code> finishes and reports that its review found no
+          issues. What do you conclude?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The code passed both review axes with no findings
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Probably nothing — the reviewed diff was likely empty
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The standards axis passed but the spec axis abstained
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The review ran against the working tree and succeeded
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>implement</code> runs the review <em>before</em> committing, and
+          <code>code-review</code> compares
+          <code>&lt;fixed-point&gt;...HEAD</code>, which excludes staged and
+          working-tree changes. Unless an interim commit already existed, it
+          reviewed nothing and correctly found nothing. Commit, then review
+          against your branch point.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does this flow skip <code>/to-spec</code> entirely?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Because small features never need a written record</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because the conversation itself survives to the build
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because implement cannot read a published spec issue
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because publishing a spec requires the tracker configured
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The docs page puts it exactly this way: <em>"The spec exists because
+          context windows end."</em> When the build happens in the same window as
+          the grilling, nothing is being lost, so there is nothing for a spec to
+          preserve. The spec is a decision record for a conversation that is about
+          to be cleared — and here it is not.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        One step inside <code>/implement</code> stops and waits for you, and it is
+        the only gate in the flow: <a href="0009-tdd-and-the-seam-gate.html">lesson
+        9</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>docs/engineering/implement.md</code> — the question-and-answer
+            page for the thinnest skill in the set. It is the clearest example in
+            the whole tree of the gap between what a skill's nine lines say and
+            what people actually run into, and reading the two together is the
+            best training available for reading any of the others.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking before your first real run:
+          "what branch am I on, and does this repo expect a PR?" It is the step
+          the flow omits, and asking for it out loud is the cheapest way to build
+          the habit until it is automatic.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, say the chain out loud and name the two steps that
+            are yours. If you can only remember one, remember the branch check —
+            the review-ordering problem produces a misleading result, but the
+            branch problem produces commits on <code>main</code>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0007-choosing-the-flow.html">7. Choosing the flow</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0009-tdd-and-the-seam-gate.html">9. TDD and the seam gate</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

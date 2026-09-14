@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flow chains — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Flow chains</h1>
+        <p class="page-blurb">
+          The five flows end to end, with the steps you have to insert yourself
+          marked <code>[ YOU ]</code>.
+        </p>
+      </header>
+
+      <p class="lead">
+        Every <code>[ YOU ]</code> line is a step no skill in the set performs.
+        They are not optional and nothing will remind you — the omissions are
+        collected separately in the
+        <a href="manual-patches.html">manual patches</a>.
+      </p>
+
+      <h2>Once per repository, before anything</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">/setup-matt-pocock-skills          tracker, labels mapping, doc layout
+[ YOU ] gh label create ...        only needed before a wayfinder run</code></pre>
+      </div>
+
+      <h2>1 — Small feature</h2>
+
+      <p class="small-print">
+        <strong>Trigger:</strong> decided, and the work fits one context window.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">/grill-with-docs                   CONTEXT.md grows; usually zero ADRs
+  |
+  |  stay in the window            phase boundary -> Continue
+  v
+[ YOU ] check your branch          implement does not create one
+  |
+  v
+/implement                         drives /tdd at the confirmed seam
+  |                                &lt;- the seam gate is the only hard stop
+  |                                then commits to the current branch
+  v
+[ YOU ] ensure a commit exists     review reads committed work only
+  |
+  v
+/code-review &lt;branch-point&gt;        two axes, reported separately</code></pre>
+      </div>
+
+      <h2>2 — Bug fix</h2>
+
+      <p class="small-print">
+        <strong>Trigger:</strong> something broken, and it resisted a first glance.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">(did someone else file it?)
+  -> /triage                       verify -> agent brief -> ready-for-agent
+  |
+  v
+/diagnosing-bugs
+    Phase 1  tight, red-capable loop      &lt;- HARD GATE: no theory before this
+             red-capable / deterministic / fast / agent-runnable
+    Phase 2  reproduce, then minimise     every element load-bearing
+    Phase 3  3-5 ranked falsifiable       &lt;- the ONLY checkpoint; will not block
+    Phase 4  instrument, one variable     tag everything [DEBUG-xxxx]
+    Phase 5  regression test first        ...if a correct seam exists
+    Phase 6  cleanup; record the winner
+  |
+  v
+[ YOU ] act on the "no seam" finding, if there was one
+[ YOU ] commit
+  |
+  v
+/code-review &lt;fixed-point&gt;         Spec axis may report "no spec available"</code></pre>
+      </div>
+
+      <h2>3 — Big feature</h2>
+
+      <p class="small-print">
+        <strong>Trigger:</strong> decided, and the work spans several sessions.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">/grill-with-docs   ──┐
+/to-spec             │  ONE unbroken context window -- do not compact or clear
+/to-tickets        ──┘  (seams agreed in to-spec step 2, for the whole feature)
+                        (quiz: granularity / edges / merge or split?)
+  |
+  v
+per ticket, blockers first:
+    /clear                         each ticket is self-contained
+    /implement #N                  one invocation, one ticket. no parallelism
+    (commit)
+    /code-review                   per-ticket: one clear spec per diff
+    [ YOU ] close #N               &lt;- or the frontier never advances
+    [ YOU ] tick the criteria
+  |
+  v
+/code-review &lt;branch-point&gt;        one final pass, for cross-ticket interactions</code></pre>
+      </div>
+
+      <h2>4 — Brainstorm</h2>
+
+      <p class="small-print">
+        <strong>Trigger:</strong> an idea that is not yet a decision.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">(a repo?) -> /grill-with-docs   |   (no repo?) -> /grill-me
+  |
+  |  stalled on a question? diagnose what is MISSING:
+  |     a judgement you cannot make on paper -> /handoff -> /prototype -> /handoff
+  |     a fact about the outside world       -> /research   (background agent)
+  |     a decision that is not yours         -> /to-questionnaire  (same session)
+  v
+frontier empty
+  |
+  v
+[ YOU ] confirm shared understanding        &lt;- THE GATE. nothing proceeds first
+  |
+  v
+phase boundary, in order:
+    1 continue?  2 clear?  3 handoff?  4 subagent?  5 compact
+  |
+  v
+/to-spec (multi-session)   |   /implement (single window)   |   nothing (not software)</code></pre>
+      </div>
+
+      <h2>5 — Greenfield</h2>
+
+      <p class="small-print">
+        <strong>Trigger:</strong> too big for one session <em>and</em> the way is
+        not visible yet.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">[ YOU ] create the wayfinder:* labels      gh issue create fails without them
+  |
+  v
+/wayfinder                         CHART -- one session
+    1 name the destination         grilling + domain-modeling
+    2 breadth-first grill          NO FOG? stop. you did not need this flow
+    3 create the map               wayfinder:map
+    4 create tickets, THEN wire    two passes: ids must exist first
+    5 fire /research subagents     research tickets resolve in parallel
+    6 stop                         charting resolves nothing
+  |
+  v
+/wayfinder &lt;map&gt;                   WORK -- one ticket per session
+    load low-res -> claim (assign) -> resolve -> comment, CLOSE, point
+    -> graduate fog / rule out of scope
+  |
+  v
+map clear -> /to-spec #&lt;map_issue&gt;         &lt;- hands off. does NOT build
+  |
+  v
+then flow 3 from /to-tickets onward
+  (/wizard any time a step needs a human's hands)</code></pre>
+      </div>
+
+      <h2>The one context-hygiene rule</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Keep steps 1–3 in <strong>one unbroken context window</strong> — don't
+            compact or clear until after <code>/to-tickets</code> — so the
+            grilling, spec, and tickets all build on the same thinking. Each
+            <code>/implement</code> then starts fresh, working from the ticket.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:30</code>.</figcaption>
+      </figure>
+
+      <p class="small-print">
+        Skill names and step contents are quoted from the installed
+        <code>SKILL.md</code> files at plugin 1.2.3, git <code>8b78b53</code>. The
+        <em>ordering</em> is drawn from <code>ask-matt/SKILL.md</code>, and the
+        <code>[ YOU ]</code> lines are this workspace's synthesis from the gaps
+        each skill's docs page documents — see
+        <a href="../lessons/0019-when-the-set-has-misfired.html">lesson 19</a>.
+        No flow on this page has been executed.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

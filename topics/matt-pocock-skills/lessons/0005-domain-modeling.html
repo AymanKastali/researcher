@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>5. Domain modelling — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0005</span>
+        <h1>Domain modelling</h1>
+        <p class="lesson-mission">
+          The skill that runs alongside grilling and writes things down. It has
+          one prohibition about what its file may contain, and a three-part test
+          that stops it writing anything most of the time.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is the difference between <code>/grill-me</code> and
+        <code>/grill-with-docs</code>: the same interview, with a second skill
+        running inline capturing what gets settled. It produces two artifacts, and
+        the rules for each are short and strict.
+      </p>
+
+      <h2>It runs inline, and it never batches</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When a term is resolved, update <code>CONTEXT.md</code> right there.
+            Don't batch these up — capture them as they happen.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/domain-modeling/SKILL.md:62</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        Which means a correctly-running <code>/grill-with-docs</code> session has
+        an edited <code>CONTEXT.md</code> in the working tree partway through, not
+        at the end. A session that produces one big glossary write as it closes
+        has been doing something else.
+      </p>
+
+      <h2>The five moves it makes during a session</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>domain-modeling/SKILL.md:44-72</code>, as section headings.
+          </caption>
+          <thead>
+            <tr><th>Move</th><th>Looks like</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Challenge against the glossary</td>
+              <td>
+                "Your glossary defines 'cancellation' as X, but you seem to mean
+                Y — which is it?"
+              </td>
+            </tr>
+            <tr>
+              <td>Sharpen fuzzy language</td>
+              <td>
+                "You're saying 'account' — do you mean the Customer or the User?
+                Those are different things."
+              </td>
+            </tr>
+            <tr>
+              <td>Discuss concrete scenarios</td>
+              <td>
+                Inventing edge cases that force precision about where one concept
+                stops
+              </td>
+            </tr>
+            <tr>
+              <td>Cross-reference with code</td>
+              <td>
+                "Your code cancels entire Orders, but you just said partial
+                cancellation is possible — which is right?"
+              </td>
+            </tr>
+            <tr>
+              <td>Update <code>CONTEXT.md</code> inline</td>
+              <td>Writing the resolved term the moment it resolves</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The fourth is the one that earns its place. An agent that checks a stated
+        belief against the code and surfaces the contradiction is doing something
+        a conversation alone cannot.
+      </p>
+
+      <h2>The prohibition</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>CONTEXT.md</code> should be totally devoid of implementation
+            details. Do not treat <code>CONTEXT.md</code> as a spec, a scratch
+            pad, or a repository for implementation decisions. It is a glossary
+            and nothing else.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/domain-modeling/SKILL.md:64</code>.
+        </figcaption>
+      </figure>
+
+      <p>And a second filter, on which words qualify at all:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Only include terms specific to this project's context.</strong>
+            General programming concepts (timeouts, error types, utility patterns)
+            don't belong even if the project uses them extensively. Before adding
+            a term, ask: is this a concept unique to this context, or a general
+            programming concept? Only the former belongs.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/domain-modeling/CONTEXT-FORMAT.md</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >A glossary and nothing else — and only the words this project
+            invented.</strong
+          >
+        </p>
+        <p>
+          Two tests, and most candidate entries fail one of them. "Retry policy"
+          fails the second. "How we handle retries" fails both.
+        </p>
+      </div>
+
+      <p>The entry format is three lines, and the third line is the opinionated one:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Markdown</span>
+          <span>CONTEXT-FORMAT.md, the shipped example</span>
+        </div>
+        <pre><code class="language-markdown">**Customer**:
+A person or organization that places orders.
+_Avoid_: Client, buyer, account</code></pre>
+      </div>
+
+      <p>
+        <em>"Be opinionated. When multiple words exist for the same concept, pick
+        the best one and list the others under <code>_Avoid_</code>."</em> The
+        avoid-list is what makes it a decision rather than a definition — it says
+        which words this project has agreed to stop using.
+      </p>
+
+      <h2>The three gates for an ADR</h2>
+
+      <p>
+        The second artifact is a decision record, and it is offered
+        <em>sparingly</em>. All three conditions, or none:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>Only offer to create an ADR when all three are true:</p>
+          <ol>
+            <li>
+              <strong>Hard to reverse</strong> — the cost of changing your mind
+              later is meaningful
+            </li>
+            <li>
+              <strong>Surprising without context</strong> — a future reader will
+              wonder "why did they do it this way?"
+            </li>
+            <li>
+              <strong>The result of a real trade-off</strong> — there were genuine
+              alternatives and you picked one for specific reasons
+            </li>
+          </ol>
+          <p>If any of the three is missing, skip the ADR.</p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/domain-modeling/SKILL.md:68-72</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Why three gates and not one</span>
+        <p>
+          Each one alone admits far too much. Hard to reverse: every schema change
+          qualifies. Surprising: every clever line of code qualifies. A real
+          trade-off: every library choice qualifies. It is the
+          <em>conjunction</em> that makes the bar high enough that most sessions
+          produce no ADR at all — which is the intended outcome.
+        </p>
+      </div>
+
+      <p>And the artifact is deliberately tiny:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            An ADR can be a single paragraph. The value is in recording
+            <em>that</em> a decision was made and <em>why</em> — not in filling
+            out sections.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/domain-modeling/ADR-FORMAT.md</code>.
+        </figcaption>
+      </figure>
+
+      <h2>A worked example: the ADR in this repository</h2>
+
+      <p>
+        <code>docs/adr/0001-shared-stylesheet-across-independent-topics.md</code>
+        is worth testing against the three gates, because it passes all of them
+        visibly — and the second one in a way that is easy to miss.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>One real ADR against the three gates.</caption>
+          <thead>
+            <tr><th>Gate</th><th>Why it passes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Hard to reverse</td>
+              <td>
+                Every page hard-codes its depth to the root, so the decision is
+                written into every page ever produced
+              </td>
+            </tr>
+            <tr>
+              <td>Surprising without context</td>
+              <td>
+                It <strong>contradicts</strong> what <code>/teach</code> specifies
+                — assets at the repo root rather than inside each workspace
+              </td>
+            </tr>
+            <tr>
+              <td>A real trade-off</td>
+              <td>
+                It carries a <em>Considered options</em> section with two rejected
+                alternatives
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The middle row is the instructive one. "Surprising" does not mean clever —
+        it means a future reader will find it strange <em>and be right to</em>.
+        Deliberately departing from a documented convention is the clearest case
+        there is.
+      </p>
+
+      <h2>Reaching it on its own</h2>
+
+      <p>
+        <code>domain-modeling</code> is model-invoked, so unlike most of what this
+        topic covers you can simply describe the situation and it may fire. Its
+        trigger string:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">YAML</span>
+          <span>domain-modeling/SKILL.md, frontmatter</span>
+        </div>
+        <pre><code class="language-yaml">description: Build and sharpen a project's domain model. Use when
+  discussing codebase terminology, writing or editing a CONTEXT.md, or
+  recording or editing an ADR.</code></pre>
+      </div>
+
+      <p>
+        The router describes it as one of two <em>vocabulary layers</em> that run
+        beneath the other skills — <em>"Reach for them directly when the
+        <strong>words</strong>, not the process, are the problem"</em>
+        (<code>ask-matt/SKILL.md:56</code>). Arguing about what to call something
+        is exactly that situation.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which of these belongs in <code>CONTEXT.md</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The retry policy this service applies to webhooks
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Dunning, meaning the retry ladder this business runs</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">The decision to represent money in minor units</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">The timeout applied to every outbound provider call</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Only the second is a word this business invented and would have to
+          define for a newcomer. The first and fourth are general programming
+          concepts, excluded even if used constantly. The third is an
+          implementation decision — plausibly an ADR, never a glossary entry,
+          because the file is "a glossary and nothing else".
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You picked Postgres over MySQL because the team knows it. Does this earn
+          an ADR?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">Yes, because a database choice is hard to reverse</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>No, nobody in future will find that choice surprising</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">Yes, real alternatives existed and you picked just one</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">No, because infrastructure decisions are out of scope here</button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Gates one and three pass, and that is exactly the trap. Gate two fails:
+          no future reader wonders why a team chose the database it already knew.
+          All three or none — and the discipline is in being willing to lose a
+          decision that passed two of them.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        You now have the interview and the record it leaves. The last primitive is
+        not a skill at all — it is the decision about what to do with a context
+        window when a phase ends, and it is the one the set calls the fuzziest in
+        the whole map: <a href="0006-phase-boundaries.html">lesson 6</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/domain-modeling/CONTEXT-FORMAT.md</code>, then
+            this repository's own <code>CONTEXT.md</code> beside it. Reading a
+            format specification and a real file written to it, together, is worth
+            more than either alone — and this one is short enough to read whole in
+            a few minutes.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth trying: pick three words your current
+          project uses loosely and ask it to challenge each against the
+          <code>CONTEXT-FORMAT.md</code> rules — is this specific to this context,
+          and what should the <code>_Avoid_</code> list say? The ones that turn out
+          not to qualify teach the filter faster than the ones that do.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before moving on, recite the three ADR gates from memory, then find a
+            decision from your own recent work that passes two and fails one. That
+            is the useful exercise — anyone can recognise a decision that passes
+            all three.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0004-grilling.html">4. Grilling</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0006-phase-boundaries.html">6. Phase boundaries</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

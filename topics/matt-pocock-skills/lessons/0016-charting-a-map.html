@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>16. Charting a map — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0016</span>
+        <h1>Charting a map</h1>
+        <p class="lesson-mission">
+          The heaviest flow in the set, for work too foggy to write a spec about.
+          It produces decisions rather than deliverables — and it has an early
+          exit that tells you it was the wrong choice.
+        </p>
+      </header>
+
+      <p class="lead">
+        <strong>Trigger:</strong> a greenfield project or a huge build, too big
+        for one session, where <em>the way from here to the destination isn't
+        visible yet</em>. That last clause is the real condition — not size, but
+        fog.
+      </p>
+
+      <h2>What it is for, and the warning attached</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong><code>/wayfinder</code></strong>, the most cognitively
+            demanding flow here. When the way from here to the destination isn't
+            visible yet, it charts a <strong>shared map</strong> of
+            <strong>decision tickets</strong> on the issue tracker and resolves
+            them one at a time — producing <strong>decisions, not
+            deliverables</strong> — until the fog is pushed back and the way is
+            clear. Where <strong><code>/grill-with-docs</code></strong> sharpens
+            an idea you can hold in one session, wayfinder is for the idea you
+            can't — and it's slower and denser, so save it for exactly that,
+            <strong>never a well-scoped feature</strong>.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/ask-matt/SKILL.md:44</code>.</figcaption>
+      </figure>
+
+      <h2>Step 0 — create the labels by hand <span class="small-print">[synthesis]</span></h2>
+
+      <p>
+        This is the step that stops a first run dead, and it is the one place this
+        topic tells you to run a command before anything else.
+        <a href="0003-what-setup-writes.html">Setup writes a label
+        <em>mapping</em></a>, never labels — and
+        <code>gh issue create --label &lt;missing&gt;</code> fails outright rather
+        than creating one.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Bash</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-bash"># Label names taken from issue-tracker-github.md's "Wayfinding operations":
+# the map carries wayfinder:map, each ticket carries wayfinder:&lt;type&gt;.
+for l in map research prototype grilling task; do
+  gh label create "wayfinder:$l" --force
+done</code></pre>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Why this is not optional</span>
+        <p>
+          The docs page says it plainly: <em>"Create them by hand before the first
+          wayfinder run on a GitHub repo."</em> The failure is not a warning and
+          not a fallback — the issue simply is not created.
+        </p>
+      </div>
+
+      <h2>The map is an index</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The map is an <strong>index</strong>, not a store. It lists the
+            decisions made and points at the tickets that hold their detail; a
+            decision lives in exactly one place — its ticket — so the map never
+            restates it, only gists it and links.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/wayfinder/SKILL.md:23</code>.</figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The map's fixed sections.</caption>
+          <thead>
+            <tr><th>Section</th><th>Holds</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>## Destination</code></td><td>What this map is finding its way to</td></tr>
+            <tr><td><code>## Notes</code></td><td>Standing instructions, including skills each ticket should use</td></tr>
+            <tr><td><code>## Decisions so far</code></td><td>A gist and a link per resolved ticket — never the decision itself</td></tr>
+            <tr><td><code>## Not yet specified</code></td><td>The fog: questions you can see coming but cannot yet phrase</td></tr>
+            <tr><td><code>## Out of scope</code></td><td>Consciously ruled out of <em>this</em> effort</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Open tickets are deliberately <strong>not</strong> listed — they are open
+        child issues, found by query. And there is a presentation rule that reads
+        like a detail and is not: <em>"A wall of <code>#42, #43, #44</code> is
+        illegible; names read at a glance."</em> Everything a human reads refers
+        to tickets by title.
+      </p>
+
+      <h2>Fog, and the test that graduates it</h2>
+
+      <div class="definition">
+        <span class="term">Fog of war</span>
+        <p>
+          The dim view of decisions and investigations you can tell are coming but
+          can't yet pin down, because they hang on questions still open.
+        </p>
+        <span class="attribution"><code>skills/engineering/wayfinder/SKILL.md:85</code>.</span>
+      </div>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Fog or ticket?</strong> The test is whether you can state the
+            question precisely now — <em>not</em> whether you can answer it now.
+          </p>
+          <ul>
+            <li>
+              <strong>Ticket when</strong> the question is already sharp — even if
+              it's blocked and you can't act on it yet.
+            </li>
+            <li>
+              <strong>Not yet specified when</strong> you can't yet phrase it that
+              sharply. Don't pre-slice the fog into ticket-sized pieces
+            </li>
+          </ul>
+        </blockquote>
+        <figcaption><code>skills/engineering/wayfinder/SKILL.md:88-91</code>.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>State, not answer.</strong>
+        </p>
+        <p>
+          A question you can phrase precisely but cannot begin to answer is a
+          ticket. A vague sense that "auth is going to be a problem" is fog. The
+          instinct to tidy the fog into neat tickets is the thing the skill
+          forbids.
+        </p>
+      </div>
+
+      <p>
+        Fog is distinct from <strong>out of scope</strong>, and the distinction is
+        scope rather than sharpness: <em>"Fog only ever gathers <em>toward</em> the
+        destination."</em> Out-of-scope work never graduates — it returns only if
+        the destination is redrawn, and then as a fresh effort.
+      </p>
+
+      <h2>The four ticket types</h2>
+
+      <p>
+        Every ticket is either <strong>HITL</strong> — worked with a human who
+        speaks for themselves — or <strong>AFK</strong>, driven by the agent
+        alone. And the skill restates the grilling contract here, in its
+        strongest form: <em>"the agent never stands in for the human's side of it
+        (a grilling agent that answers its own questions has broken this)."</em>
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption><code>skills/engineering/wayfinder/SKILL.md:77-80</code>.</caption>
+          <thead>
+            <tr><th>Type</th><th>Mode</th><th>Use when</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Research</strong></td>
+              <td>AFK</td>
+              <td>
+                Knowledge outside the working directory is required. Resolved by a
+                <code>/research</code> subagent
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Prototype</strong></td>
+              <td>HITL</td>
+              <td>"How should it look" or "how should it behave" is the question</td>
+            </tr>
+            <tr>
+              <td><strong>Grilling</strong></td>
+              <td>HITL</td>
+              <td>
+                Conversation. <strong>The default case</strong>. Always invokes
+                <code>/grilling</code> and <code>/domain-modeling</code>
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Task</strong></td>
+              <td>Either</td>
+              <td>
+                Manual work that must happen before a <em>decision</em> can be made
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Task is the type that goes wrong</span>
+        <p>
+          It is <em>"the one type that <em>does</em> rather than decides — and it
+          earns its place by unblocking a decision, not by delivering the
+          destination."</em> Signing up for a service so its API can be judged;
+          provisioning access; moving data so its shape can be seen.
+        </p>
+        <p>
+          The docs page: <em>"This is the type that goes wrong most often in
+          practice: agents interpret it as an implementation step and start
+          writing product code inside the map."</em>
+        </p>
+      </div>
+
+      <h2>Charting: six steps, and one of them is "stop"</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <ol>
+            <li>
+              <strong>Name the destination.</strong> Run a <code>/grilling</code>
+              and <code>/domain-modeling</code> session to pin down what this map
+              is finding its way to […] The destination fixes the scope, so it's
+              settled first.
+            </li>
+            <li>
+              <strong>Map the frontier.</strong> Grill again,
+              <strong>breadth-first</strong> this time: fan out across the whole
+              space rather than deep on any one thread […]
+              <strong>If this surfaces no fog</strong> — the way to the destination
+              is already clear, the whole journey small enough for one session —
+              you don't need a map. Stop and ask the user how they'd like to
+              proceed.
+            </li>
+            <li>
+              <strong>Create the map</strong> (label <code>wayfinder:map</code>)
+              […]
+            </li>
+            <li>
+              <strong>Create the tickets you can specify now</strong> as child
+              issues of the map — then wire blocking edges in a
+              <strong>second pass</strong> (issues need ids before they can
+              reference each other).
+            </li>
+            <li>
+              <strong>Fire the research subagents.</strong> For each
+              <code>research</code> ticket you just created, spin up a
+              <code>/research</code> subagent to resolve it in parallel […]
+            </li>
+            <li>
+              Stop — charting is one session's work; it hand-resolves nothing.
+            </li>
+          </ol>
+        </blockquote>
+        <figcaption>
+          <code>skills/engineering/wayfinder/SKILL.md:111-116</code>.
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Step 2's early exit is the honest one</span>
+        <p>
+          If the breadth-first grill surfaces <strong>no fog</strong>, you did not
+          need wayfinder. Drop back to
+          <a href="0013-to-spec.html">the spec-and-tickets flow</a> and you have
+          lost one grilling session rather than a week.
+        </p>
+        <p>
+          Getting this exit is a <em>correct outcome</em> of running the skill, not
+          a failure of it.
+        </p>
+      </div>
+
+      <p>
+        Two mechanical details worth holding: tickets are created
+        <strong>then</strong> wired, in two passes, because issues need ids before
+        they can reference each other — and charting <em>resolves nothing</em>.
+        Step 6 is a full stop.
+      </p>
+
+      <h2>Alongside all of it: <code>/wizard</code></h2>
+
+      <p>
+        Wayfinder's <code>task</code> tickets are full of things only a person can
+        do, and there is a model-invoked skill for exactly that — so it can fire
+        on its own when the agent hits a wall:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A <strong>wizard</strong> is a bash script that walks a human, step by
+            step, through a manual procedure that's tedious to do by hand and
+            tedious to re-explain to an AI every time. It opens each URL, says
+            exactly what to click and copy, captures the values, writes them where
+            they belong (<code>.env</code>, GitHub secrets), confirms at every
+            stage, and shows how many stages are left.
+          </p>
+        </blockquote>
+        <figcaption><code>skills/engineering/wizard/SKILL.md:8</code>.</figcaption>
+      </figure>
+
+      <p>
+        Its non-trigger is in its own description, and it is the useful half:
+        <em>"Don't invoke this for steps the agent can perform itself."</em>
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You know authentication will be difficult but cannot say what the
+          question is. Ticket or fog?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">A ticket, blocked until the surrounding decisions all land</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>Fog, written as loosely as the view allows here</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A research ticket, since the facts are not known
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Out of scope, until the destination is redrawn later
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The test is whether the question can be <em>stated</em> precisely now,
+          and it cannot. A sharp-but-blocked question would be a ticket; this is
+          not sharp. The skill also forbids pre-slicing fog into ticket shapes — a
+          patch may graduate into several tickets later, or none.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Step 2's breadth-first grill surfaces no fog at all. What does that
+          mean?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The grilling was too shallow and should be repeated
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>No map was needed, so stop and reroute instead</button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The destination was drawn too narrowly to be useful
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Chart the map anyway, with no fog section written
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The skill builds the exit in: "the way to the destination is already
+          clear, the whole journey small enough for one session — you don't need a
+          map. Stop and ask the user how they'd like to proceed." Reaching it means
+          the routing decision was wrong and you found out after one session
+          instead of ten.
+        </p>
+      </div>
+
+      <h2>What this sets up</h2>
+
+      <p>
+        The map exists and nothing has been resolved. Working it is a different
+        mode of the same skill, with a strict session rule and a hand-off at the
+        end you must not skip: <a href="0017-working-a-map.html">lesson 17</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>skills/engineering/setup-matt-pocock-skills/issue-tracker-github.md</code>,
+            the <strong>Wayfinding operations</strong> section. It is the concrete
+            half of this lesson — the actual <code>gh</code> commands for creating
+            a map, wiring a dependency, querying the frontier, and claiming a
+            ticket. Reading it turns the abstraction into something you could run
+            today.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Before a first real run, worth asking it to
+          check the concrete preconditions on your repo: do the
+          <code>wayfinder:*</code> labels exist, are sub-issues enabled, are issue
+          dependencies available? Each has a documented fallback, and knowing which
+          one you will be on beats discovering it mid-chart.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the densest lesson in the topic and it is worth a pause.
+            Before moving on, state the fog test in four words, name the four
+            ticket types with their HITL/AFK mode, and say what step 6 is. If only
+            one survives, make it the fog test.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0015-working-the-frontier.html">15. Working the frontier</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0017-working-a-map.html">17. Working a map</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

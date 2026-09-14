@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Routing table — The Matt Pocock Skills</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Routing table</h1>
+        <p class="page-blurb">
+          Situation to flow, in one page. Read top to bottom; the first row that
+          matches wins.
+        </p>
+      </header>
+
+      <p class="lead">
+        Almost the whole decision reduces to one measurement, and it is not size,
+        difficulty, or importance. <strong>Will this work outlive one context
+        window?</strong> Establish that first and most rows below answer
+        themselves.
+      </p>
+
+      <h2>The measurement</h2>
+
+      <div class="definition">
+        <span class="term">The floor</span>
+        <p>
+          If the whole change fits in one context window, the spec and the tickets
+          are both skipped. Go straight to <code>/implement</code>.
+        </p>
+        <span class="attribution">
+          <code>ask-matt/SKILL.md:22-24</code>; <code>docs/engineering/to-spec.md:16</code>;
+          <code>docs/engineering/to-tickets.md:59</code>.
+        </span>
+      </div>
+
+      <h2>The table</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>First match wins.</caption>
+          <thead>
+            <tr><th>Situation</th><th>Reach for</th><th>Note</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A typo, a config bump, a one-line fix</td>
+              <td><strong>No skill</strong></td>
+              <td>Below the floor. Synthesis — the set does not say this</td>
+            </tr>
+            <tr>
+              <td>Something broken, flaky, or slow — and it resisted a first glance</td>
+              <td><code>/diagnosing-bugs</code></td>
+              <td>Model-invoked; over-fires on easy questions</td>
+            </tr>
+            <tr>
+              <td>Reports and requests <em>you didn't write</em>, piling up</td>
+              <td><code>/triage</code></td>
+              <td>Never triage tickets <code>/to-tickets</code> produced</td>
+            </tr>
+            <tr>
+              <td>An idea, and there is no repo under it</td>
+              <td><code>/grill-me</code></td>
+              <td>Stateless — saves nothing</td>
+            </tr>
+            <tr>
+              <td>An idea, in a repo, one session's worth of thinking</td>
+              <td><code>/grill-with-docs</code></td>
+              <td><em>"strictly the better one"</em> when a repo exists</td>
+            </tr>
+            <tr>
+              <td>Decided, and it fits one window</td>
+              <td><code>/implement</code></td>
+              <td>Check your branch first</td>
+            </tr>
+            <tr>
+              <td>Decided, and it spans several sessions</td>
+              <td><code>/to-spec</code> → <code>/to-tickets</code></td>
+              <td>One unbroken window for both</td>
+            </tr>
+            <tr>
+              <td>Too foggy to state as a plan at all</td>
+              <td><code>/wayfinder</code></td>
+              <td><em>"never a well-scoped feature"</em></td>
+            </tr>
+            <tr>
+              <td>A wayfinder map has cleared</td>
+              <td><code>/to-spec #&lt;map_issue&gt;</code></td>
+              <td>Never straight to <code>/implement</code></td>
+            </tr>
+            <tr>
+              <td>A question needing something runnable to react to</td>
+              <td><code>/prototype</code></td>
+              <td>Pick the branch: logic, or UI</td>
+            </tr>
+            <tr>
+              <td>A question whose answer is an external fact</td>
+              <td><code>/research</code></td>
+              <td>Background agent; scope it yourself</td>
+            </tr>
+            <tr>
+              <td>A question whose answer is in someone else's head</td>
+              <td><code>/to-questionnaire</code></td>
+              <td>Run it in the conversation that stalled</td>
+            </tr>
+            <tr>
+              <td>A step only a human's hands can perform</td>
+              <td><code>/wizard</code></td>
+              <td>Not for steps the agent could do</td>
+            </tr>
+            <tr>
+              <td>Already mid-merge with conflicts open</td>
+              <td><code>/resolving-merge-conflicts</code></td>
+              <td>It never runs <code>--abort</code></td>
+            </tr>
+            <tr>
+              <td>You want a branch reviewed against a fixed point</td>
+              <td><code>/code-review</code></td>
+              <td>Committed work only</td>
+            </tr>
+            <tr>
+              <td>Upkeep, with a spare moment</td>
+              <td><code>/improve-codebase-architecture</code></td>
+              <td>Generates an idea to take into the main flow</td>
+            </tr>
+            <tr>
+              <td>The <em>words</em> are the problem, not the process</td>
+              <td><code>/domain-modeling</code></td>
+              <td>Model-invoked; a vocabulary layer</td>
+            </tr>
+            <tr>
+              <td>A module's <em>shape</em> is the problem</td>
+              <td><code>/codebase-design</code></td>
+              <td><em>"a reference to consult, not a session to run"</em></td>
+            </tr>
+            <tr>
+              <td>A message from the agent that did not land</td>
+              <td><code>/wait-what</code></td>
+              <td>Works inside any other skill, any time</td>
+            </tr>
+            <tr>
+              <td>You cannot remember any of this</td>
+              <td><code>/ask-matt</code></td>
+              <td>Hand-maintained; lags the skills</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The three over-reaches, quoted</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Named by the set itself.</caption>
+          <thead><tr><th>Mistake</th><th>The set's words</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Wayfinder on a well-scoped feature</td>
+              <td>
+                <em>"it's slower and denser, so save it for exactly that, never a
+                well-scoped feature"</em>
+              </td>
+            </tr>
+            <tr>
+              <td>A cleared map straight into the build</td>
+              <td>
+                <em>"skips that collapse and throws the linked detail away"</em>
+              </td>
+            </tr>
+            <tr>
+              <td>Triaging your own tickets</td>
+              <td>
+                <em>"already agent-ready, so <strong>don't triage them</strong>"</em>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The shape underneath</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-text">                 ON-RAMPS                          MAIN FLOW
+
+  /triage           ─────────────┐
+  /diagnosing-bugs  ─────────────┼──>  grill-with-docs
+  /wayfinder        ─────────────┘            │
+                                              v
+                                          to-spec  ──>  to-tickets
+                                              │              │
+                                              └──────┬───────┘
+                                                     v
+                                                 implement  ──>  code-review
+
+  UNDERNEATH:  domain-modeling  ·  codebase-design
+  ANY TIME:    wait-what  ·  handoff  ·  wizard</code></pre>
+      </div>
+
+      <h2>One thing this table cannot decide</h2>
+
+      <div class="aside insight">
+        <span class="label">The judgement that stays yours</span>
+        <p>
+          Every row lands on something. <strong>Nothing in the set decides whether
+          a change is worth the ceremony at all</strong> — the first row is this
+          workspace's addition, not the set's.
+        </p>
+        <p>
+          A router can know what shape a change is. It cannot know what it is
+          worth.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Assembled from <code>skills/engineering/ask-matt/SKILL.md</code> at plugin
+        1.2.3, git <code>8b78b53</code>, with the floor rows sourced from the
+        <code>to-spec</code> and <code>to-tickets</code> docs pages. Note that
+        <code>ask-matt</code> describes itself as a secondary source over the
+        skills it routes to — where it and a <code>SKILL.md</code> disagree, the
+        <code>SKILL.md</code> is right. Full argument in
+        <a href="../lessons/0007-choosing-the-flow.html">lesson 7</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>
