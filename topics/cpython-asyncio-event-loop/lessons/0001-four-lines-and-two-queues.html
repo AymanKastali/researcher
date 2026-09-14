@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>1. Four lines, two queues — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0001</span>
+        <h1>Four lines, two queues</h1>
+        <p class="lesson-mission">
+          The mission is to reason about asyncio from the machinery rather than
+          from the tutorial. This lesson establishes how small the machinery
+          actually is — the whole event loop is a <code>while</code> statement,
+          and the whole of its scheduling state is two attributes.
+        </p>
+      </header>
+
+      <p class="lead">
+        Before anything about coroutines, futures or <code>await</code>, it is
+        worth seeing the loop with nothing on top of it. It is much smaller than
+        its reputation, and almost every surprising thing asyncio does in
+        production is a consequence of the two data structures introduced below.
+      </p>
+
+      <h2>The loop, in full</h2>
+
+      <p>
+        Here is <code>run_forever</code>. Not a summary of it — the method.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def run_forever(self):
+        """Run until stop() is called."""
+        self._run_forever_setup()
+        try:
+            while True:
+                self._run_once()
+                if self._stopping:
+                    break
+        finally:
+            self._run_forever_cleanup()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:678-687</code> —
+        <code>BaseEventLoop.run_forever()</code>, CPython
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L678-L687"
+          >tag <code>v3.13.11</code></a
+        >. Every line citation in this topic is against that tag.
+      </p>
+
+      <p>
+        That is the whole event loop. Everything else in
+        <code>asyncio</code> — tasks, futures, transports, streams, task groups,
+        timeouts — is scaffolding around <code>_run_once()</code>, which
+        <a href="0002-six-steps-of-one-iteration.html">lesson 2</a> opens up.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">Read the <code>while</code> carefully</span>
+        <p>
+          The <code>_stopping</code> check happens <em>after</em>
+          <code>_run_once()</code> returns. So the iteration in progress always
+          finishes: the poll it already performed, the events it already
+          collected, and the entire batch of callbacks it already committed to.
+          There is no mechanism anywhere in <code>asyncio</code> for abandoning
+          an iteration part-way.
+        </p>
+      </div>
+
+      <h2><code>stop()</code> does not stop anything</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def stop(self):
+        """Stop running the event loop.
+
+        Every callback already scheduled will still run.  This simply informs
+        run_forever to stop looping after a complete iteration.
+        """
+        self._stopping = True</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:727-733</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L727-L733"
+          ><code>BaseEventLoop.stop()</code></a
+        >.
+      </p>
+
+      <p>
+        One assignment. It sets a flag and returns; it does not interrupt the
+        loop, does not wake it, and does not cancel anything. That last point
+        matters enormously later —
+        <a href="0013-threads-and-the-self-pipe.html">lesson 13</a> shows
+        CPython's own <code>SIGINT</code> handler working around it — but for now
+        the useful thing is the docstring's promise, which is repeated in the
+        reference documentation as a guarantee:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If <code>stop()</code> is called while <code>run_forever()</code> is
+            running, the loop will run the current batch of callbacks and then
+            exit. Note that new callbacks scheduled by callbacks will not run in
+            this case; instead, they will run the next time
+            <code>run_forever()</code> or <code>run_until_complete()</code> is
+            called.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.run_forever"
+            ><code>loop.run_forever</code>, Python 3.13 documentation</a
+          >, quoted from <code>Doc/library/asyncio-eventloop.rst:134-138</code> at
+          tag <code>v3.13.11</code>. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        “The current batch” is a precise thing with a name in the source, and
+        <a href="0003-the-ntodo-snapshot.html">lesson 3</a> is entirely about it.
+      </p>
+
+      <h2>Claiming the thread</h2>
+
+      <p>
+        <code>_run_forever_setup()</code> is where the loop takes ownership of
+        the thread it is about to run on:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        self._check_closed()
+        self._check_running()
+        self._set_coroutine_origin_tracking(self._debug)
+
+        self._old_agen_hooks = sys.get_asyncgen_hooks()
+        self._thread_id = threading.get_ident()
+        sys.set_asyncgen_hooks(
+            firstiter=self._asyncgen_firstiter_hook,
+            finalizer=self._asyncgen_finalizer_hook
+        )
+
+        events._set_running_loop(self)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:649-660</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L649-L660"
+          ><code>BaseEventLoop._run_forever_setup()</code></a
+        >.
+      </p>
+
+      <p>
+        <code>self._thread_id</code> is set here and cleared in
+        <code>_run_forever_cleanup()</code>. It is also, in its entirety, the
+        implementation of <code>is_running()</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def is_running(self):
+        """Returns True if the event loop is running."""
+        return (self._thread_id is not None)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:768-770</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L768-L770"
+          ><code>BaseEventLoop.is_running()</code></a
+        >.
+      </p>
+
+      <p>
+        “Is this loop running” and “which thread owns this loop” are the same
+        question, answered by the same attribute. Keep that in mind for
+        <a href="0013-threads-and-the-self-pipe.html">lesson 13</a>: the
+        debug-mode thread check has to return silently when
+        <code>_thread_id</code> is <code>None</code>, because at that point there
+        is no correct thread to compare against.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Why the setup is a separate method at all</span>
+        <p>
+          <code>_run_forever_setup</code> and <code>_run_forever_cleanup</code>
+          were split out of <code>run_forever</code> in 3.13 so that a subclass
+          integrating a GUI event loop can reuse the setup without reusing the
+          <code>while True</code>. The docstring at
+          <code>base_events.py:645-647</code> says so explicitly.
+          <strong>[impl detail]</strong> —
+          <a href="0014-what-changed-311-to-313.html">lesson 14</a> dates it.
+        </p>
+      </div>
+
+      <h2>The entire scheduling state</h2>
+
+      <p>
+        Now the part worth memorising. Everything the loop knows about what to do
+        next is two attributes, both initialised in the constructor:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        self._timer_cancelled_count = 0
+        self._closed = False
+        self._stopping = False
+        self._ready = collections.deque()
+        self._scheduled = []</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:420-424</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L420-L424"
+          ><code>BaseEventLoop.__init__()</code></a
+        >.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The loop's two queues, and nothing else.
+          </caption>
+          <thead>
+            <tr>
+              <th>Attribute</th>
+              <th>Structure</th>
+              <th>Holds</th>
+              <th>Discipline</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_ready</code></td>
+              <td><code>collections.deque</code></td>
+              <td><code>Handle</code> objects due <em>now</em></td>
+              <td>
+                FIFO. <code>call_soon</code> appends on the right, the drain pops
+                from the left.
+              </td>
+            </tr>
+            <tr>
+              <td><code>_scheduled</code></td>
+              <td>A plain list, used as a min-heap via <code>heapq</code></td>
+              <td><code>TimerHandle</code> objects with absolute deadlines</td>
+              <td>
+                Ordered by fire time. The head is always the next timer to come
+                due.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Every single thing the loop can be asked to do eventually turns into
+        <strong>put a <code>Handle</code> in <code>_ready</code></strong> or
+        <strong>push a <code>TimerHandle</code> onto <code>_scheduled</code></strong
+        >. There is no third queue.
+      </p>
+
+      <p>
+        I/O readiness looks like a third source, and it is — but it is converted
+        into the first. When a socket becomes readable, nothing runs; a
+        <code>Handle</code> is appended to <code>_ready</code> and the loop
+        carries on.
+        <a href="0005-readiness-becomes-callbacks.html">Lesson 5</a> is that
+        conversion, and it is twelve lines long.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The sentence to carry forward</span>
+        <p>
+          The event loop has no idea what a coroutine is. It schedules callbacks
+          and it waits on file descriptors. Everything you think of as “asyncio”
+          — tasks advancing, <code>await</code> resuming, timeouts firing — is
+          built out of those two operations by code that only ever touches the
+          loop's <em>public</em> interface. That constraint is written down in
+          PEP 3156, and
+          <a href="0007-the-blocking-flag.html">lesson 7</a> shows the strange
+          piece of design it forced.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does <code>BaseEventLoop.stop()</code> do in CPython 3.13.11?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It sets one flag and returns straight away
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It cancels one task and wakes the poll
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It clears both queues and closes the loop
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It raises an error inside the current drain
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>self._stopping = True</code> is the entire body. It does not
+          cancel, does not wake the selector, and does not close anything —
+          <code>run_forever</code> notices the flag only after the current
+          iteration has finished. The queues are cleared by
+          <code>close()</code>, which refuses to run while the loop is running.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          The loop's complete scheduling state is which two attributes?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>_tasks</code> and <code>_futures</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              <code>_ready</code> and <code>_scheduled</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>_ready</code> and <code>_selector</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>_handles</code> and <code>_timers</code>
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A FIFO <code>deque</code> of things due now and a <code>heapq</code>
+          min-heap of things due later. The selector is real, but it is the
+          multiplexer rather than scheduling state — its output is converted into
+          <code>_ready</code> entries before anything runs. There is no task
+          registry on the loop at all; the one that exists is module-level and
+          shared, which <a href="0013-threads-and-the-self-pipe.html">lesson 13</a>
+          returns to.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now know the loop is a <code>while</code> statement over
+        <code>_run_once()</code>, and that its state is a deque and a heap.
+        <a href="0002-six-steps-of-one-iteration.html">Lesson 2</a> opens
+        <code>_run_once()</code> and walks its six steps, one of which — exactly
+        one — can block.
+      </p>
+
+      <p>
+        The names introduced here — <code>_ready</code>, <code>_scheduled</code>,
+        <code>Handle</code> — are used with these exact meanings for the rest of
+        the topic. The
+        <a href="../reference/glossary.html#the-loop-s-own-state">glossary</a> holds
+        them, each with
+        the source line it comes from and the misreading it invites.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L620-L790"
+              ><code>Lib/asyncio/base_events.py</code>, lines 620–790 at tag
+              <code>v3.13.11</code></a
+            >
+            — the run/stop/close block in one sitting. It is under two hundred
+            lines and it is the whole lifecycle. Read it before lesson 2 and the
+            six steps will land as a refinement of something you have already
+            seen rather than as new material.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If “the loop has no idea what a coroutine
+          is” sounds wrong — it certainly runs your coroutines — say so. That
+          objection is exactly right in spirit and exactly wrong in mechanism,
+          and taking it apart now will make lesson 7 much easier.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The goal is retention in a year, not comprehension today, and
+            retention is built by recalling things once you have started to
+            forget them. Before opening lesson 2, try to write out
+            <code>run_forever</code> from memory. It is ten lines; getting seven
+            of them right is the point, not getting ten.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0002-six-steps-of-one-iteration.html"
+              >2. Six steps of one iteration</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

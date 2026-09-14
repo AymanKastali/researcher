@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3. The ntodo snapshot — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0003</span>
+        <h1>The <code>ntodo</code> snapshot</h1>
+        <p class="lesson-mission">
+          The hinge of the topic. Four lines of step 6 solve fairness and
+          thread-safety at the same time, and they explain a documented
+          behaviour, an undocumented one, and a class of bug you will otherwise
+          spend an afternoon on.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is a short lesson about a small piece of code, and it is the one to
+        over-learn. If you understand why the drain counts before it pops, you
+        can predict what asyncio will do in most of the situations where people
+        find it surprising.
+      </p>
+
+      <h2>The code, and the obvious alternative</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        # This is the only place where callbacks are actually *called*.
+        # All other places just add them to ready.
+        # Note: We run all currently scheduled callbacks, but not any
+        # callbacks scheduled by callbacks run this time around --
+        # they will be run the next time (after another I/O poll).
+        # Use an idiom that is thread-safe without using locks.
+        ntodo = len(self._ready)
+        for i in range(ntodo):
+            handle = self._ready.popleft()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:2027-2035</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L2027-L2035"
+          >inside <code>BaseEventLoop._run_once()</code></a
+        >.
+      </p>
+
+      <p>
+        The obvious alternative is shorter and would look better in review:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python"># Not what CPython does. This version is wrong, twice over.
+while self._ready:
+    handle = self._ready.popleft()
+    handle._run()</code></pre>
+      </div>
+
+      <p>
+        The source comment names both reasons it is wrong, in the order they were
+        presumably discovered. Take them one at a time.
+      </p>
+
+      <h2>Reason one: fairness</h2>
+
+      <p>
+        Callbacks run during the drain routinely schedule more callbacks. That is
+        not an edge case — it is the entire mechanism by which a
+        <code>Task</code> advances, as
+        <a href="0008-a-complete-round-trip.html">lesson 8</a> shows. A
+        <code>while</code> loop would run those too, in the same iteration, and
+        then their children, and so on.
+      </p>
+
+      <p>
+        Consider a coroutine that does <code>while True: await
+        asyncio.sleep(0)</code>. That is a bare <code>yield</code>, which
+        re-schedules the task with <code>call_soon</code>
+        (<code>tasks.py:691-707</code> and <code>tasks.py:355-357</code>;
+        <a href="0012-cancelled-timers-and-sleep.html">lesson 12</a> takes it
+        apart). Under a <code>while self._ready</code> drain it would keep
+        <code>_ready</code> permanently non-empty, the loop would never return to
+        step 3, and <strong>every socket in the process would stall</strong> —
+        not slowly, but completely, forever.
+      </p>
+
+      <p>
+        With the snapshot, that coroutine gets exactly one step per iteration and
+        step 3 runs in between. The comment states the rule as a property of the
+        design:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            We run all currently scheduled callbacks, but not any callbacks
+            scheduled by callbacks run this time around — they will be run the
+            next time (after another I/O poll).
+          </p>
+        </blockquote>
+        <figcaption>
+          Source comment at
+          <a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L2029-L2031"
+            ><code>Lib/asyncio/base_events.py:2029-2031</code></a
+          >.
+        </figcaption>
+      </figure>
+
+      <h3>CPython's own test suite pins it</h3>
+
+      <p>
+        This is <strong>[impl detail]</strong> — nothing in the reference
+        documentation describes the drain. But a behaviour a test asserts is
+        meaningfully different from one that merely happens, and there is a test:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def test__run_once_schedule_handle(self):
+        handle = None
+        processed = False
+
+        def cb(loop):
+            nonlocal processed, handle
+            processed = True
+            handle = loop.call_soon(lambda: True)
+
+        h = asyncio.TimerHandle(time.monotonic() - 1, cb, (self.loop,),
+                                self.loop, None)
+
+        self.loop._process_events = mock.Mock()
+        self.loop._scheduled.append(h)
+        self.loop._run_once()
+
+        self.assertTrue(processed)
+        self.assertEqual([handle], list(self.loop._ready))</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/test/test_asyncio/test_base_events.py:405-422</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/test/test_asyncio/test_base_events.py#L405-L422"
+          ><code>test__run_once_schedule_handle</code></a
+        >.
+      </p>
+
+      <p>
+        Read the last assertion. After one complete <code>_run_once()</code>, the
+        callback that <code>cb</code> scheduled is <em>still sitting in
+        <code>_ready</code>, unrun</em>. That is the rule, asserted.
+      </p>
+
+      <h3>And the documentation surfaces it once</h3>
+
+      <p>
+        Only in the context of <code>stop()</code>, which is why it is easy to
+        miss that it is a general property:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If <code>stop()</code> is called while <code>run_forever()</code> is
+            running, the loop will run the current batch of callbacks and then
+            exit. Note that new callbacks scheduled by callbacks will not run in
+            this case; instead, they will run the next time
+            <code>run_forever()</code> or <code>run_until_complete()</code> is
+            called.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.run_forever"
+            ><code>loop.run_forever</code>, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-eventloop.rst:134-138</code>.
+          <strong>[guaranteed]</strong> — and “the current batch” is exactly
+          <code>ntodo</code>.
+        </figcaption>
+      </figure>
+
+      <h2>Reason two: thread safety, without a lock</h2>
+
+      <p>
+        <code>call_soon_threadsafe</code> appends to <code>_ready</code> from an
+        arbitrary OS thread while the loop thread is popping from the left. There
+        is no mutex anywhere near this. The snapshot is what makes that safe, in
+        three parts:
+      </p>
+
+      <ul>
+        <li>
+          <strong><code>deque.append</code> and <code>deque.popleft</code> are
+          individually atomic.</strong> The documentation says so, and this
+          guarantee is load-bearing for the whole design:
+          <figure class="excerpt">
+            <blockquote>
+              <p>
+                Deques support thread-safe, memory efficient appends and pops
+                from either side of the deque with approximately the same
+                <em>O</em>(1) performance in either direction.
+              </p>
+            </blockquote>
+            <figcaption>
+              <a
+                class="citation"
+                href="https://docs.python.org/3.13/library/collections.html#collections.deque"
+                ><code>collections.deque</code>, Python 3.13 documentation</a
+              >, <code>Doc/library/collections.rst:458-461</code>.
+              <strong>[guaranteed]</strong>
+            </figcaption>
+          </figure>
+        </li>
+        <li>
+          <strong><code>ntodo</code> is read once, before any popping.</strong> A
+          concurrent append can therefore only make the real length
+          <em>larger</em> than <code>ntodo</code>, never smaller. The drain never
+          pops more than it counted, so it can never hit an
+          <code>IndexError</code>.
+        </li>
+        <li>
+          <strong>Nothing else pops from <code>_ready</code>.</strong>
+          <code>close()</code> calls <code>self._ready.clear()</code>
+          (<code>base_events.py:750</code>) but refuses to run while the loop is
+          running (<code>base_events.py:743-744</code>).
+        </li>
+      </ul>
+
+      <div class="aside insight">
+        <span class="label">The <code>while</code> version fails differently here</span>
+        <p>
+          <code>while self._ready</code> would also be memory-safe — the deque
+          guarantee covers it. But it would add a <em>livelock</em> to the
+          starvation problem: a producer thread appending faster than the loop
+          drains would pin the loop inside step 6 indefinitely, and the loop would
+          never poll again. The snapshot bounds the drain by a number decided
+          before any other thread could influence it.
+        </p>
+      </div>
+
+      <h2>Two consequences that catch people out</h2>
+
+      <h3>A cancelled handle still consumes a slot</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">            handle = self._ready.popleft()
+            if handle._cancelled:
+                continue</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:2035-2037</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L2035-L2037"
+          >inside the drain</a
+        >.
+      </p>
+
+      <p>
+        Cancelling a <code>call_soon</code> handle does not remove it from
+        <code>_ready</code>. It is still popped, and
+        <code>for i in range(ntodo)</code> has already budgeted a slot for it; the
+        drain just steps over it. Cancellation here is a flag read at run time,
+        not a removal. <strong>[impl detail]</strong>
+      </p>
+
+      <h3>Debug mode is checked per handle, not per iteration</h3>
+
+      <p>
+        <code>if self._debug:</code> sits <em>inside</em> the
+        <code>for</code> loop (line 2038), so a <code>set_debug()</code> taking
+        effect mid-drain is observable. In debug mode each callback is timed and
+        anything slower than <code>self.slow_callback_duration</code> (default
+        <code>0.1</code>) is logged:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Callbacks taking longer than 100 milliseconds are logged. The
+            <code>loop.slow_callback_duration</code> attribute can be used to set
+            the minimum execution duration in seconds that is considered “slow”.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-dev.html#debug-mode"
+            >Debug Mode, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-dev.rst:56-58</code>.
+          <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        Given lesson 2's corollary — a slow callback blocks the poll — this log
+        line is the single most useful diagnostic asyncio emits, and it costs one
+        call to <code>loop.set_debug(True)</code>.
+      </p>
+
+      <div class="aside note">
+        <span class="label">One more oddity in the same eighty lines</span>
+        <p>
+          <code>handle = None</code> at line 2051 and
+          <code>event_list = None</code> at line 2015 are not tidiness. Both carry
+          the comment “Needed to break cycles when an exception occurs”: if
+          <code>_run_once</code> raises, its frame is captured in the traceback,
+          and a live local referring to a handle that refers to a task that refers
+          to the frame is a reference cycle only the cyclic collector can free.
+          The same idiom appears at <code>events.py:105</code>,
+          <code>tasks.py:296</code> and <code>tasks.py:371</code>.
+          <strong>[impl detail]</strong>
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does the drain snapshot <code>ntodo</code> rather than looping
+          <code>while self._ready</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              To keep the callbacks in a strict priority order
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              To bound the batch and to avoid needing locks
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              To let the debug timer measure the whole batch
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              To allow the cancelled handles to be removed early
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Fairness and lock-free thread safety — the two reasons the source
+          comment names. Bounding the batch guarantees the loop returns to the
+          poll; reading the length once guarantees a concurrent
+          <code>call_soon_threadsafe</code> append can only grow the queue beyond
+          what the drain will touch. Ordering is FIFO either way, the debug timer
+          is per handle, and cancelled handles are stepped over rather than
+          removed.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A callback running in step 6 calls <code>loop.call_soon(f)</code>. When
+          does <code>f</code> run?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              At once, before the current callback even returns
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Later in this same drain, once <code>_ready</code> empties
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Next iteration, after another poll of the selector
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Never, unless something else wakes the selector up
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>ntodo</code> was fixed before the drain began, so
+          <code>f</code> sits in <code>_ready</code> until the next
+          <code>_run_once</code> — which is exactly what
+          <code>test__run_once_schedule_handle</code> asserts. Note that the loop
+          will not be idle in between: step 2 sees a non-empty
+          <code>_ready</code> and picks a zero timeout, so the poll returns at
+          once.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now know what bounds the drain. The next question is what bounds the
+        <em>wait</em> — how long the loop is prepared to sit in step 3, and what
+        “blocking” costs when it gets that wrong.
+        <a href="0004-the-only-blocking-call.html">Lesson 4</a> takes the timeout
+        computation and the syscall underneath it.
+      </p>
+
+      <p>
+        The four rules the drain obeys are collected, without the argument that
+        got us here, in the
+        <a href="../reference/run-once.html#the-four-rules-of-the-drain"
+          ><code>_run_once</code> reference</a
+        >
+        — the page to reach for when you want the rule rather than the reasoning.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/test/test_asyncio/test_base_events.py#L381-L498"
+              ><code>Lib/test/test_asyncio/test_base_events.py</code>, lines
+              381–498 at tag <code>v3.13.11</code></a
+            >
+            — <code>test__run_once</code>,
+            <code>test__run_once_schedule_handle</code> and
+            <code>test__run_once_cancelled_event_cleanup</code>. Reading the tests
+            for a function you have just read is the cheapest way to find out
+            which of its behaviours are deliberate. The third of those tests is
+            <a href="0012-cancelled-timers-and-sleep.html">lesson 12</a>.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: “show me a small program
+          where the one-step-per-iteration rule is observable.” Predicting the
+          output before running it is the exercise; the program itself is
+          incidental.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Leave a day if you can, and before lesson 4 try to state both reasons
+            the snapshot exists without looking. Most people retrieve the
+            fairness reason and lose the thread-safety one, because it is the one
+            with no visible symptom — which is precisely why it is worth the
+            deliberate recall.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0002-six-steps-of-one-iteration.html"
+              >2. Six steps of one iteration</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0004-the-only-blocking-call.html"
+              >4. The only blocking call</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

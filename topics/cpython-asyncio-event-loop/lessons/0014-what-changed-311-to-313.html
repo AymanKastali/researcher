@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>14. What changed, 3.11 to 3.13 — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0014</span>
+        <h1>What changed, 3.11 → 3.13</h1>
+        <p class="lesson-mission">
+          The headline is that <code>_run_once</code> barely moved. Everything
+          interesting happened one layer up — and the one change that is a
+          genuine semantic break is opt-in, for a reason the documentation is
+          unusually blunt about.
+        </p>
+      </header>
+
+      <p class="lead">
+        Three releases, and the eighty lines you learned in
+        <a href="0002-six-steps-of-one-iteration.html">lesson 2</a> changed
+        twice, cosmetically. That stability is itself worth knowing: it tells you
+        which parts of this topic will survive Python 3.14 and which will not.
+      </p>
+
+      <h2>The scoreboard</h2>
+
+      <p>
+        Dated by fetching <code>Modules/_asynciomodule.c</code> and
+        <code>Lib/asyncio/base_events.py</code> at tags <code>v3.11.0</code>,
+        <code>v3.12.0</code>, <code>v3.13.0</code> and <code>v3.13.11</code> and
+        comparing directly — not from release notes alone.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Every asyncio change in the window, with its evidence.
+          </caption>
+          <thead>
+            <tr>
+              <th>Change</th>
+              <th>Version</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>TaskGroup</code></td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:578-583</code></td>
+            </tr>
+            <tr>
+              <td><code>asyncio.timeout</code> / <code>timeout_at</code></td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:585-588</code></td>
+            </tr>
+            <tr>
+              <td><code>asyncio.Runner</code></td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:590-592</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>Task.cancelling()</code> / <code>Task.uncancel()</code>
+              </td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:614-617</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>eager_task_factory</code>,
+                <code>create_eager_task_factory</code>,
+                <code>Task(eager_start=)</code>
+              </td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:650-653</code></td>
+            </tr>
+            <tr>
+              <td><code>loop_factory=</code> on <code>asyncio.run</code></td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:666-668</code></td>
+            </tr>
+            <tr>
+              <td>C implementation of <code>current_task</code></td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:670-671</code></td>
+            </tr>
+            <tr>
+              <td><code>sendmsg()</code> writes, no unnecessary copying</td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:645-648</code></td>
+            </tr>
+            <tr>
+              <td><code>asyncio.EventLoop</code> alias</td>
+              <td>3.13</td>
+              <td>
+                <code>Doc/library/asyncio-eventloop.rst:1878-1885</code> —
+                <strong>not</strong> in What's New
+              </td>
+            </tr>
+            <tr>
+              <td>
+                TaskGroup nested-cancellation fixes;
+                <code>uncancel()</code> may reset <code>_must_cancel</code>
+              </td>
+              <td>3.13</td>
+              <td><code>Doc/whatsnew/3.13.rst:714-734</code></td>
+            </tr>
+            <tr>
+              <td>Free-threaded build (experimental)</td>
+              <td>3.13</td>
+              <td>
+                <code>Doc/whatsnew/3.13.rst:311-365</code>,
+                <a class="citation" href="https://peps.python.org/pep-0703/"
+                  >PEP 703</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>_run_forever_setup</code> / <code>_run_forever_cleanup</code>
+                split out of <code>run_forever</code>
+              </td>
+              <td>3.13</td>
+              <td>
+                Absent at <code>v3.12.0</code>, present at <code>v3.13.0</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>loop.create_task(**kwargs)</code></td>
+              <td>3.13.3 (accidental), retained 3.13.4+</td>
+              <td>
+                <code>Doc/whatsnew/3.13.rst:742-757</code> — and it describes
+                three methods where only one has it; see
+                <a href="0015-docs-versus-source.html">lesson 15</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>asyncio.free_running_loop</code></td>
+              <td><strong>Does not exist</strong></td>
+              <td>
+                Not in the source, not in the docs, not on the interpreter. See
+                the
+                <a
+                  href="../reference/unverified-claims.html#ten-things-that-could-not-be-verified"
+                  >unverified-claims reference</a
+                >.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>3.11: four features that are one design</h2>
+
+      <p>
+        <code>TaskGroup</code>, <code>timeout()</code>, <code>Runner</code> and
+        the cancellation count landed together and are not four independent
+        additions. The problem they solve is that
+        <strong><code>CancelledError</code> carries no identity</strong>: if a
+        task is cancelled while already being cancelled by someone else, whoever
+        catches it cannot tell whose cancellation it is.
+        <code>cancelling()</code> / <code>uncancel()</code> add that identity as
+        a counter.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def uncancel(self):
+        """Decrement the task's count of cancellation requests.
+
+        This should be called by the party that called `cancel()` on the task
+        beforehand.
+
+        Returns the remaining number of cancellation requests.
+        """
+        if self._num_cancels_requested &gt; 0:
+            self._num_cancels_requested -= 1
+            if self._num_cancels_requested == 0:
+                self._must_cancel = False
+        return self._num_cancels_requested</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:248-260</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L240-L260"
+          ><code>Task.uncancel()</code></a
+        >.
+      </p>
+
+      <p>
+        The <code>if self._num_cancels_requested == 0: self._must_cancel =
+        False</code> clause is the 3.13 addition, and the release note describing
+        it is unusually revealing:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            In order to handle some corner cases,
+            <code>uncancel()</code> may now reset the undocumented
+            <code>_must_cancel</code> flag when the cancellation count reaches
+            zero.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/whatsnew/3.13.html#asyncio"
+            >What's New in Python 3.13 § asyncio</a
+          >, <code>Doc/whatsnew/3.13.rst:730-732</code>. Note the phrase “the
+          undocumented <code>_must_cancel</code> flag” — the release notes are
+          explicitly describing an <strong>[impl detail]</strong> because there
+          was no way to describe the fix otherwise.
+        </figcaption>
+      </figure>
+
+      <p>
+        <code>asyncio.timeout</code> uses the counter exactly as
+        <a href="0012-cancelled-timers-and-sleep.html">lesson 12</a> showed —
+        <code>timeouts.py:93</code> snapshots
+        <code>self._task.cancelling()</code> on entry, and
+        <code>timeouts.py:112</code> compares against it on exit to decide
+        whether the <code>CancelledError</code> it is looking at is
+        <em>its own</em>. <code>TaskGroup</code> uses it to keep the count stable
+        across its own internal cancel/uncancel dance
+        (<code>taskgroups.py:144-149</code>).
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The reason to know this</span>
+        <p>
+          If you ever write a construct that cancels a task and then wants to
+          swallow the resulting <code>CancelledError</code>, you must snapshot
+          <code>cancelling()</code> before and call <code>uncancel()</code> after
+          — otherwise you will swallow somebody else's cancellation and produce a
+          task that refuses to die. The 3.11 API exists precisely so that
+          <code>timeout</code> and <code>TaskGroup</code> can nest without doing
+          that to each other.
+        </p>
+      </div>
+
+      <h2>3.12: the eager task factory, and a semantic change</h2>
+
+      <p>
+        This is the largest behavioural change in the window. Normally, creating
+        a Task schedules its first step:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        if eager_start and self._loop.is_running():
+            self.__eager_start()
+        else:
+            self._loop.call_soon(self.__step, context=self._context)
+            _register_task(self)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:124-128</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L99-L128"
+          ><code>Task.__init__()</code></a
+        >.
+      </p>
+
+      <p>
+        With <code>eager_start=True</code> and a running loop, the first step
+        happens <em>inline, in the constructor</em>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __eager_start(self):
+        prev_task = _swap_current_task(self._loop, self)
+        try:
+            _register_eager_task(self)
+            try:
+                self._context.run(self.__step_run_and_handle_result, None)
+            finally:
+                _unregister_eager_task(self)
+        finally:
+            try:
+                curtask = _swap_current_task(self._loop, prev_task)
+                assert curtask is self
+            finally:
+                if self.done():
+                    self._coro = None
+                    self = None  # Needed to break cycles when an exception occurs.
+                else:
+                    _register_task(self)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:262-279</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L262-L279"
+          ><code>Task.__eager_start()</code></a
+        >.
+      </p>
+
+      <p>
+        Read the <code>finally</code> carefully. <strong>If the coroutine
+        finished during that first step, the task is never registered in
+        <code>_scheduled_tasks</code> and never touches
+        <code>_ready</code>.</strong> If it blocked, it <em>graduates</em> —
+        <code>_register_task(self)</code> — and from that point behaves like any
+        other task. The two registries exist for exactly this:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python"># Collectively these two sets hold references to the complete set of active
+# tasks. Eagerly executed tasks use a faster regular set as an optimization
+# but may graduate to a WeakSet if the task blocks on IO.
+_scheduled_tasks = weakref.WeakSet()
+_eager_tasks = set()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:1036-1040</code>. It is also why
+        <code>all_tasks</code> snapshots <code>_eager_tasks</code>
+        <em>first</em>: reading the eager set before the scheduled set means a
+        task graduating between the two reads is seen twice, not zero times.
+      </p>
+
+      <h3>What it is worth</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+        </div>
+        <pre><code>lazy  100k create_task(noop): 0.367s
+eager 100k create_task(noop): 0.079s   -> 4.64x faster</code></pre>
+      </div>
+
+      <p class="small-print">
+        Measured for the research document on CPython 3.13.11, best of three.
+        Single machine, no CPU pinning. It lands inside the range the release
+        notes claim — “making some use-cases 2x to 5x faster”,
+        <code>Doc/whatsnew/3.12.rst:650-653</code> — which is the only reason it
+        is quoted here.
+      </p>
+
+      <h3>And it is a semantic change, not an optimisation</h3>
+
+      <p>The documentation is unusually blunt about this:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Immediate execution of the coroutine is a semantic change. If the
+            coroutine returns or raises, the task is never scheduled to the event
+            loop. If the coroutine execution blocks, the task is scheduled to the
+            event loop. This change may introduce behavior changes to existing
+            applications. For example, the application's task execution order is
+            likely to change.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-task.html#eager-task-factory"
+            >Eager Task Factory, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-task.rst:627-634</code>.
+          <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        It is opt-in precisely because of that, and <strong>nothing in CPython
+        sets it by default in 3.13</strong>. If your code relies on
+        <code>create_task</code> returning before the coroutine body starts — and
+        a surprising amount of code does, usually accidentally — the eager
+        factory will break it.
+      </p>
+
+      <h2>3.13: free-threading, and what it means for the loop</h2>
+
+      <p>
+        The free-threaded build is experimental in 3.13 and requires a separate
+        interpreter binary, usually <code>python3.13t</code>
+        (<code>Doc/whatsnew/3.13.rst:316-331</code>). <code>_asyncio</code>
+        declares itself ready for it:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C</span>
+        </div>
+        <pre><code class="language-c">static struct PyModuleDef_Slot module_slots[] = {
+    {Py_mod_exec, module_exec},
+    {Py_mod_multiple_interpreters, Py_MOD_PER_INTERPRETER_GIL_SUPPORTED},
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+    {0, NULL},
+};</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Modules/_asynciomodule.c:3754-3759</code> at tag
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Modules/_asynciomodule.c#L3754-L3759"
+          ><code>v3.13.11</code></a
+        >. <code>Py_MOD_GIL_NOT_USED</code> means importing
+        <code>asyncio</code> on a free-threaded build does not re-enable the GIL.
+      </p>
+
+      <p>What that declaration costs, concretely, is three things:</p>
+
+      <ol>
+        <li>
+          <strong>The <code>FutureIter</code> free-list is compiled out.</strong>
+          <code>#ifndef Py_GIL_DISABLED</code> guards the struct field, the
+          allocation and the deallocation. A shared, unlocked free-list cannot be
+          made safe cheaply, so under free-threading every <code>await</code> on
+          a Future allocates a fresh iterator.
+        </li>
+        <li>
+          <strong>The task-name counter becomes atomic</strong> —
+          <code>_Py_atomic_add_uint64</code> instead of <code>++</code>
+          (<code>_asynciomodule.c:2089-2093</code>). The pure-Python side has the
+          same concern and solves it differently, with
+          <code>itertools.count(1).__next__</code> and a comment citing bpo-11866.
+        </li>
+        <li>
+          <strong><code>swap_current_task</code> takes a critical
+          section</strong> — the only place in the whole module that does,
+          because it is a <em>compound</em> read-then-write that must be atomic as
+          a unit. <code>enter_task</code> gets away with a single
+          <code>PyDict_SetDefaultRef</code>; <code>swap</code> cannot.
+        </li>
+      </ol>
+
+      <div class="aside warning">
+        <span class="label">What is not protected</span>
+        <p>
+          The task registry is a <code>weakref.WeakSet</code> — a pure-Python
+          object. Under PEP 703 its internal set gets a per-object lock, so it
+          will not corrupt; but the <em>compound</em> operation
+          <code>list(_scheduled_tasks)</code> in <code>all_tasks</code> is still a
+          loop over a mutating collection, which is exactly why
+          <code>all_tasks</code> retries up to 1000 times
+          (<a href="0013-threads-and-the-self-pipe.html">lesson 13</a>). PEP 703
+          is explicit that per-object locking does not make compound operations
+          atomic.
+        </p>
+      </div>
+
+      <p>
+        <strong>And the event loop itself gains nothing.</strong>
+        <code>BaseEventLoop</code> is pure Python and unchanged for
+        free-threading. The <code>_ready</code> deque idiom from
+        <a href="0003-the-ntodo-snapshot.html">lesson 3</a> relies on
+        <code>deque.append</code>/<code>popleft</code> being individually atomic,
+        which PEP 703 preserves via the per-object lock — but the free-threading
+        how-to is careful to label that as description, not promise:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Built-in types like <code>dict</code>, <code>list</code>, and
+            <code>set</code> use internal locks to protect against concurrent
+            modifications in ways that behave similarly to the GIL. However,
+            Python has not historically guaranteed specific behavior for
+            concurrent modifications to these built-in types, so this should be
+            treated as a description of the current implementation, not a
+            guarantee of current or future behavior.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/howto/free-threading-python.html#thread-safety"
+            >Python support for free threading, Python 3.13 documentation</a
+          >, <code>Doc/howto/free-threading-python.rst:77-84</code>. That is the
+          <strong>[impl detail]</strong> / <strong>[guaranteed]</strong>
+          distinction, stated by CPython itself, about the exact data structure
+          <code>_run_once</code> depends on.
+        </figcaption>
+      </figure>
+
+      <p>
+        The practical position in 3.13: you may run <em>N</em> loops in
+        <em>N</em> threads on a free-threaded build without contending on a GIL,
+        but <strong>a single loop is no more parallel than before</strong> — one
+        thread, one callback at a time — and every cross-loop shared structure
+        (<code>_scheduled_tasks</code>, <code>_current_tasks</code>) is a genuine
+        contention point. Nothing in the documentation promises asyncio is
+        free-threading-safe; the only evidence is the <code>Py_mod_gil</code>
+        declaration above.
+      </p>
+
+      <div class="aside note">
+        <span class="label">None of this section was executed</span>
+        <p>
+          No free-threaded interpreter was available while writing the research
+          this topic is built from. Every claim here is read from
+          <code>#ifdef</code> branches, PEP 703 and the free-threading how-to. The
+          claim that N loops in N threads do not contend on a GIL is a reading of
+          <code>Py_mod_gil</code>, not a measurement.
+        </p>
+      </div>
+
+      <h2>What actually changed inside <code>_run_once</code></h2>
+
+      <p>Two changes in three releases, both cosmetic.</p>
+
+      <p>
+        <strong>3.11 → 3.12: cycle-breaking on <code>event_list</code>.</strong>
+        These two lines are absent at <code>v3.11.0</code> and present from
+        <code>v3.12.0</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        self._process_events(event_list)
+        # Needed to break cycles when an exception occurs.
+        event_list = None</code></pre>
+      </div>
+
+      <p>
+        <strong>3.12 → 3.13: the timeout computation was un-inlined.</strong> At
+        <code>v3.11.0</code> and <code>v3.12.0</code> it read
+        <code>timeout = min(max(0, when - self.time()), MAXIMUM_SELECT_TIMEOUT)</code>;
+        from <code>v3.13.0</code> it is the four-line
+        <code>if</code>/<code>elif</code> you learned in
+        <a href="0004-the-only-blocking-call.html">lesson 4</a>. Semantically
+        identical; it removes two builtin calls per iteration from the hottest
+        loop in the module.
+      </p>
+
+      <p>
+        <strong><code>_run_once</code> is otherwise byte-identical between
+        <code>v3.13.0</code> and <code>v3.13.11</code>.</strong>
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The lesson inside the lesson</span>
+        <p>
+          Three releases of active asyncio development — structured concurrency,
+          eager tasks, a free-threading port — and the scheduling core moved
+          twice, for reference-cycle hygiene and two builtin calls. The parts of
+          this topic most likely to be wrong in 3.15 are the ones
+          <em>above</em> the loop: task semantics, cancellation, the registries.
+          The six steps are the durable part.
+        </p>
+        <p>
+          Which is also a warning: <code>_run_once</code> being stable is exactly
+          what makes a line citation feel safer than it is. A file can be
+          reformatted without any behaviour changing, and every anchor in this
+          topic would break.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Under the eager task factory, a coroutine that returns immediately —
+          what does the loop see?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              One handle in the ready queue, run next time round
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Nothing at all — the task never reaches the queue
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A finished task, registered in the weak set of tasks
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A timer handle set to fire at the current time
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>__eager_start</code> runs the first step in the constructor, and
+          its <code>finally</code> only calls <code>_register_task</code> if the
+          task is <em>not</em> done. A coroutine that returns or raises in its
+          first step never touches <code>_ready</code> and never enters
+          <code>_scheduled_tasks</code> — which is exactly why the documentation
+          calls this a semantic change rather than an optimisation.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What did the free-threaded build change about
+          <code>BaseEventLoop</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It moved the ready queue behind a per-object lock
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It allowed a single loop to run callbacks concurrently
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Nothing — the loop is unchanged pure Python code
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It replaced the deque with an atomic linked structure
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The three free-threading accommodations are all in
+          <code>Modules/_asynciomodule.c</code> — the free-list, the name counter
+          and <code>swap_current_task</code>. The loop is untouched, and one loop
+          is still one thread running one callback at a time. The deque's atomic
+          append and popleft come from PEP 703's per-object locks, which the
+          free-threading how-to explicitly declines to promise.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        One lesson left, and it is the one that outlasts every version number.
+        <a href="0015-docs-versus-source.html">Lesson 15</a> collects the five
+        places where PEP, documentation and source contradict each other, decides
+        each one, and turns the deciding into a method.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://docs.python.org/3.13/whatsnew/3.13.html#asyncio"
+              >What's New in Python 3.13 § asyncio</a
+            >
+            — and then § Optimizations on the same page, which contains
+            <strong>no</strong> asyncio entry at all. Reading a release note for
+            what it <em>omits</em> is a skill, and this pair is a good exercise
+            in it: the largest performance change in the window (eager tasks)
+            shipped in 3.12 and is not repeated, and nothing in the loop got
+            faster in 3.13.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: “should I turn on the eager
+          task factory?” The right answer depends on whether anything in your code
+          assumes <code>create_task</code> returns before the body runs, and
+          finding out is a concrete, useful audit.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before the last lesson, try to name which of the three releases
+            changed <code>_run_once</code> and how much. The answer — “twice,
+            cosmetically” — is the thing worth carrying, because it tells you
+            where to re-check first when 3.14 arrives.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0013-threads-and-the-self-pipe.html"
+              >13. Threads and the self-pipe</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0015-docs-versus-source.html"
+              >15. Where the docs and the source disagree</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

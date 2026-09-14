@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Version ledger &mdash; CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Version ledger</h1>
+        <p class="page-blurb">
+          What shipped in which release, dated by diffing tags rather than by
+          reading release notes — plus a symbol table for
+          <code>Modules/_asynciomodule.c</code> and the two changes
+          <code>_run_once</code> actually saw.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Dated by fetching <code>Modules/_asynciomodule.c</code> and
+        <code>Lib/asyncio/base_events.py</code> at tags <code>v3.11.0</code>,
+        <code>v3.12.0</code>, <code>v3.13.0</code> and <code>v3.13.11</code> and
+        comparing them directly. Where a release note and a tag disagree, the tag
+        is recorded here and the disagreement is noted.
+      </p>
+
+      <h2 id="feature-scoreboard">Feature scoreboard</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Every asyncio change in the 3.11 → 3.13 window.
+          </caption>
+          <thead>
+            <tr>
+              <th>Change</th>
+              <th>Version</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>TaskGroup</code></td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:578-583</code></td>
+            </tr>
+            <tr>
+              <td><code>asyncio.timeout</code> / <code>timeout_at</code></td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:585-588</code></td>
+            </tr>
+            <tr>
+              <td><code>asyncio.Runner</code></td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:590-592</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>Task.cancelling()</code> / <code>Task.uncancel()</code>
+              </td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:614-617</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>Barrier</code>, <code>all_errors=</code> on
+                <code>create_connection</code>,
+                <code>StreamWriter.start_tls</code>, raw datagram socket methods
+              </td>
+              <td>3.11</td>
+              <td><code>Doc/whatsnew/3.11.rst:594-612</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>eager_task_factory</code>,
+                <code>create_eager_task_factory</code>,
+                <code>Task(eager_start=)</code>
+              </td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:650-653</code></td>
+            </tr>
+            <tr>
+              <td><code>loop_factory=</code> on <code>asyncio.run</code></td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:666-668</code></td>
+            </tr>
+            <tr>
+              <td>C implementation of <code>current_task</code></td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:670-671</code></td>
+            </tr>
+            <tr>
+              <td><code>sendmsg()</code> writes, no unnecessary copying</td>
+              <td>3.12</td>
+              <td><code>Doc/whatsnew/3.12.rst:645-648</code></td>
+            </tr>
+            <tr>
+              <td><code>asyncio.EventLoop</code> alias</td>
+              <td>3.13</td>
+              <td>
+                <code>Doc/library/asyncio-eventloop.rst:1878-1885</code> —
+                <strong>not</strong> in What's New
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>as_completed</code> returns an async + plain iterator
+              </td>
+              <td>3.13</td>
+              <td><code>Doc/whatsnew/3.13.rst:684-690</code></td>
+            </tr>
+            <tr>
+              <td><code>Queue.shutdown</code> / <code>QueueShutDown</code></td>
+              <td>3.13</td>
+              <td><code>Doc/whatsnew/3.13.rst:702-704</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>Server.close_clients</code> / <code>abort_clients</code>
+              </td>
+              <td>3.13</td>
+              <td><code>Doc/whatsnew/3.13.rst:706-708</code></td>
+            </tr>
+            <tr>
+              <td>
+                TaskGroup nested-cancellation fixes;
+                <code>uncancel()</code> may reset <code>_must_cancel</code>
+              </td>
+              <td>3.13</td>
+              <td><code>Doc/whatsnew/3.13.rst:714-734</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>TaskGroup.create_task</code> closes the coroutine when the
+                group is inactive
+              </td>
+              <td>3.13</td>
+              <td><code>Doc/whatsnew/3.13.rst:736-740</code></td>
+            </tr>
+            <tr>
+              <td>Free-threaded build (experimental)</td>
+              <td>3.13</td>
+              <td>
+                <code>Doc/whatsnew/3.13.rst:311-365</code>,
+                <a class="citation" href="https://peps.python.org/pep-0703/"
+                  >PEP 703</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>_run_forever_setup</code> / <code>_run_forever_cleanup</code>
+                split out of <code>run_forever</code>
+              </td>
+              <td>3.13</td>
+              <td>
+                Absent at <code>v3.12.0</code>, present at <code>v3.13.0</code>.
+                Docstring gives the motivation: GUI-integration subclasses.
+              </td>
+            </tr>
+            <tr>
+              <td><code>loop.create_task(**kwargs)</code></td>
+              <td>3.13.3 (accidental), retained 3.13.4+</td>
+              <td>
+                <code>Doc/whatsnew/3.13.rst:742-757</code> claims three methods;
+                only <code>BaseEventLoop.create_task</code> has it at
+                <code>v3.13.11</code>. See
+                <a href="unverified-claims.html">unverified claims</a>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>asyncio.free_running_loop</code></td>
+              <td><strong>Does not exist</strong></td>
+              <td>
+                Not in the source, not in the docs, not on the interpreter.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="symbol-table-for-modules-asynciomodule-c">Symbol table for <code>Modules/_asynciomodule.c</code></h2>
+
+      <p>
+        Presence of each symbol, checked by fetching the file at each tag and
+        grepping. <code>Y</code> = present, <code>n</code> = absent.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            The C accelerator, dated.
+          </caption>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>3.11.0</th>
+              <th>3.12.0</th>
+              <th>3.13.0</th>
+              <th>3.13.11</th>
+              <th>What it is</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>fi_freelist</code></td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td><code>FutureIter</code> free-list (pre-dates 3.11)</td>
+            </tr>
+            <tr>
+              <td><code>task_name_counter</code></td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Task naming counter</td>
+            </tr>
+            <tr>
+              <td><code>task_eager_start</code></td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Eager task execution, 3.12</td>
+            </tr>
+            <tr>
+              <td><code>register_eager_task</code></td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>The <code>_eager_tasks</code> registry, 3.12</td>
+            </tr>
+            <tr>
+              <td><code>task_step_handle_result_impl</code></td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td><code>task_step_impl</code> split in two, 3.12</td>
+            </tr>
+            <tr>
+              <td><code>Py_MOD_PER_INTERPRETER_GIL_SUPPORTED</code></td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Per-interpreter module state, 3.12</td>
+            </tr>
+            <tr>
+              <td><code>_asyncio_current_task</code></td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>C <code>current_task()</code>, 3.12</td>
+            </tr>
+            <tr>
+              <td><code>Py_mod_gil</code></td>
+              <td>n</td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Free-threading opt-in, 3.13</td>
+            </tr>
+            <tr>
+              <td><code>Py_BEGIN_CRITICAL_SECTION</code></td>
+              <td>n</td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Per-object locking, 3.13</td>
+            </tr>
+            <tr>
+              <td><code>asyncio_running_loop</code></td>
+              <td>n</td>
+              <td>n</td>
+              <td>Y</td>
+              <td>Y</td>
+              <td>Running loop moved onto the thread state, 3.13</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        File sizes: 3505 lines at <code>v3.11.0</code>, 3815 at
+        <code>v3.12.0</code>, 3749 at <code>v3.13.0</code>, 3777 at
+        <code>v3.13.11</code>.
+      </p>
+
+      <p>
+        Two entries deserve a note. <strong><code>task_step_handle_result_impl</code></strong>
+        is the 3.12 split of the monolithic <code>task_step_impl</code> into
+        “advance the coroutine” and “interpret what it yielded” — the second half
+        being the <code>_asyncio_future_blocking</code> dispatch — and the split
+        exists so the eager-start path can reuse it.
+        <strong><code>asyncio_running_loop</code></strong> is the 3.13 move of the
+        running-loop pointer from a <code>threading.local</code> into a field on
+        <code>_PyThreadStateImpl</code>, the free-threading-friendly equivalent.
+      </p>
+
+      <h2 id="what-actually-changed-inside-run-once">What actually changed inside <code>_run_once</code></h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Two changes in three releases, both cosmetic.
+          </caption>
+          <thead>
+            <tr>
+              <th>Window</th>
+              <th>Change</th>
+              <th>Effect</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>3.11 → 3.12</td>
+              <td>
+                <code>event_list = None</code> added after
+                <code>_process_events</code>, commented “Needed to break cycles
+                when an exception occurs”.
+              </td>
+              <td>
+                Reference-cycle hygiene. No behaviour change in the ordinary
+                path.
+              </td>
+            </tr>
+            <tr>
+              <td>3.12 → 3.13</td>
+              <td>
+                <code>timeout = min(max(0, when - self.time()), MAXIMUM_SELECT_TIMEOUT)</code>
+                became the four-line <code>if</code>/<code>elif</code>.
+              </td>
+              <td>
+                Semantically identical; removes two builtin calls per iteration.
+              </td>
+            </tr>
+            <tr>
+              <td>3.13.0 → 3.13.11</td>
+              <td>Nothing.</td>
+              <td>Byte-identical.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">What the stability implies</span>
+        <p>
+          Three releases of active asyncio development — structured concurrency,
+          eager tasks, a free-threading port — and the scheduling core moved
+          twice, for reference-cycle hygiene and two builtin calls. The parts of
+          this topic most likely to be wrong in a future release are the ones
+          <em>above</em> the loop: task semantics, cancellation, the registries.
+        </p>
+        <p>
+          The counterpart warning: a file can be reformatted without any
+          behaviour changing, and every line citation in this topic would break.
+          Stability of behaviour is not stability of line numbers.
+        </p>
+      </div>
+
+      <h2 id="free-threading-in-three-concrete-places">Free-threading, in three concrete places</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What <code>Py_MOD_GIL_NOT_USED</code> costs
+            <code>_asynciomodule.c</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Accommodation</th>
+              <th>Detail</th>
+              <th>Line</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>FutureIter</code> free-list compiled out</td>
+              <td>
+                <code>#ifndef Py_GIL_DISABLED</code> guards the field, the
+                allocation and the deallocation. Under free-threading every
+                <code>await</code> on a Future allocates a fresh iterator.
+              </td>
+              <td>74–77, 1534–1550, 1755–1764</td>
+            </tr>
+            <tr>
+              <td>Atomic task-name counter</td>
+              <td>
+                <code>_Py_atomic_add_uint64</code> instead of
+                <code>++</code>. The Python side solves the same problem with
+                <code>itertools.count(1).__next__</code>, citing bpo-11866.
+              </td>
+              <td>2089–2093; <code>tasks.py:31-34</code></td>
+            </tr>
+            <tr>
+              <td><code>swap_current_task</code> critical section</td>
+              <td>
+                The only <code>Py_BEGIN_CRITICAL_SECTION</code> in the module.
+                Needed because the swap is a compound read-then-write;
+                <code>enter_task</code> and <code>leave_task</code> each manage
+                with a single dict operation.
+              </td>
+              <td>2024–2028</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <strong>Not protected:</strong> the <code>WeakSet</code> task registry.
+        PEP 703's per-object lock stops it corrupting, but
+        <code>list(_scheduled_tasks)</code> in <code>all_tasks</code> is still a
+        compound operation over a mutating collection — which is why it retries up
+        to 1000 times.
+      </p>
+
+      <p>
+        <strong>And the loop gains nothing.</strong> <code>BaseEventLoop</code> is
+        pure Python and unchanged. N loops in N threads do not contend on a GIL;
+        a single loop is still one thread running one callback at a time.
+        <strong>None of this was executed</strong> — no free-threaded interpreter
+        was available.
+      </p>
+
+      <h2 id="when-a-new-release-lands">When a new release lands</h2>
+
+      <ol>
+        <li>
+          <strong>Re-diff <code>_run_once</code> against the new tag.</strong> If
+          it is unchanged, lessons 1–6 and 11–12 stand.
+        </li>
+        <li>
+          <strong>Re-check every line number.</strong> The most fragile citation
+          in this topic. A reformat breaks all of them without changing
+          behaviour.
+        </li>
+        <li>
+          <strong>Grep <code>Modules/_asynciomodule.c</code> for the symbol
+          table above.</strong> New entries date the release's C-side work faster
+          than the release notes do.
+        </li>
+        <li>
+          <strong>Read What's New for what it omits.</strong> The 3.13
+          § Optimizations section contains no asyncio entry at all — which is the
+          finding.
+        </li>
+        <li>
+          <strong>Re-check the five disagreements.</strong> A documentation fix
+          would retire one, and that is worth knowing rather than assuming.
+        </li>
+      </ol>
+
+      <p class="small-print">
+        Taught in
+        <a href="../lessons/0014-what-changed-311-to-313.html">lesson 14</a>; the
+        loop mechanics are in the <a href="run-once.html">run-once reference</a>;
+        the gaps are in <a href="unverified-claims.html">unverified claims</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

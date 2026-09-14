@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>6. Inside Handle._run — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0006</span>
+        <h1>Inside <code>Handle._run</code></h1>
+        <p class="lesson-mission">
+          The last piece of the callback machine. Eighteen lines that decide how
+          context variables propagate, which exceptions a loop survives, and
+          which two can kill it.
+        </p>
+      </header>
+
+      <p class="lead">
+        The drain has popped a handle and is about to call it. This is the call —
+        and it is not <code>self._callback(*self._args)</code>, for three
+        separate reasons that each show up somewhere else in your programs.
+      </p>
+
+      <h2>The method</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _run(self):
+        try:
+            self._context.run(self._callback, *self._args)
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            cb = format_helpers._format_callback_source(
+                self._callback, self._args,
+                debug=self._loop.get_debug())
+            msg = f'Exception in callback {cb}'
+            context = {
+                'message': msg,
+                'exception': exc,
+                'handle': self,
+            }
+            if self._source_traceback:
+                context['source_traceback'] = self._source_traceback
+            self._loop.call_exception_handler(context)
+        self = None  # Needed to break cycles when an exception occurs.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:87-105</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L87-L105"
+          ><code>Handle._run()</code></a
+        >.
+      </p>
+
+      <h2>One: the callback runs inside a context, never bare</h2>
+
+      <p>
+        The context is captured when the <code>Handle</code> is
+        <em>constructed</em>, not when it runs:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __init__(self, callback, args, loop, context=None):
+        if context is None:
+            context = contextvars.copy_context()
+        self._context = context</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:36-39</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L36-L39"
+          ><code>Handle.__init__()</code></a
+        >.
+      </p>
+
+      <p>
+        Since <code>call_soon</code> builds the <code>Handle</code>
+        synchronously, the effect is that a callback runs in
+        <strong>the context of whoever scheduled it</strong> — not of whoever
+        happened to be running when the loop got round to it. That is the
+        behaviour PEP 567 makes normative:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            2. <code>asyncio.Loop.call_at()</code>,
+            <code>asyncio.Loop.call_later()</code>,
+            <code>asyncio.Loop.call_soon()</code>, and
+            <code>asyncio.Future.add_done_callback()</code> run callback
+            functions in the context they were called in. A new
+            <em>context</em> keyword-only parameter can be used to specify a
+            custom context.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-0567/#backwards-compatibility"
+            >PEP 567 § Backwards Compatibility</a
+          >. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">A small divergence, with no observable effect</span>
+        <p>
+          PEP 567's own sketch puts the <code>copy_context()</code> inside
+          <code>call_soon</code> rather than inside <code>Handle.__init__</code>
+          (<a class="citation" href="https://peps.python.org/pep-0567/#asyncio"
+            >PEP 567 § asyncio</a
+          >). CPython does it one level down. Because <code>call_soon</code>
+          constructs the handle synchronously
+          (<code>base_events.py:852-857</code>), the two are indistinguishable
+          from outside — a reminder that a PEP's example code is illustrative and
+          its <em>Backwards Compatibility</em> section is the normative part.
+        </p>
+      </div>
+
+      <p>
+        This is also why <a href="0008-a-complete-round-trip.html">lesson 8</a>'s
+        <code>_add_reader</code> passes <code>context=None</code>: an I/O
+        callback inherits the context of whoever registered interest in the
+        descriptor, not of whoever's data happens to arrive.
+      </p>
+
+      <h2>Two: exceptions are swallowed into the exception handler</h2>
+
+      <p>
+        A callback that raises does <em>not</em> propagate out of
+        <code>_run_once</code>, and does not stop the loop. It is packaged into a
+        context dict and handed to <code>call_exception_handler</code>, which is
+        what produces the familiar log line:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+        </div>
+        <pre><code>Exception in callback &lt;...&gt;</code></pre>
+      </div>
+
+      <p class="small-print">
+        The message is assembled at <code>events.py:96</code>. The
+        <code>'handle'</code> key in the context dict is why the log line can name
+        the callback that failed, and <code>'source_traceback'</code> — present
+        only in debug mode — is why it can also name the line that
+        <em>scheduled</em> it.
+      </p>
+
+      <p>
+        This is the right default for a loop that must keep serving every other
+        connection, and it is also why an unhandled error in an asyncio program
+        can be invisible until you look at the log. If you want failures to be
+        loud, replacing the exception handler is the supported way
+        (<code>loop.set_exception_handler</code>), and it is one of the few
+        pieces of loop configuration worth doing in every service.
+      </p>
+
+      <h2>Three: two exceptions are re-raised, and they escape</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        except (SystemExit, KeyboardInterrupt):
+            raise</code></pre>
+      </div>
+
+      <p>
+        <code>SystemExit</code> and <code>KeyboardInterrupt</code> are let
+        through. They escape <code>_run_once</code>, unwind
+        <code>run_forever</code>, and hit the <code>finally:</code> that runs
+        <code>_run_forever_cleanup()</code> — which is how a
+        <kbd>Ctrl-C</kbd> gets the loop's asyncgen hooks and thread id restored
+        rather than left dangling.
+      </p>
+
+      <p>
+        The asymmetry is deliberate and it recurs all through
+        <code>asyncio</code>, always in exactly this shape. Two other instances,
+        so the pattern is recognisable rather than surprising:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The same two-tier <code>except</code> pattern, in three places.
+          </caption>
+          <thead>
+            <tr>
+              <th>Location</th>
+              <th>Re-raised</th>
+              <th>Handled</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Handle._run</code>, <code>events.py:90-91</code></td>
+              <td><code>SystemExit</code>, <code>KeyboardInterrupt</code></td>
+              <td>
+                Everything else → <code>call_exception_handler</code>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>Task.__step_run_and_handle_result</code>,
+                <code>tasks.py:318-320</code>
+              </td>
+              <td>The same two</td>
+              <td>
+                Everything else → stored on the Task as its exception
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>_SelectorSocketTransport._read_ready__data_received</code>,
+                <code>selector_events.py:1008-1009</code>
+              </td>
+              <td>The same two</td>
+              <td>Everything else → <code>_fatal_error</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        All three at tag
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/"
+          ><code>v3.13.11</code></a
+        >. <strong>[impl detail]</strong> — no PEP or documentation page
+        describes this convention, but it is applied consistently enough that
+        breaking it in a subclass would be surprising.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">Why these two specifically</span>
+        <p>
+          Both are <code>BaseException</code>, not <code>Exception</code> —
+          deliberately outside the ordinary error hierarchy, because both mean
+          “this process is trying to end” rather than “this operation failed”.
+          Routing them into an exception handler that logs and continues would
+          make a program unkillable, and <kbd>Ctrl-C</kbd> would look like it had
+          simply been ignored.
+        </p>
+      </div>
+
+      <h2>And the last line, again</h2>
+
+      <p>
+        <code>self = None</code> closes the method, with the same comment you saw
+        in <a href="0003-the-ntodo-snapshot.html">lesson 3</a>: if
+        <code>_run</code> raises, its frame is captured in the traceback, and a
+        local naming the handle that names the loop that names the frame is a
+        cycle only the cyclic collector can break. Four places in
+        <code>asyncio</code> do this, and now you have seen two of them.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Whose <code>contextvars</code> context does a
+          <code>call_soon</code> callback run in?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A fresh empty context made for each new callback
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A copy of the context of whoever scheduled it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The context of the task running during the drain
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The context that was current when the loop began
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>Handle.__init__</code> calls
+          <code>contextvars.copy_context()</code> at construction time, and
+          <code>call_soon</code> constructs the handle synchronously — so the
+          captured context is the caller's. PEP 567 states this as a compatibility
+          guarantee, and it is why a request id set before scheduling is still
+          visible inside the callback.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A callback raises <code>ValueError</code>. What happens to the loop?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It stops, and the exception reaches the caller
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It continues, and the error reaches the handler
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It continues, and the error is silently dropped
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It stops, and the remaining batch is discarded
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>Handle._run</code> catches every <code>BaseException</code>
+          except <code>SystemExit</code> and <code>KeyboardInterrupt</code>, and
+          passes a context dict to <code>loop.call_exception_handler</code>. It is
+          not silent — the default handler logs it — but it is easy to
+          <em>miss</em>, which is the practical reason to install your own.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        That completes the callback machine. Lessons 1–6 describe a system that
+        polls descriptors, keeps two queues, and runs functions inside captured
+        contexts — with no coroutine anywhere in it.
+      </p>
+
+      <p>
+        <a href="0007-the-blocking-flag.html">Lesson 7</a> introduces the piece
+        that joins your <code>async def</code> to all of this. It is a single
+        attribute name, and the reason it is an <em>attribute</em> rather than a
+        method call is one of the more elegant consequences of a constraint PEP
+        3156 wrote down in 2012.
+      </p>
+
+      <p>
+        Before going on, the six lessons behind you have introduced most of the
+        topic's vocabulary. The
+        <a href="../reference/glossary.html#the-loop-s-own-state">glossary</a> is the
+        short version:
+        <code>Handle</code>, the drain, <code>ntodo</code> and the rest, each
+        with its source line and the misreading it invites.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://peps.python.org/pep-0567/"
+              >PEP 567 — Context Variables</a
+            >, Yury Selivanov, 2017 — read § Rationale, § asyncio and
+            § Backwards Compatibility. It is short, and it explains why
+            <code>contextvars</code> exists at all rather than
+            <code>threading.local</code>, which is a question the asyncio code
+            answers only implicitly by using it everywhere.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A useful thing to ask for here: a worked
+          example where a <code>ContextVar</code> set inside one task is
+          <em>not</em> visible in another, and why the copy-at-construction rule
+          predicts it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the end of the first arc, and the best place in the topic for
+            a real gap. Before lesson 7, try to walk the whole path from
+            “<code>epoll_wait</code> returns” to “my function is called”, naming
+            every method involved. There are five, and you have now read all of
+            them.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0005-readiness-becomes-callbacks.html"
+              >5. Readiness becomes callbacks</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0007-the-blocking-flag.html">7. The blocking flag</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

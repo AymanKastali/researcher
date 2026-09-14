@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>9. Who owns what — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0009</span>
+        <h1>Who owns what</h1>
+        <p class="lesson-mission">
+          Three objects took part in the round trip. Drawing the boundaries
+          between them — and finding the single attribute that makes a Task more
+          than a Future — is what turns the trace into a model you can reason
+          with.
+        </p>
+      </header>
+
+      <p class="lead">
+        The loop, the Future and the Task each know a strikingly small amount
+        about the others. That separation is not tidiness; it is what lets a
+        third-party loop work, what lets half of this be reimplemented in C, and
+        what makes cancellation as complicated as it is.
+      </p>
+
+      <h2>The three-way split</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What each object owns, and — more usefully — what it does not.
+          </caption>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Owns</th>
+              <th>Does not own</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong><code>BaseEventLoop</code></strong></td>
+              <td>
+                <code>_ready</code>, <code>_scheduled</code>, the selector, the
+                clock, the thread identity, the exception handler, the executor.
+                Calls callbacks.
+              </td>
+              <td>
+                Anything about coroutines. <strong>It has never heard of
+                <code>await</code>.</strong>
+              </td>
+            </tr>
+            <tr>
+              <td><strong><code>Future</code></strong></td>
+              <td>
+                One result-or-exception slot, a state enum, a list of
+                done-callbacks, and a reference to its loop. Turns
+                <code>set_result</code> into <code>loop.call_soon</code>.
+              </td>
+              <td>Any knowledge of who is waiting, or why.</td>
+            </tr>
+            <tr>
+              <td><strong><code>Task</code></strong></td>
+              <td>
+                A coroutine object, a <code>contextvars.Context</code>,
+                cancellation bookkeeping (<code>_must_cancel</code>,
+                <code>_num_cancels_requested</code>,
+                <code>_cancel_message</code>), and <code>_fut_waiter</code>.
+                Drives <code>coro.send</code> / <code>coro.throw</code>.
+              </td>
+              <td>The ready queue, the selector, time.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        A <code>Task</code> <em>is</em> a <code>Future</code>, by inheritance,
+        and the class statement says why with unusual candour:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">class Task(futures._PyFuture):  # Inherit Python Task implementation
+                                # from a Python Future implementation.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:71-72</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L71-L72"
+          >the class statement</a
+        >. The <code>_PyFuture</code> spelling matters, and
+        <a href="0010-the-c-accelerator.html">lesson 10</a> explains it.
+      </p>
+
+      <h2>The Task's own state machine, in its own words</h2>
+
+      <p>
+        <code>Task</code> publishes its invariant as a comment. It is the precise
+        contract between all three parties, and it is worth reading slowly:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    # An important invariant maintained while a Task not done:
+    # _fut_waiter is either None or a Future.  The Future
+    # can be either done() or not done().
+    # The task can be in any of 3 states:
+    #
+    # - 1: _fut_waiter is not None and not _fut_waiter.done():
+    #      __step() is *not* scheduled and the Task is waiting for _fut_waiter.
+    # - 2: (_fut_waiter is None or _fut_waiter.done()) and __step() is scheduled:
+    #       the Task is waiting for __step() to be executed.
+    # - 3:  _fut_waiter is None and __step() is *not* scheduled:
+    #       the Task is currently executing (in __step()).
+    #
+    # * In state 1, one of the callbacks of __fut_waiter must be __wakeup().
+    # * The transition from 1 to 2 happens when _fut_waiter becomes done(),
+    #   as it schedules __wakeup() to be called (which calls __step() so
+    #   we way that __step() is scheduled).
+    # * It transitions from 2 to 3 when __step() is executed, and it clears
+    #   _fut_waiter to None.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:76-93</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L76-L93"
+          >the Task state invariant</a
+        >. <strong>[impl detail]</strong> — nothing in the documentation
+        describes these states, and the typo in the last bullet is in the source.
+      </p>
+
+      <p>
+        Map that onto <a href="0008-a-complete-round-trip.html">lesson 8</a> and
+        the trip reads as three transitions: the task was in <strong>state
+        3</strong> while executing, moved to <strong>state 1</strong> when it
+        recorded <code>_fut_waiter</code> and returned, moved to
+        <strong>state 2</strong> when <code>set_result</code> scheduled
+        <code>__wakeup</code>, and returned to <strong>state 3</strong> when
+        <code>__step</code> ran and cleared <code>_fut_waiter</code>.
+      </p>
+
+      <h2><code>_fut_waiter</code> exists for exactly one reason</h2>
+
+      <p>
+        It is the only structural difference between a Task and a plain Future,
+        and it exists because cancellation has to propagate <em>inward</em>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        if self._fut_waiter is not None:
+            if self._fut_waiter.cancel(msg=msg):
+                # Leave self._fut_waiter; it may be a Task that
+                # catches and ignores the cancellation so we may have
+                # to cancel it again later.
+                return True
+        # It must be the case that self.__step is already scheduled.
+        self._must_cancel = True
+        self._cancel_message = msg
+        return True</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:229-238</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L229-L238"
+          ><code>Task.cancel()</code></a
+        >.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What <code>task.cancel()</code> does depends on which state the task
+            is in.
+          </caption>
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Situation</th>
+              <th>What <code>cancel()</code> does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Blocked on a pending Future.</td>
+              <td>
+                Cancels that Future. Resolving it schedules
+                <code>__wakeup</code>, which raises
+                <code>CancelledError</code> into the coroutine.
+              </td>
+            </tr>
+            <tr>
+              <td>2 or 3</td>
+              <td>
+                Scheduled to step, or currently stepping. There is nothing to
+                cancel.
+              </td>
+              <td>
+                Sets <code>_must_cancel = True</code>. The next
+                <code>__step</code> converts it into a throw
+                (<code>tasks.py:285-288</code>).
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Why cancellation is never immediate</span>
+        <p>
+          In neither case does <code>cancel()</code> raise anything at the point
+          of call. It either cancels an inner Future — whose resolution goes
+          through <code>call_soon</code>, costing an iteration — or it sets a flag
+          for the next step. <code>task.cancel()</code> is a
+          <em>request</em>, delivered through the ready queue like everything
+          else in this system. That is why the method returns a boolean and why
+          catching <code>CancelledError</code> and continuing is possible at all.
+        </p>
+      </div>
+
+      <h3>A comment that is a small monument</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        self._num_cancels_requested += 1
+        # These two lines are controversial.  See discussion starting at
+        # https://github.com/python/cpython/pull/31394#issuecomment-1053545331
+        # Also remember that this is duplicated in _asynciomodule.c.
+        # if self._num_cancels_requested &gt; 1:
+        #     return False</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:223-228</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L223-L228"
+          ><code>Task.cancel()</code></a
+        >. The linked discussion is
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/pull/31394#issuecomment-1053545331"
+          >PR #31394</a
+        >, and reading it is the best available evidence of how hard this corner
+        of the design is.
+      </p>
+
+      <p>
+        Two things in six lines. Commented-out code kept in the tree because
+        removing it would lose the argument, and “also remember that this is
+        duplicated in <code>_asynciomodule.c</code>” — the parity requirement
+        showing through in a source comment. That is
+        <a href="0010-the-c-accelerator.html">lesson 10</a>.
+      </p>
+
+      <h2>What the loop refuses to know</h2>
+
+      <p>
+        Worth restating now that the Task is in view. Everything in the left-hand
+        column of the ownership table is available to the Task only through
+        <code>call_soon</code>, <code>create_future</code> and
+        <code>time</code>. The Task never touches <code>_ready</code>, never
+        looks at <code>_scheduled</code>, never sees the selector. It is a state
+        machine that drives a coroutine and posts messages to a queue it cannot
+        read.
+      </p>
+
+      <p>
+        That restriction is the PEP 3156 clause quoted in
+        <a href="0007-the-blocking-flag.html">lesson 7</a>, and holding both in
+        mind at once is what makes the whole design click: the Task is
+        <em>deliberately</em> a client of the loop rather than a part of it, and
+        every awkwardness in this lesson — the three-valued flag, the state
+        invariant, the two-path cancel — is the cost of that.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What is the only structural difference between a <code>Task</code> and
+          the <code>Future</code> it inherits from?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It keeps a direct reference to the running loop
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It keeps a reference to the future it awaits
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It keeps a private queue of its pending callbacks
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It keeps a copy of the selector it registered
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>_fut_waiter</code>, and it exists so that cancelling a Task can
+          reach the Future it is blocked on. A plain <code>Future</code> already
+          has a loop reference and a callback list; a Task never touches the
+          selector at all. Coroutine, context and cancel bookkeeping are also
+          Task-only, but <code>_fut_waiter</code> is the one that changes the
+          object's <em>shape</em> in the state machine.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A task is in state 2 — its <code>__step</code> is already scheduled —
+          and you call <code>task.cancel()</code>. What happens?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A CancelledError is raised right at the call site
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The queued step handle is removed from the queue
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A flag is set, and the following step throws
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Nothing at all, and the method returns a false
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          There is no Future to cancel, so <code>cancel()</code> sets
+          <code>_must_cancel = True</code> and returns <code>True</code>. When
+          <code>__step</code> runs it converts that flag into a
+          <code>CancelledError</code> thrown into the coroutine
+          (<code>tasks.py:285-288</code>). Nothing is removed from
+          <code>_ready</code> — cancellation in this system is always a flag read
+          later, never a removal.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Half of what you have just read does not run as Python at all. The
+        <code>Task</code> and <code>Future</code> in your process are C objects,
+        swapped in at import time — while the loop underneath them is not, and
+        cannot be. <a href="0010-the-c-accelerator.html">Lesson 10</a> is about
+        that division, and about how much less it is worth than you would guess.
+      </p>
+
+      <p>
+        The three-state invariant is the one thing here worth being able to
+        recite. It is stated on its own, with the source comment it comes from,
+        under <a href="../reference/run-once.html#the-task-s-three-states"
+          >the Task's three states</a
+        >
+        in
+        the <code>_run_once</code> reference.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L198-L296"
+              ><code>Lib/asyncio/tasks.py</code>, lines 198–296 at tag
+              <code>v3.13.11</code></a
+            >
+            — <code>cancel</code>, <code>cancelling</code>,
+            <code>uncancel</code>, <code>__eager_start</code> and
+            <code>__step</code> in one block. It is a hundred lines and it is the
+            hardest hundred lines in <code>asyncio</code>; reading it now, with
+            the three states in hand, is much easier than reading it cold.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good exercise to ask for: “given a task
+          blocked in <code>await asyncio.sleep(10)</code>, walk the objects from
+          <code>task.cancel()</code> to the <code>CancelledError</code> appearing
+          inside the coroutine, naming each one.” There are five hops and every
+          one of them has appeared in a lesson.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 10, try to write the three-row ownership table from
+            memory — and in particular the <em>right-hand</em> column, which is
+            the one that does the work. Knowing that the loop has never heard of
+            <code>await</code> is worth more than knowing that it owns a deque.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0008-a-complete-round-trip.html">8. A complete round trip</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0010-the-c-accelerator.html">10. The C accelerator</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

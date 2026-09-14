@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>10. The C accelerator — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0010</span>
+        <h1>The C accelerator</h1>
+        <p class="lesson-mission">
+          Half of what you read in lessons 7–9 is not the code that runs. This
+          lesson is about which half, how it is swapped in, what it buys — much
+          less than you would guess — and the reason the loop itself can never
+          join it.
+        </p>
+      </header>
+
+      <p class="lead">
+        <code>asyncio.Task</code> in your process is a C type. So is
+        <code>asyncio.Future</code>, and <code>current_task</code>, and
+        <code>get_running_loop</code>. <code>BaseEventLoop</code> is not, and the
+        reason it is not is a design constraint rather than an unfinished job.
+      </p>
+
+      <h2>How the swap works</h2>
+
+      <p>
+        Three modules do the same trick at the bottom of the file.
+        <code>futures.py</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">try:
+    import _asyncio
+except ImportError:
+    pass
+else:
+    # _CFuture is needed for tests.
+    Future = _CFuture = _asyncio.Future</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/futures.py:419-425</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/futures.py#L419-L425"
+          >the accelerator import</a
+        >. <code>tasks.py:390-399</code> does the same for
+        <code>Task</code>/<code>_CTask</code>, having first bound
+        <code>_PyTask = Task</code>.
+      </p>
+
+      <p>
+        And <code>events.py</code>, which attaches its rationale:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">try:
+    # get_event_loop() is one of the most frequently called
+    # functions in asyncio.  Pure Python implementation is
+    # about 4 times slower than C-accelerated.
+    from _asyncio import (_get_running_loop, _set_running_loop,
+                          get_running_loop, get_event_loop)
+except ImportError:
+    pass
+else:
+    # Alias C implementations for testing purposes.
+    _c__get_running_loop = _get_running_loop
+    _c__set_running_loop = _set_running_loop
+    _c_get_running_loop = get_running_loop
+    _c_get_event_loop = get_event_loop</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:858-871</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L858-L871"
+          >the running-loop accessors</a
+        >.
+      </p>
+
+      <p>
+        The pattern is always the same: define the pure-Python version, alias it
+        to <code>_Py*</code>, rebind the public name to the C version, alias
+        <em>that</em> to <code>_C*</code>. <strong>Both implementations stay
+        importable</strong>, which is the whole point — and is why
+        <a href="0009-who-owns-what.html">lesson 9</a>'s class statement reads
+        <code>class Task(futures._PyFuture)</code> rather than
+        <code>class Task(Future)</code>.
+      </p>
+
+      <p>On a stock CPython 3.13.11 install:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+        </div>
+        <pre><code>asyncio.Task is _asyncio.Task            -> True
+asyncio.Future is _asyncio.Future        -> True
+asyncio.tasks.current_task is C version  -> True
+asyncio.events._get_running_loop.__module__ -> '_asyncio'
+asyncio.tasks._scheduled_tasks is _asyncio._scheduled_tasks -> True</code></pre>
+      </div>
+
+      <p class="small-print">
+        Measured for the research document on CPython 3.13.11, GIL enabled,
+        Linux. Reproducible in one interpreter session.
+      </p>
+
+      <h2>What the C version actually accelerates</h2>
+
+      <p>
+        Reading <code>Modules/_asynciomodule.c</code>, the wins are structural
+        rather than algorithmic. Seven of them, the first two being the ones that
+        matter:
+      </p>
+
+      <h3>1. Struct fields instead of instance dicts</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C</span>
+        </div>
+        <pre><code class="language-c">#define FutureObj_HEAD(prefix)                                              \
+    PyObject_HEAD                                                           \
+    PyObject *prefix##_loop;                                                \
+    PyObject *prefix##_callback0;                                           \
+    PyObject *prefix##_context0;                                            \
+    PyObject *prefix##_callbacks;                                           \
+    PyObject *prefix##_exception;                                           \
+    PyObject *prefix##_exception_tb;                                        \
+    PyObject *prefix##_result;                                              \
+    PyObject *prefix##_source_tb;                                           \
+    PyObject *prefix##_cancel_msg;                                          \
+    PyObject *prefix##_cancelled_exc;                                       \
+    fut_state prefix##_state;                                               \
+    /* These bitfields need to be at the end of the struct
+       so that these and bitfields from TaskObj are contiguous.
+    */                                                                      \
+    unsigned prefix##_log_tb: 1;                                            \
+    unsigned prefix##_blocking: 1;</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Modules/_asynciomodule.c:113-130</code> at tag
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Modules/_asynciomodule.c#L113-L130"
+          ><code>v3.13.11</code></a
+        >. This file is not shipped with a binary install; it was fetched from
+        the tag.
+      </p>
+
+      <p>
+        <code>_asyncio_future_blocking</code> — a Python attribute lookup in the
+        pure-Python path — is <code>fut_blocking</code>, a one-bit bitfield, here.
+        <code>Task</code> reuses the header macro so that the Future and Task
+        bitfields pack contiguously, which is the comment's whole subject.
+      </p>
+
+      <h3>2. A fast path that skips the attribute lookup entirely</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C</span>
+        </div>
+        <pre><code class="language-c">    /* Check if `result` is FutureObj or TaskObj (and not a subclass) */
+    if (Future_CheckExact(state, result) || Task_CheckExact(state, result)) {
+        PyObject *wrapper;
+        PyObject *tmp;
+        FutureObj *fut = (FutureObj*)result;
+
+        /* Check if `result` future is attached to a different loop */
+        if (fut-&gt;fut_loop != task-&gt;task_loop) {
+            goto different_loop;
+        }
+
+        if (!fut-&gt;fut_blocking) {
+            goto yield_insteadof_yf;
+        }
+
+        fut-&gt;fut_blocking = 0;</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Modules/_asynciomodule.c:2876-2891</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Modules/_asynciomodule.c#L2866-L3090"
+          ><code>task_step_handle_result_impl()</code></a
+        >.
+      </p>
+
+      <p>
+        That is <a href="0007-the-blocking-flag.html">lesson 7</a>'s dispatch,
+        compiled. But note: the generic path is still there, sixty lines further
+        down, doing the full
+        <code>PyObject_GetOptionalAttr(result, &amp;_Py_ID(_asyncio_future_blocking), &amp;o)</code>
+        and <code>PyObject_SetAttr(… Py_False)</code> for third-party
+        Future-likes. <strong>The C version implements both the fast structural
+        path and the documented duck-typed protocol, and they must agree.</strong>
+      </p>
+
+      <h3>3–7. The rest, briefly</h3>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The remaining optimisations in
+            <code>Modules/_asynciomodule.c</code> at <code>v3.13.11</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Optimisation</th>
+              <th>What it does</th>
+              <th>Line</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>One-element callback slot</td>
+              <td>
+                Most Futures have exactly one done-callback — the Task's
+                <code>__wakeup</code>. It goes in a dedicated
+                <code>fut_callback0</code> field; a list is allocated only from
+                the second callback onward.
+              </td>
+              <td>638–641</td>
+            </tr>
+            <tr>
+              <td>Coroutine type cache</td>
+              <td>
+                <code>is_coroutine</code> short-circuits on
+                <code>PyCoro_CheckExact</code> and otherwise consults a set of
+                known-good types, “to avoid the cost of even calling a
+                pure-Python function in 99.9% cases”.
+              </td>
+              <td>217–224</td>
+            </tr>
+            <tr>
+              <td>Await-iterator free-list</td>
+              <td>
+                <code>Future.__await__</code> allocates an iterator per await;
+                the C version recycles them — but only under
+                <code>#ifndef Py_GIL_DISABLED</code>.
+              </td>
+              <td>1755–1758</td>
+            </tr>
+            <tr>
+              <td>Running loop on the thread state</td>
+              <td>
+                The Python version keeps it in a <code>threading.local</code>;
+                the C version reads
+                <code>ts-&gt;asyncio_running_loop</code> off
+                <code>_PyThreadStateImpl</code> directly.
+              </td>
+              <td>3241–3242</td>
+            </tr>
+            <tr>
+              <td>Deferred task-name formatting</td>
+              <td>
+                <code>Task-1</code>, <code>Task-2</code> … are not formatted at
+                construction. The counter is stored as a <code>PyLong</code> and
+                becomes a string only if <code>get_name()</code> is called.
+              </td>
+              <td>2086–2093</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>How much is it worth? Less than you would guess</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+        </div>
+        <pre><code>_CTask   200k bare-yield steps: 0.286s
+_PyTask  200k bare-yield steps: 0.319s      ratio 1.12x
+C Task+Future    100k awaits:   0.278s
+Py Task+Future   100k awaits:   0.411s      ratio 1.48x</code></pre>
+      </div>
+
+      <p class="small-print">
+        Measured for the research document on CPython 3.13.11, Linux 6.8, GIL
+        enabled, <code>EpollSelector</code>. Three repetitions, best of each.
+        <strong>Single machine, no CPU pinning, no <code>pyperf</code></strong> —
+        these establish an order of magnitude and nothing finer, and are reported
+        because they falsify a plausible assumption rather than because they
+        characterise performance.
+      </p>
+
+      <p>
+        A 1.1×–1.5× improvement, not 10×. The reason is the instructive part.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">Why the accelerator hits a floor</span>
+        <p>
+          Every step of a Task still goes through
+          <code>loop.call_soon</code> → <code>events.Handle.__init__</code> →
+          <code>contextvars.copy_context()</code> →
+          <code>_ready.append</code> → <code>Handle._run</code> →
+          <code>Context.run</code>. That is six pure-Python operations per step,
+          and the accelerator touches none of them.
+        </p>
+        <p>
+          The C module makes <code>Task</code> and <code>Future</code> cheap.
+          <strong>The loop remains the floor.</strong>
+        </p>
+      </div>
+
+      <h2>Why there is no C event loop</h2>
+
+      <p>
+        This is not an omission. The C <code>Task</code> schedules itself by
+        calling the <em>Python</em> <code>loop.call_soon</code> through the
+        ordinary attribute-lookup path:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C</span>
+        </div>
+        <pre><code class="language-c">static int
+call_soon(asyncio_state *state, PyObject *loop, PyObject *func, PyObject *arg,
+          PyObject *ctx)
+{
+    PyObject *handle;
+
+    if (ctx == NULL) {
+        PyObject *stack[] = {loop, func, arg};
+        size_t nargsf = 3 | PY_VECTORCALL_ARGUMENTS_OFFSET;
+        handle = PyObject_VectorcallMethod(&amp;_Py_ID(call_soon), stack, nargsf, NULL);
+    }</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Modules/_asynciomodule.c:288-298</code> at tag
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Modules/_asynciomodule.c#L288-L298"
+          ><code>v3.13.11</code></a
+        >.
+      </p>
+
+      <p>
+        That is PEP 3156's “using only the public interface of the event loop”
+        constraint — the same clause that produced
+        <code>_asyncio_future_blocking</code> in
+        <a href="0007-the-blocking-flag.html">lesson 7</a> — enforced in C. The
+        accelerator <em>cannot</em> reach into <code>_ready</code>, because doing
+        so would break third-party loops. So <code>_ready</code>,
+        <code>_scheduled</code>, <code>_run_once</code>,
+        <code>call_soon</code>, <code>Handle</code> and
+        <code>TimerHandle</code> are pure Python in every CPython build, always.
+      </p>
+
+      <h2>The parity requirement</h2>
+
+      <p>
+        Because both implementations are live, they are tested against each
+        other in a matrix. <code>test_tasks.py</code> instantiates the same
+        <code>BaseTaskTests</code> body six ways:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">@unittest.skipUnless(hasattr(futures, '_CFuture') and
+                     hasattr(tasks, '_CTask'),
+                     'requires the C _asyncio module')
+class CTask_CFuture_Tests(BaseTaskTests, SetMethodsTest,
+                          test_utils.TestCase):
+
+    Task = getattr(tasks, '_CTask', None)
+    Future = getattr(futures, '_CFuture', None)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/test/test_asyncio/test_tasks.py:2821-2828</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/test/test_asyncio/test_tasks.py#L2710-L2900"
+          >the parity matrix</a
+        >, which also contains <code>CTask_PyFuture_Tests</code>,
+        <code>PyTask_CFuture_Tests</code>, <code>PyTask_PyFuture_Tests</code> and
+        two subclass variants.
+      </p>
+
+      <p>
+        And a decorator injects an extra assertion into the subclass variants,
+        which is the interesting one:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        self.assertEqual(
+            dict(task.calls),
+            {'add_done_callback': 1})</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/test/test_asyncio/test_tasks.py:2745-2747</code>, against a
+        <code>CommonFuture</code> mixin that counts method calls
+        (<code>2710-2724</code>).
+      </p>
+
+      <p>
+        That is not a performance test. It asserts that a C <code>Task</code>
+        awaiting a Python <code>Future</code> — and every other cross combination
+        — calls <code>add_done_callback</code>
+        <strong>exactly once</strong>: that the C fast path and the generic
+        duck-typed path produce identical <em>observable call sequences</em>.
+        The commented-out lines in <code>Task.cancel</code> from
+        <a href="0009-who-owns-what.html">lesson 9</a> carry the same requirement
+        as a note to a future maintainer.
+      </p>
+
+      <div class="aside note">
+        <span class="label">One place parity is not exact</span>
+        <p>
+          The Python <code>_get_running_loop</code> carries a PID guard
+          (<code>events.py:747-776</code>) — it stores
+          <code>(loop, pid)</code> and returns the loop only if the pid still
+          matches. The C one reads
+          <code>ts-&gt;asyncio_running_loop</code> with no PID check at all. The
+          gap is closed by a fork hook that applies to both
+          (<code>events.py:874-882</code>, registered with
+          <code>os.register_at_fork</code>), so behaviour is equivalent on any
+          platform that has one — but it is not the same code.
+          <strong>[impl detail]</strong>
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which of these is <em>not</em> replaced by the C
+          <code>_asyncio</code> module?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>asyncio.Future</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>asyncio.Task</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              <code>asyncio.Handle</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>asyncio.current_task</code>
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>Handle</code> belongs to the loop, and the loop is pure Python in
+          every build — there is no loop type in
+          <code>Modules/_asynciomodule.c</code> and
+          <code>base_events.py</code> has no accelerator import. The other three
+          are all rebound at import time.
+          <code>current_task</code> gained its C implementation in 3.12.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why is the C Task only about 1.1× to 1.5× faster than the Python one?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the C code still holds the interpreter lock
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because every step still goes through the Python loop
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the measurement covers the whole of the poll
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the fast path is disabled for future subclasses
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>call_soon</code>, <code>Handle.__init__</code>,
+          <code>copy_context</code>, <code>deque.append</code>,
+          <code>Handle._run</code> and <code>Context.run</code> are six
+          pure-Python operations per task step, and the accelerator touches none
+          of them — by design, because PEP 3156 forbids the scheduler from
+          reaching past the loop's public API. The fast path is real, but the
+          floor underneath it is Python.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        That closes the coroutine arc. The remaining machinery is the half of
+        <code>_run_once</code> the round trip did not use:
+        <a href="0011-the-timer-heap.html">lesson 11</a> takes step 5 and the
+        clock, and <a href="0012-cancelled-timers-and-sleep.html">lesson 12</a>
+        takes step 1 and <code>asyncio.sleep</code>.
+      </p>
+
+      <p>
+        Which symbols <code>_asynciomodule.c</code> exports, and how that set has
+        moved across releases, is tracked in the
+        <a href="../reference/version-ledger.html#symbol-table-for-modules-asynciomodule-c"
+          >version ledger</a
+        >. That is the
+        page to re-check first when a new Python lands, because it is the part of
+        this lesson most likely to have gone stale.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Modules/_asynciomodule.c#L2736-L3090"
+              ><code>Modules/_asynciomodule.c</code>, lines 2736–3090 at tag
+              <code>v3.13.11</code></a
+            >
+            — <code>task_step_impl</code> and
+            <code>task_step_handle_result_impl</code>. Read them beside
+            <code>Lib/asyncio/tasks.py:298-371</code>, which you already know.
+            Seeing the same logic twice, in two languages, kept in step by a test
+            matrix, is the clearest possible demonstration of what “parity
+            requirement” costs.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: “what would break if the C
+          Task appended to <code>loop._ready</code> directly instead of calling
+          <code>call_soon</code>?” The answer is not “nothing, it would be
+          faster”, and working out why is the whole lesson.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Another natural pause: lessons 7–10 are one arc, the coroutine layer.
+            Before lesson 11, try to state which parts of asyncio are C, which
+            are Python, and — the part worth the effort — <em>why the division
+            falls where it does</em>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0009-who-owns-what.html">9. Who owns what</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0011-the-timer-heap.html">11. The timer heap</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

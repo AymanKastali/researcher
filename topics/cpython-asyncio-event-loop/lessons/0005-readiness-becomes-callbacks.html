@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>5. Readiness becomes callbacks — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0005</span>
+        <h1>Readiness becomes callbacks</h1>
+        <p class="lesson-mission">
+          Step 4, which is twelve lines, and the seam it sits on. The whole of
+          asyncio's I/O dispatch is one loop over a list of ready descriptors —
+          and knowing that it runs no user code is what makes the rest of the
+          topic predictable.
+        </p>
+      </header>
+
+      <p class="lead">
+        The poll has returned. Somewhere in the process a socket has data. What
+        happens next is much less than most people assume, and the fact that it
+        is less is the design.
+      </p>
+
+      <h2>All of it</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _process_events(self, event_list):
+        for key, mask in event_list:
+            fileobj, (reader, writer) = key.fileobj, key.data
+            if mask &amp; selectors.EVENT_READ and reader is not None:
+                if reader._cancelled:
+                    self._remove_reader(fileobj)
+                else:
+                    self._add_callback(reader)
+            if mask &amp; selectors.EVENT_WRITE and writer is not None:
+                if writer._cancelled:
+                    self._remove_writer(fileobj)
+                else:
+                    self._add_callback(writer)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/selector_events.py:740-752</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/selector_events.py#L740-L752"
+          ><code>BaseSelectorEventLoop._process_events()</code></a
+        >.
+      </p>
+
+      <p>
+        That is the entirety of asyncio's I/O dispatch. Three things are worth
+        naming.
+      </p>
+
+      <h3><code>key.data</code> is always a two-tuple</h3>
+
+      <p>
+        The <code>selectors</code> module lets a registration carry an opaque
+        payload. asyncio's payload is invariably
+        <code>(reader_handle, writer_handle)</code>, either element possibly
+        <code>None</code>. There is at most one reader and at most one writer per
+        descriptor, and <a href="0008-a-complete-round-trip.html">lesson 8</a>
+        shows what happens when you register a second one.
+      </p>
+
+      <h3>“Ready” becomes “queued”, not “run”</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _add_callback(self, handle):
+        """Add a Handle to _ready."""
+        if not handle._cancelled:
+            self._ready.append(handle)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:1955-1958</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L1955-L1958"
+          ><code>BaseEventLoop._add_callback()</code></a
+        >.
+      </p>
+
+      <p>
+        <strong>No user code runs in step 4.</strong>
+        <code>_process_events</code> moves handles between data structures and
+        returns. This is what makes lesson 2's claim exact rather than
+        approximate: the drain really is the only place callbacks are called, and
+        the I/O path is no exception to it.
+      </p>
+
+      <h3>A cancelled handle deregisters the descriptor</h3>
+
+      <p>
+        Note the asymmetry with the drain. In step 6, a cancelled handle is
+        skipped and forgotten. Here, a cancelled reader causes
+        <code>_remove_reader(fileobj)</code> — because a readiness registration
+        is a standing subscription with the kernel, and leaving it in place would
+        make the loop spin on an event nobody wants.
+      </p>
+
+      <h2>The seam</h2>
+
+      <p>
+        On the abstract base class, this method does not exist:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _write_to_self(self):
+        """Write a byte to self-pipe, to wake up the event loop.
+
+        This may be called from a different thread.
+
+        The subclass is responsible for implementing the self-pipe.
+        """
+        raise NotImplementedError
+
+    def _process_events(self, event_list):
+        """Process selector events."""
+        raise NotImplementedError</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:541-552</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L541-L552"
+          >the two stubs that mark the boundary of the “event loop proper”</a
+        >.
+      </p>
+
+      <p>
+        Two <code>NotImplementedError</code>s is a very small interface, and it
+        is the entire contract between the scheduling half of the loop and the
+        I/O half. Everything above that line — <code>_ready</code>,
+        <code>_scheduled</code>, <code>call_soon</code>, <code>Handle</code>, the
+        clock, <code>_run_once</code> itself — is portable scheduling that has
+        never heard of a file descriptor. Everything below it is
+        <code>BaseSelectorEventLoop</code> (Unix, and Windows'
+        <code>SelectorEventLoop</code>) or <code>ProactorEventLoop</code>
+        (Windows IOCP).
+      </p>
+
+      <p>
+        This split is not an accident of the implementation. It is the first
+        paragraph of the design document, which the module docstring repeats
+        almost verbatim:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The event loop can be broken up into a multiplexer (the part
+            responsible for notifying us of I/O events) and the event loop
+            proper, which wraps a multiplexer with functionality for scheduling
+            callbacks, immediately or at a given time in the future.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L3-L6"
+            ><code>Lib/asyncio/base_events.py:3-6</code></a
+          >, the module docstring, restating
+          <a class="citation" href="https://peps.python.org/pep-3156/">PEP 3156</a>.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Why the seam is worth remembering</span>
+        <p>
+          It tells you which of these lessons are about <em>asyncio</em> and
+          which are about <em>CPython's selector loop</em>. Lessons 1–3, 6, 11 and
+          12 are above the line and hold for any loop built on
+          <code>BaseEventLoop</code>. Lessons 4, 5, 8 and 13 are below it, and
+          nothing in them should be transferred to Windows IOCP — a completion
+          model, not a readiness model — or to uvloop, which replaces the whole
+          stack.
+        </p>
+      </div>
+
+      <h2>What the loop refuses to know</h2>
+
+      <p>
+        Notice what is <em>not</em> in <code>_process_events</code>: no
+        buffering, no protocols, no partial reads, no error handling beyond the
+        cancelled check. It does not call <code>recv</code>. It does not know
+        whether the handle it queued belongs to a transport, a
+        <code>sock_recv</code> Future, or the self-pipe. Those distinctions live
+        entirely in the callback that was registered, and the loop treats all
+        three identically.
+      </p>
+
+      <p>
+        That indifference is what lets the self-pipe work at all. The mechanism
+        by which another thread wakes a parked loop
+        (<a href="0013-threads-and-the-self-pipe.html">lesson 13</a>) is nothing
+        more than a socket registered here like any other, whose callback throws
+        the bytes away.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does <code>_process_events</code> do when a descriptor is ready
+          for reading?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Calls <code>recv</code> and passes the bytes straight onward
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Appends the stored reader handle to the deque
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Resolves the future the reader was created for
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Runs the reader callback inside its own context
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          It appends, and nothing more. The <code>recv</code> happens inside the
+          callback, in step 6; resolving a Future happens inside
+          <em>that</em>; and running a handle in its context is
+          <code>Handle._run</code>, which is
+          <a href="0006-inside-handle-run.html">lesson 6</a>. Keeping step 4 free
+          of user code is what makes the drain the single place anything can
+          happen.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which two methods does <code>BaseEventLoop</code> leave unimplemented
+          for its I/O subclasses?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>_add_reader</code> and <code>_add_writer</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              <code>_process_events</code> and <code>_write_to_self</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>_run_once</code> and <code>_add_callback</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              <code>_make_self_pipe</code> and <code>sock_recv</code>
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Exactly those two, at <code>base_events.py:541-552</code>: turn events
+          into callbacks, and wake me up from another thread. Everything else
+          about I/O is defined further down the hierarchy, and everything about
+          scheduling is defined above it. Two stubs is the whole seam.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        The handle is in <code>_ready</code>, the drain has reached it, and it is
+        about to be run.
+        <a href="0006-inside-handle-run.html">Lesson 6</a> is the eighteen lines
+        that do the running — which turn out to decide how context variables
+        propagate and which exceptions can kill a loop.
+      </p>
+
+      <p>
+        Four of the six steps are now open. The
+        <a href="../reference/run-once.html#the-six-steps"
+          ><code>_run_once</code> reference</a
+        >
+        carries the whole table, so you can see which two are left and where each
+        step lives, without re-reading the lessons that opened them.
+      </p>
+
+      <p>
+        That closes the first arc. Lessons 1–6 describe a callback machine with
+        no coroutines in it at all, which is exactly what PEP 3156 says asyncio
+        fundamentally is:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This is a separate toplevel section because its status is different
+            from the event loop interface. Usage of coroutines is optional, and
+            it is perfectly fine to write code using callbacks only.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#coroutines-and-the-scheduler"
+            >PEP 3156 § Coroutines and the Scheduler</a
+          >. <strong>[guaranteed]</strong> — and the reason lesson 7 can treat
+          the coroutine layer as something bolted on top rather than something
+          built in.
+        </figcaption>
+      </figure>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://peps.python.org/pep-3156/"
+              >PEP 3156 — Asynchronous IO Support Rebooted: the “asyncio”
+              Module</a
+            >, Guido van Rossum, 2012 — read the first three sections and
+            § Coroutines and the Scheduler. It is the design document for
+            everything you have read so far, it is readable in an evening, and it
+            is the source lesson 15 will eventually argue <em>against</em> in two
+            specific places. Knowing it well is what makes that argument
+            legible.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking now: “which of the first five
+          lessons would still be true under uvloop?” The answer is a good test of
+          whether the seam has landed, and getting it wrong is informative.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is a natural long pause. Lessons 1–5 are one complete idea — a
+            callback machine — and lesson 6 finishes it. Before going on, try to
+            describe the whole of one iteration to someone else, out loud, without
+            notes. Explaining it is a harder retrieval than recalling it, and
+            harder retrieval is the point.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0004-the-only-blocking-call.html"
+              >4. The only blocking call</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0006-inside-handle-run.html"
+              >6. Inside <code>Handle._run</code></a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

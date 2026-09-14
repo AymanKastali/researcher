@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7. The blocking flag — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0007</span>
+        <h1>The blocking flag</h1>
+        <p class="lesson-mission">
+          The second hinge. One attribute name joins every coroutine you have
+          ever written to the callback machine of lessons 1–6 — and the reason it
+          is a duck-typed attribute rather than a method is a constraint written
+          down in 2012.
+        </p>
+      </header>
+
+      <p class="lead">
+        <code>_asyncio_future_blocking</code>. It is the single most important
+        identifier in <code>asyncio</code> and it appears exactly once in the
+        published documentation. This lesson teaches the protocol cold, on its
+        own; <a href="0008-a-complete-round-trip.html">lesson 8</a> then watches
+        it work.
+      </p>
+
+      <h2>Start with the declaration</h2>
+
+      <p>
+        The comment above it is the clearest single statement of design in the
+        whole codebase, so read it before the code:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    # This field is used for a dual purpose:
+    # - Its presence is a marker to declare that a class implements
+    #   the Future protocol (i.e. is intended to be duck-type compatible).
+    #   The value must also be not-None, to enable a subclass to declare
+    #   that it is not compatible by setting this to None.
+    # - It is set by __iter__() below so that Task._step() can tell
+    #   the difference between
+    #   `await Future()` or`yield from Future()` (correct) vs.
+    #   `yield Future()` (incorrect).
+    _asyncio_future_blocking = False</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/futures.py:59-68</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/futures.py#L59-L68"
+          >a class attribute on <code>Future</code></a
+        >.
+      </p>
+
+      <h2>The awaiting side</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __await__(self):
+        if not self.done():
+            self._asyncio_future_blocking = True
+            yield self  # This tells Task to wait for completion.
+        if not self.done():
+            raise RuntimeError("await wasn't used with future")
+        return self.result()  # May raise too.
+
+    __iter__ = __await__  # make compatible with 'yield from'.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/futures.py:283-291</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/futures.py#L283-L291"
+          ><code>Future.__await__()</code></a
+        >.
+      </p>
+
+      <p>
+        Six lines, and they are the bottom of every <code>await</code> chain you
+        have ever written. That is not a metaphor; PEP 492 makes it a mechanism:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Any <code>yield from</code> chain of calls ends with a
+            <code>yield</code>. This is a fundamental mechanism of how
+            <em>Futures</em> are implemented. Since, internally, coroutines are a
+            special kind of generators, every <code>await</code> is suspended by
+            a <code>yield</code> somewhere down the chain of
+            <code>await</code> calls (please refer to PEP 3156 for a detailed
+            explanation).
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-0492/#await-expression"
+            >PEP 492 § Await Expression</a
+          >. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        Whatever depth of <code>await</code> you write, the object that finally
+        comes out of <code>coro.send(None)</code> is a Future, and the flag on it
+        is <code>True</code>. You can watch that happen:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">import asyncio
+
+f = asyncio.Future(loop=asyncio.new_event_loop())
+f._asyncio_future_blocking          # -> False
+it = f.__await__()
+next(it) is f                       # -> True   (the future yields *itself*)
+f._asyncio_future_blocking          # -> True</code></pre>
+      </div>
+
+      <p class="small-print">
+        Reproduced from the research document's measurements, run against CPython
+        3.13.11. The three results are the whole protocol as seen from outside.
+      </p>
+
+      <div class="aside note">
+        <span class="label">A direction PEP 492 got backwards, harmlessly</span>
+        <p>
+          PEP 492 prescribed “to enable Future objects in <code>await</code>
+          statements, the only change is to add <code>__await__ = __iter__</code>
+          line to <code>asyncio.Future</code> class”
+          (<a
+            class="citation"
+            href="https://peps.python.org/pep-0492/#await-expression"
+            >§ Await Expression</a
+          >). CPython defines <code>__await__</code> and aliases
+          <code>__iter__</code> to it — the opposite. From outside the two are
+          indistinguishable, which is why it has never mattered.
+        </p>
+      </div>
+
+      <h2>The receiving side</h2>
+
+      <p>
+        This is the block that turns a yielded object into a scheduling decision.
+        It is the single most important piece of code in <code>asyncio</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        else:
+            blocking = getattr(result, '_asyncio_future_blocking', None)
+            if blocking is not None:
+                # Yielded Future must come from Future.__iter__().
+                if futures._get_loop(result) is not self._loop:
+                    new_exc = RuntimeError(
+                        f'Task {self!r} got Future '
+                        f'{result!r} attached to a different loop')
+                    self._loop.call_soon(
+                        self.__step, new_exc, context=self._context)
+                elif blocking:
+                    if result is self:
+                        new_exc = RuntimeError(
+                            f'Task cannot await on itself: {self!r}')
+                        self._loop.call_soon(
+                            self.__step, new_exc, context=self._context)
+                    else:
+                        result._asyncio_future_blocking = False
+                        result.add_done_callback(
+                            self.__wakeup, context=self._context)
+                        self._fut_waiter = result
+                        if self._must_cancel:
+                            if self._fut_waiter.cancel(
+                                    msg=self._cancel_message):
+                                self._must_cancel = False
+                else:
+                    new_exc = RuntimeError(
+                        f'yield was used instead of yield from '
+                        f'in task {self!r} with {result!r}')
+                    self._loop.call_soon(
+                        self.__step, new_exc, context=self._context)
+
+            elif result is None:
+                # Bare yield relinquishes control for one event loop iteration.
+                self._loop.call_soon(self.__step, context=self._context)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:323-357</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L323-L357"
+          >inside <code>Task.__step_run_and_handle_result()</code></a
+        >. Two further branches follow, for a yielded generator and for anything
+        else; both raise.
+      </p>
+
+      <h2>Read it as a three-valued signal</h2>
+
+      <p>
+        The attribute is doing three jobs at once, and the design only becomes
+        legible when you stop reading it as a boolean:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>getattr(result, '_asyncio_future_blocking', None)</code> and
+            what the Task does about it.
+          </caption>
+          <thead>
+            <tr>
+              <th>Value</th>
+              <th>Meaning</th>
+              <th>The Task's response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>None</code> — absent, or explicitly <code>None</code></td>
+              <td>Not a Future at all.</td>
+              <td>
+                Fall through: a bare <code>yield</code> re-schedules the step; a
+                generator or anything else raises.
+              </td>
+            </tr>
+            <tr>
+              <td><code>False</code></td>
+              <td>
+                Is a Future, but it was <code>yield</code>ed rather than
+                <code>await</code>ed.
+              </td>
+              <td>
+                <code>RuntimeError('yield was used instead of yield from …')</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>True</code></td>
+              <td>Is a Future and it suspended properly.</td>
+              <td>
+                Clear the flag, subscribe <code>__wakeup</code>, record it in
+                <code>_fut_waiter</code>, return.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>The <code>None</code> case is a deliberate opt-out</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">def isfuture(obj):
+    """Check for a Future.
+
+    This returns True when obj is a Future instance or is advertising
+    itself as duck-type compatible by setting _asyncio_future_blocking.
+    See comment in Future for more details.
+    """
+    return (hasattr(obj.__class__, '_asyncio_future_blocking') and
+            obj._asyncio_future_blocking is not None)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_futures.py:13-21</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_futures.py#L13-L21"
+          ><code>isfuture()</code></a
+        >. The documentation for <code>asyncio.isfuture</code> describes a
+        <em>weaker</em> test than this one performs — see
+        <a href="0015-docs-versus-source.html">lesson 15</a>.
+      </p>
+
+      <h3>The <code>False</code> case catches a classic mistake</h3>
+
+      <p>
+        <code>yield fut</code> inside a coroutine hands the Future to the Task
+        without going through <code>Future.__await__</code>, so the flag was
+        never set to <code>True</code>. The Task refuses rather than
+        mis-scheduling.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The flag is a one-shot token</span>
+        <p>
+          <code>__await__</code> <strong>mints</strong> it —
+          <code>self._asyncio_future_blocking = True</code>, at
+          <code>futures.py:285</code>. <code>__step</code>
+          <strong>burns</strong> it immediately —
+          <code>result._asyncio_future_blocking = False</code>, at
+          <code>tasks.py:340</code>, before doing anything else with the Future.
+          A second <code>yield</code> of the same Future without a second
+          <code>__await__</code> is rejected, because the token has already been
+          spent.
+        </p>
+      </div>
+
+      <p>And the other end of the same token is checked back in <code>__await__</code>:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        if not self.done():
+            raise RuntimeError("await wasn't used with future")</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/futures.py:287-288</code>. If control returns to
+        <code>__await__</code> and the Future is <em>still pending</em>, somebody
+        resumed the coroutine without resolving it — the Task's side of the
+        contract was broken.
+      </p>
+
+      <p>The C implementation encodes the same check as a bitfield read:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">C</span>
+        </div>
+        <pre><code class="language-c">    if (fut-&gt;fut_state == STATE_PENDING) {
+        if (!fut-&gt;fut_blocking) {
+            fut-&gt;fut_blocking = 1;
+            *result = Py_NewRef(fut);
+            return PYGEN_NEXT;
+        }
+        PyErr_SetString(PyExc_RuntimeError,
+                        "await wasn't used with future");
+        return PYGEN_ERROR;
+    }</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Modules/_asynciomodule.c:1572-1581</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Modules/_asynciomodule.c#L1557-L1593"
+          ><code>FutureIter_am_send()</code> at tag <code>v3.13.11</code></a
+        >. This file is not shipped with a binary install;
+        <a href="0010-the-c-accelerator.html">lesson 10</a> is about it.
+      </p>
+
+      <h2>Why an <em>attribute</em>, of all things</h2>
+
+      <p>
+        This is the part worth understanding rather than memorising. The whole
+        protocol is <strong>[impl detail]</strong> — no PEP specifies the
+        attribute, and the only place it surfaces in the documentation is the
+        definition of <code>asyncio.isfuture</code>. But PEP 3156 describes the
+        layering that <em>forced</em> it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The scheduler has no public interface. You interact with it by using
+            <code>yield from future</code> and <code>yield from task</code>. In
+            fact, there is no single object representing the scheduler — its
+            behavior is implemented by the <code>Task</code> and
+            <code>Future</code> classes using only the public interface of the
+            event loop, so it will work with third-party event loop
+            implementations, too.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://peps.python.org/pep-3156/#the-scheduler"
+            >PEP 3156 § The Scheduler</a
+          >. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        Read that as a constraint and the design becomes forced. The scheduler
+        may use only <code>call_soon</code>, <code>create_future</code> and
+        <code>time</code>. So when a coroutine yields an object, the Task
+        <strong>cannot ask the loop “is this a Future of yours?”</strong> — there
+        is no such public method, and adding one would break the promise that
+        third-party loops work unchanged. The Task has to interrogate the
+        yielded object itself.
+      </p>
+
+      <p>
+        A duck-typed attribute is the only tool available. Not
+        <code>isinstance</code>, because that would exclude third-party
+        Future-likes. Not a method call, because calling an arbitrary object's
+        method during scheduling is a liability. An attribute read, with a
+        three-valued convention, is what is left.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A coroutine does <code>yield fut</code> instead of
+          <code>await fut</code>. What does the Task do?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Waits on the future anyway, as intended
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Throws a RuntimeError back into the coroutine
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Ignores it and schedules another step soon
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Cancels itself and fails the pending future
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The flag is <code>False</code>, because only
+          <code>Future.__await__</code> sets it to <code>True</code>. That is the
+          middle row of the table: “is a Future, yielded wrongly”, answered with
+          <code>RuntimeError('yield was used instead of yield from …')</code>
+          scheduled via <code>call_soon(self.__step, new_exc)</code>. Note that
+          even the error is delivered through the ready queue rather than raised
+          inline.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does the Task inspect an attribute rather than ask the loop whether
+          the object is one of its Futures?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because attribute reads are faster than method calls
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because the scheduler is restricted to public API
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the loop keeps no such futures registry
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a subclass would override any such method
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          PEP 3156 makes the scheduler's use of the loop's public interface a
+          design promise, so that third-party loops work without modification.
+          There is no public “is this mine?” method and adding one would break
+          that promise, so the Task must interrogate the object. Speed is a real
+          consideration in the C path, but it is a consequence rather than the
+          reason.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        You now have both halves: a callback machine, and the handshake that
+        hands a suspended coroutine to it.
+        <a href="0008-a-complete-round-trip.html">Lesson 8</a> puts them
+        together and follows a single <code>await</code> all the way down to
+        <code>epoll_wait</code> and back — counting, on the way, how many loop
+        iterations the trip actually costs.
+      </p>
+
+      <p>
+        The three-valued table is the thing to keep. It is reproduced, with the
+        response each value provokes, under
+        <a href="../reference/run-once.html#the-asyncio-future-blocking-signal"
+          >the <code>_asyncio_future_blocking</code> signal</a
+        > in the
+        <code>_run_once</code> reference.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/futures.py#L30-L120"
+              ><code>Lib/asyncio/futures.py</code>, the <code>Future</code> class
+              header at tag <code>v3.13.11</code></a
+            >
+            — the docstring, the state constants and the
+            <code>_asyncio_future_blocking</code> comment in their original
+            context. Ninety lines, and it is the closest thing asyncio has to a
+            specification of its own core object.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. The best question here is a construction
+          one: “write me the smallest class that a Task will happily
+          <code>await</code>, without inheriting from <code>Future</code>.”
+          Building one, and then breaking it by setting the attribute to
+          <code>None</code>, is the fastest way to make this protocol permanent.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Leave a day. Before lesson 8, try to reproduce the three-valued table
+            from memory — value, meaning, response — and then say <em>why</em> a
+            three-valued attribute exists at all. The second half is the part
+            that will still be there in a year.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0006-inside-handle-run.html"
+              >6. Inside <code>Handle._run</code></a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0008-a-complete-round-trip.html">8. A complete round trip</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

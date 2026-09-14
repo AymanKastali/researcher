@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>12. Cancelled timers, and sleep — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0012</span>
+        <h1>Cancelled timers, and <code>sleep</code></h1>
+        <p class="lesson-mission">
+          Step 1 — the step people forget when reciting the six. Two strategies
+          for a problem heaps are bad at, two constants that exist nowhere in the
+          documentation, one reproducible oddity, and the coroutine that makes
+          the whole mechanism necessary.
+        </p>
+      </header>
+
+      <p class="lead">
+        You cannot cheaply remove an element from the middle of a binary heap. A
+        server with ten thousand outstanding timeouts that mostly never fire has
+        ten thousand cancellations to deal with, and step 1 is asyncio's answer.
+      </p>
+
+      <h2>Cancelling a timer does not remove it</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def cancel(self):
+        if not self._cancelled:
+            self._loop._timer_handle_cancelled(self)
+        super().cancel()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:157-160</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L157-L160"
+          ><code>TimerHandle.cancel()</code></a
+        >.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _timer_handle_cancelled(self, handle):
+        """Notification that a TimerHandle has been cancelled."""
+        if handle._scheduled:
+            self._timer_cancelled_count += 1</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:1965-1968</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L1965-L1968"
+          ><code>BaseEventLoop._timer_handle_cancelled()</code></a
+        >.
+      </p>
+
+      <p>
+        It sets a flag and tells the loop. <code>_timer_cancelled_count</code> is
+        a running estimate of how much dead weight the heap is carrying, and step
+        1 uses it to choose between two strategies.
+      </p>
+
+      <h2>The two strategies</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python"># Minimum number of _scheduled timer handles before cleanup of
+# cancelled handles is performed.
+_MIN_SCHEDULED_TIMER_HANDLES = 100
+
+# Minimum fraction of _scheduled timer handles that are cancelled
+# before cleanup of cancelled handles is performed.
+_MIN_CANCELLED_TIMER_HANDLES_FRACTION = 0.5</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:56-62</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L56-L62"
+          >the two constants</a
+        >. Both, and the whole mechanism, are
+        <strong>[impl detail]</strong>. Neither appears anywhere on
+        <code>docs.python.org</code>.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Step 1 picks one of these on every iteration.
+          </caption>
+          <thead>
+            <tr>
+              <th>Strategy</th>
+              <th>When</th>
+              <th>What it does</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Cheap path</strong> (the <code>else</code> branch)</td>
+              <td>Always, unless the compaction condition holds.</td>
+              <td>
+                While the <em>head</em> of the heap is cancelled, pop it and
+                decrement the counter. Cancelled handles buried behind live ones
+                stay put.
+              </td>
+              <td>O(log&nbsp;n) per removal, touching nothing else.</td>
+            </tr>
+            <tr>
+              <td><strong>Compaction</strong> (the <code>if</code> branch)</td>
+              <td>
+                More than 100 scheduled timers <em>and</em> more than half of
+                them believed cancelled.
+              </td>
+              <td>
+                Walk the whole list, keep the live ones,
+                <code>heapq.heapify</code> the survivors, reset the counter to
+                zero.
+              </td>
+              <td>O(n), and it is why the counter exists at all.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Undocumented, but not incidental</span>
+        <p>
+          Nothing about this mechanism is promised. But CPython's own test suite
+          imports both constants <em>by name</em> and computes its fixtures from
+          them:
+        </p>
+        <div class="code">
+          <div class="code-meta">
+            <span class="code-language">Python</span>
+          </div>
+          <pre><code class="language-python">        # Need enough events to pass _MIN_CANCELLED_TIMER_HANDLES_FRACTION
+        # so that deletion of cancelled events will occur on next _run_once
+        add_cancel_count = int(math.ceil(
+            base_events._MIN_SCHEDULED_TIMER_HANDLES *
+            base_events._MIN_CANCELLED_TIMER_HANDLES_FRACTION)) + 1</code></pre>
+        </div>
+        <p class="small-print">
+          <code>Lib/test/test_asyncio/test_base_events.py:468-472</code> —
+          <a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/test/test_asyncio/test_base_events.py#L424-L498"
+            ><code>test__run_once_cancelled_event_cleanup</code></a
+          >. A behaviour a test pins is not the same as a behaviour that merely
+          happens — though it is still not the same as a promise.
+        </p>
+      </div>
+
+      <h2>An observation about the counter</h2>
+
+      <p>
+        This part is presented as an <em>observation</em>, not as a bug report,
+        and the distinction is deliberate.
+      </p>
+
+      <p>
+        <code>_timer_cancelled_count</code> is decremented in exactly one
+        place — the head-pop loop at <code>base_events.py:1996-1999</code> — and
+        reset in exactly one other, the compaction branch at
+        <code>base_events.py:1993</code>. Step 5, which
+        <em>also</em> removes handles from <code>_scheduled</code>, does not
+        touch it and does not test <code>_cancelled</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        while self._scheduled:
+            handle = self._scheduled[0]
+            if handle._when &gt;= end_time:
+                break
+            handle = heapq.heappop(self._scheduled)
+            handle._scheduled = False
+            self._ready.append(handle)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:2019-2025</code> — step 5, again. There
+        is no <code>_cancelled</code> test here.
+      </p>
+
+      <p>
+        So a cancelled timer that is <em>not</em> at the head during step 1
+        (because a live timer with an earlier deadline sits in front of it) but
+        <em>is</em> due during step 5 gets popped into <code>_ready</code> and
+        skipped at the drain — while <code>_timer_cancelled_count</code> keeps
+        counting it. That is reproducible:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">import asyncio
+
+loop = asyncio.new_event_loop()
+def cb(): pass
+now = loop.time()
+loop.call_at(now - 1.0, cb)                  # due, live, sorts first
+h = loop.call_at(now - 0.5, cb); h.cancel()  # due, cancelled, sorts behind it
+print(loop._timer_cancelled_count, len(loop._scheduled))   # -> 1 2
+loop._run_once()
+print(loop._timer_cancelled_count, len(loop._scheduled))   # -> 1 0
+loop.close()</code></pre>
+      </div>
+
+      <p class="small-print">
+        Reproduced from the research document, run on CPython 3.13.11. It prints
+        <code>1 2</code> then <code>1 0</code>: the heap is empty, and the loop
+        still believes one cancelled timer is in it.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">Why this is benign, and why it is still worth knowing</span>
+        <p>
+          The consequence is bounded. An inflated
+          <code>_timer_cancelled_count</code> inflates the ratio
+          <code>count / sched_count</code>, so compaction can fire
+          <em>earlier</em> than the 50% rule suggests — and compaction is correct
+          regardless of the counter, because it resets it. Nothing goes wrong.
+        </p>
+        <p>
+          But it does mean the counter is an <strong>upper bound</strong> on
+          cancelled scheduled handles, not a count of them. If you ever read that
+          attribute — in a metric, in a test, in a custom loop subclass — that is
+          the difference between a correct dashboard and a confusing one.
+        </p>
+        <p>
+          <strong>No CPython issue describing this was found.</strong> A semantic
+          search of <code>python/cpython</code> issues returned nothing matching.
+          The behaviour is certain; whether it is considered a defect or an
+          accepted approximation is not, and this page does not claim to know.
+        </p>
+      </div>
+
+      <h2><code>asyncio.sleep</code>, the canonical timer user</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">async def sleep(delay, result=None):
+    """Coroutine that completes after a given time (in seconds)."""
+    if delay &lt;= 0:
+        await __sleep0()
+        return result
+
+    if math.isnan(delay):
+        raise ValueError("Invalid delay: NaN (not a number)")
+
+    loop = events.get_running_loop()
+    future = loop.create_future()
+    h = loop.call_later(delay,
+                        futures._set_result_unless_cancelled,
+                        future, result)
+    try:
+        return await future
+    finally:
+        h.cancel()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:703-720</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L703-L720"
+          ><code>asyncio.sleep()</code></a
+        >.
+      </p>
+
+      <p>
+        A Future plus a <code>call_later</code> that resolves it — which is
+        <a href="0008-a-complete-round-trip.html">lesson 8</a>'s round trip with
+        a <code>TimerHandle</code> where the selector registration was. And,
+        critically, <code>h.cancel()</code> in the <code>finally</code>, so a
+        cancelled sleep does not leave a dead <code>TimerHandle</code> in the
+        heap forever.
+      </p>
+
+      <p>
+        <strong>That <code>cancel()</code> is what makes step 1 necessary.</strong>
+        A server with ten thousand <code>asyncio.wait_for</code>-style timeouts
+        that mostly <em>don't</em> fire is precisely the workload compaction
+        exists for: every successful operation cancels its own timeout, and every
+        cancellation is a dead handle somewhere in the heap.
+      </p>
+
+      <h3><code>sleep(0)</code> takes a different path entirely</h3>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">@types.coroutine
+def __sleep0():
+    """Skip one event loop run cycle.
+
+    This is a private helper for 'asyncio.sleep()', used
+    when the 'delay' is set to 0.  It uses a bare 'yield'
+    expression (which Task.__step knows how to handle)
+    instead of creating a Future object.
+    """
+    yield</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:691-700</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L691-L700"
+          ><code>__sleep0()</code></a
+        >.
+      </p>
+
+      <p>
+        A bare <code>yield</code> produces <code>result is None</code> in
+        <code>__step_run_and_handle_result</code> — the last branch of the table
+        in <a href="0007-the-blocking-flag.html">lesson 7</a> — which hits
+        <code>elif result is None:</code> at <code>tasks.py:355-357</code> and
+        simply <code>call_soon</code>s the next step.
+      </p>
+
+      <p>
+        So <code>await asyncio.sleep(0)</code> is the idiom for “yield to the
+        loop exactly once”, and it costs <strong>one <code>Handle</code>, no
+        Future, no timer</strong>. <strong>[impl detail]</strong> — the
+        documentation says only that “setting the delay to 0 provides an
+        optimized path to allow other tasks to run”, without specifying the
+        mechanism.
+      </p>
+
+      <h2>And <code>asyncio.timeout</code>, on the same machinery</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">            loop = events.get_running_loop()
+            if when &lt;= loop.time():
+                self._timeout_handler = loop.call_soon(self._on_timeout)
+            else:
+                self._timeout_handler = loop.call_at(when, self._on_timeout)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/timeouts.py:67-71</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/timeouts.py#L50-L71"
+          ><code>Timeout.reschedule()</code></a
+        >. <code>_on_timeout</code> is four lines and its body is
+        <code>self._task.cancel()</code> (<code>timeouts.py:127-132</code>).
+      </p>
+
+      <p>
+        One <code>TimerHandle</code> whose callback cancels the task, plus a
+        small state machine (<code>CREATED</code> → <code>ENTERED</code> →
+        <code>EXPIRING</code> → <code>EXPIRED</code>) that converts the resulting
+        <code>CancelledError</code> back into a <code>TimeoutError</code> on the
+        way out — but only if the cancellation count says this timeout owns it.
+        That counter is a 3.11 addition, and
+        <a href="0014-what-changed-311-to-313.html">lesson 14</a> is where it
+        comes from.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          When does the loop rebuild the whole timer heap to drop cancelled
+          handles?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Every iteration of the loop, before the poll timeout
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Above a hundred timers, half of them thought cancelled
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Whenever a cancelled handle arrives at the heap's head
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Only when the loop closes, or another timer appears
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Both conditions must hold — <code>_MIN_SCHEDULED_TIMER_HANDLES</code>
+          is 100 and <code>_MIN_CANCELLED_TIMER_HANDLES_FRACTION</code> is 0.5.
+          The third answer describes the <em>cheap</em> path, which runs on every
+          other iteration and only touches the head. Both constants are
+          implementation detail, and both are imported by name in CPython's test
+          suite.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does <code>await asyncio.sleep(0)</code> allocate?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A single Handle, appended to the loop's ready queue
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A Future plus a TimerHandle carrying a zero delay
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A TimerHandle whose deadline is already in the past
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Nothing at all, as the coroutine does not suspend
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>sleep(0)</code> routes to <code>__sleep0</code>, a bare
+          <code>yield</code>. The Task sees <code>result is None</code> and calls
+          <code>call_soon(self.__step)</code> — one <code>Handle</code>, no
+          Future, no heap entry. The coroutine <em>does</em> suspend; it just
+          suspends for exactly one iteration, which is the whole point of the
+          idiom.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Every step of <code>_run_once</code> has now been opened. What remains is
+        the world outside it: other threads, signals, and the one socket that
+        lets any of them get the loop's attention.
+        <a href="0013-threads-and-the-self-pipe.html">Lesson 13</a> is the most
+        operationally useful lesson in the topic.
+      </p>
+
+      <p>
+        Both constants introduced here, with their values and their evidence
+        grades, sit in the constants table of the
+        <a href="../reference/run-once.html#the-constants"
+          ><code>_run_once</code> reference</a
+        >
+        — alongside the others the loop depends on, which is the useful way to
+        see them.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/timeouts.py"
+              ><code>Lib/asyncio/timeouts.py</code> at tag
+              <code>v3.13.11</code></a
+            >
+            — the whole file, 184 lines. It is the smallest complete piece of
+            modern asyncio: one timer, one state machine, one exception
+            translation, and a comment-free demonstration of why
+            <code>cancelling()</code>/<code>uncancel()</code> had to be invented.
+            Read it before lesson 14 and that lesson's first section becomes
+            revision.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Genuinely worth asking here: “is the
+          <code>_timer_cancelled_count</code> observation a bug?” It is a good
+          question, this page deliberately does not answer it, and working out
+          what evidence <em>would</em> answer it is the transferable part.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 13, try to recite all six steps again — this is the
+            third time, and step 1 should finally be one of the ones you
+            remember. Then try to name the objects
+            <code>asyncio.sleep(1)</code> puts into the loop — the code above
+            names two of them explicitly, and
+            <a href="0008-a-complete-round-trip.html">lesson 8</a> tells you what
+            resolving the Future adds. Being able to account for the objects is
+            the sign this has landed.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0011-the-timer-heap.html">11. The timer heap</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0013-threads-and-the-self-pipe.html"
+              >13. Threads and the self-pipe</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

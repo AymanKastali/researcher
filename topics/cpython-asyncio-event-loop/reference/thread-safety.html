@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Thread safety &mdash; CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Thread safety</h1>
+        <p class="page-blurb">
+          What may and may not be touched from a thread other than the loop's,
+          what happens when you get it wrong, and the self-pipe that makes the
+          one safe operation safe. Against CPython tag <code>v3.13.11</code>,
+          selector loops only.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Reach for this page when reviewing code that mixes a loop with threads —
+        <code>concurrent.futures</code> callbacks, GUI toolkit handlers, and
+        library callbacks that “just call <code>set_result</code>” are the three
+        that come up. Nothing here applies to
+        <code>ProactorEventLoop</code>, which was not read.
+      </p>
+
+      <h2 id="the-one-line-rule">The one-line rule</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>call_soon_threadsafe(callback, *args)</code>. Like
+            <code>call_soon(callback, *args)</code>, but when called from another
+            thread while the event loop is blocked waiting for I/O, unblocks the
+            event loop. Returns a <code>Handle</code>. This is the
+            <em>only</em> method that is safe to call from another thread.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#thread-interaction"
+            >PEP 3156 § Thread interaction</a
+          >. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <h2 id="the-table">The table</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Every loop-touching operation, graded.
+          </caption>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Status</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>loop.call_soon_threadsafe(cb)</code></td>
+              <td><strong>Safe. [guaranteed]</strong></td>
+              <td>
+                PEP 3156 § Thread interaction;
+                <code>Doc/library/asyncio-eventloop.rst:235-249</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>asyncio.run_coroutine_threadsafe(coro, loop)</code></td>
+              <td><strong>Safe. [guaranteed]</strong></td>
+              <td>
+                <code>Doc/library/asyncio-dev.rst:85-87</code>; implemented as
+                <code>loop.call_soon_threadsafe(callback)</code> at
+                <code>tasks.py:1003</code>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>loop.call_soon</code> / <code>call_later</code> /
+                <code>call_at</code>
+              </td>
+              <td>
+                <strong>Not safe.</strong> <strong>[guaranteed]</strong> that it
+                isn't; <strong>[impl detail]</strong> that it appears to work,
+                with unbounded latency
+              </td>
+              <td>
+                <code>Doc/library/asyncio-eventloop.rst:233</code>: “Unlike
+                <code>call_soon_threadsafe()</code>, this method is not
+                thread-safe.” Measured below.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>fut.set_result</code> / <code>fut.cancel</code> /
+                <code>task.cancel</code>
+              </td>
+              <td>
+                <strong>Not safe.</strong> Use
+                <code>call_soon_threadsafe(fut.cancel)</code>
+              </td>
+              <td>
+                <code>Doc/library/asyncio-dev.rst:77-83</code>; the
+                <code>Future</code> docstring, <code>futures.py:35</code> — “This
+                class is not thread-safe.”
+              </td>
+            </tr>
+            <tr>
+              <td><code>loop.stop()</code></td>
+              <td>
+                <strong>Undocumented, and does not wake the loop.</strong>
+                <strong>[impl detail]</strong>
+              </td>
+              <td>
+                <code>base_events.py:727-733</code> sets a flag and nothing else;
+                <code>runners.py:155</code> works around it
+              </td>
+            </tr>
+            <tr>
+              <td><code>loop.close()</code></td>
+              <td><strong>Not safe</strong>, and refuses while running</td>
+              <td><code>base_events.py:743-744</code></td>
+            </tr>
+            <tr>
+              <td><code>loop._write_to_self()</code></td>
+              <td>Safe by construction, but private</td>
+              <td>
+                <code>selector_events.py:141-149</code> — written to tolerate
+                concurrent teardown
+              </td>
+            </tr>
+            <tr>
+              <td><code>asyncio.all_tasks(loop)</code></td>
+              <td><strong>Races</strong>, and retries up to 1000 times</td>
+              <td><code>tasks.py:44-68</code>, citing issues 34970 and 36607</td>
+            </tr>
+            <tr>
+              <td><code>loop.add_signal_handler</code></td>
+              <td>Main thread only, enforced</td>
+              <td>
+                <code>unix_events.py:103-109</code> —
+                <code>signal.set_wakeup_fd</code> raises off the main thread, and
+                is called early on purpose
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="the-two-differences-that-matter">The two differences that matter</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>call_soon</code> versus <code>call_soon_threadsafe</code>. Both
+            funnel into the same <code>_call_soon</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th></th>
+              <th><code>call_soon</code></th>
+              <th><code>call_soon_threadsafe</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Builds a <code>Handle</code>, copies the context, appends</td>
+              <td>Yes</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>_check_thread()</code></td>
+              <td><strong>Yes — but only if <code>self._debug</code></strong></td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>_write_to_self()</code></td>
+              <td>No</td>
+              <td><strong>Yes, unconditionally</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <code>call_soon</code> can skip the wakeup because the loop thread can
+        only be calling it from inside the drain or from outside
+        <code>run_forever</code> — never from inside <code>select()</code>. A
+        <code>send()</code> per <code>call_soon</code> would be a wasted syscall
+        on the hottest path in asyncio.
+      </p>
+
+      <h2 id="what-getting-it-wrong-actually-costs">What getting it wrong actually costs</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+        </div>
+        <pre><code>call_soon_threadsafe:     callback ran 0.000s after scheduling
+call_soon (other thread): callback ran 2.803s after scheduling</code></pre>
+      </div>
+
+      <p class="small-print">
+        Measured for the research document on CPython 3.13.11: a loop parked in
+        <code>await asyncio.sleep(3.0)</code>, a worker thread scheduling 0.2 s
+        in. Single machine, one run.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The failure mode</span>
+        <p>
+          Not a crash, and not a lost callback — <code>deque.append</code> is
+          atomic, so the handle is safely in <code>_ready</code>. It is an
+          <strong>unbounded latency</strong> determined by whatever else the loop
+          happens to have scheduled. On a genuinely idle loop
+          (<code>timeout = None</code>, <code>epoll_wait(-1)</code>) the callback
+          never runs at all.
+        </p>
+        <p>
+          Which is why it survives development, where something is always
+          happening, and fails in production, where nothing is.
+        </p>
+      </div>
+
+      <h2 id="check-thread-and-why-it-is-quiet"><code>_check_thread</code>, and why it is quiet</h2>
+
+      <ol>
+        <li>
+          <strong>Debug mode only.</strong> <code>call_soon</code> and
+          <code>call_at</code> both guard it with <code>if self._debug:</code>.
+          In production there is no thread check at all.
+          <strong>[guaranteed]</strong> as a debug feature —
+          <code>Doc/library/asyncio-dev.rst:47-51</code>.
+        </li>
+        <li>
+          <strong>Silent when the loop is not running.</strong>
+          <code>if self._thread_id is None: return</code>. That is what lets the
+          common “build the loop here, hand it to a thread there” setup work
+          without a diagnostic.
+        </li>
+        <li>
+          <strong>Advisory.</strong> Its own docstring says the non-thread-safe
+          methods “will likely behave incorrectly”. Nothing enforces it.
+        </li>
+      </ol>
+
+      <h2 id="the-self-pipe">The self-pipe</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code>  OTHER THREAD                          LOOP THREAD
+  ────────────                          ───────────
+  loop.call_soon_threadsafe(cb)
+    │
+    ├─ _call_soon(...)                  blocked in
+    │    _ready.append(handle)  ──┐     epoll_wait(-1)
+    │    (atomic deque append)    │            │
+    │                             │            │
+    └─ _write_to_self()           │            │
+         _csock.send(b'\0')  ─────┼──► kernel marks _ssock readable
+                                  │            │
+                                  │     epoll_wait returns (_ssock, EPOLLIN)
+                                  │            │
+                                  │     _process_events -> _ready.append(
+                                  │            Handle(_read_from_self))
+                                  │            │
+                                  │     drain: _read_from_self() reads b'\0',
+                                  │            discards it
+                                  │            │
+                                  └──► next iteration: timeout=0 (if _ready
+                                       non-empty) ... your cb runs</code></pre>
+        </div>
+        <figcaption>
+          Drawn for this topic from
+          <code>Lib/asyncio/base_events.py</code> and
+          <code>Lib/asyncio/selector_events.py</code> at tag
+          <code>v3.13.11</code>.
+        </figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The self-pipe's four moving parts.
+          </caption>
+          <thead>
+            <tr>
+              <th>Part</th>
+              <th>What it is</th>
+              <th>Where</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_make_self_pipe</code></td>
+              <td>
+                <code>socket.socketpair()</code> — not <code>os.pipe()</code>,
+                because Windows' <code>select()</code> takes only sockets.
+                Created in <code>__init__</code>, so every selector loop has one
+                from birth.
+              </td>
+              <td><code>selector_events.py:118-124</code></td>
+            </tr>
+            <tr>
+              <td><code>_write_to_self</code></td>
+              <td>
+                <code>_csock.send(b'\0')</code>, with the socket copied to a
+                local <em>before</em> the <code>None</code> check and
+                <code>OSError</code> swallowed — callable from any thread at any
+                time, including during teardown.
+              </td>
+              <td><code>selector_events.py:141-157</code></td>
+            </tr>
+            <tr>
+              <td><code>_read_from_self</code></td>
+              <td>
+                Drains everything available and discards it.
+                <strong>The wakeup is the payload.</strong>
+              </td>
+              <td><code>selector_events.py:129-139</code></td>
+            </tr>
+            <tr>
+              <td><code>_process_self_data</code></td>
+              <td>
+                <code>pass</code> on the base class. On Unix, demultiplexes
+                signal numbers — <code>b'\0'</code> is the wakeup byte because
+                signal 0 does not exist.
+              </td>
+              <td>
+                <code>selector_events.py:126-127</code>;
+                <code>unix_events.py:83-88</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="waking-a-parked-loop-by-hand">Waking a parked loop by hand</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _on_sigint(self, signum, frame, main_task):
+        self._interrupt_count += 1
+        if self._interrupt_count == 1 and not main_task.done():
+            main_task.cancel()
+            # wakeup loop if it is blocked by select() with long timeout
+            self._loop.call_soon_threadsafe(lambda: None)
+            return
+        raise KeyboardInterrupt()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/runners.py:150-157</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/runners.py#L150-L157"
+          ><code>Runner._on_sigint()</code></a
+        >. <code>call_soon_threadsafe(lambda: None)</code> is not a callback; it
+        is a hand-written selector wakeup, and it is in CPython because no public
+        API does only that. <strong>[impl detail]</strong> — and worth stealing.
+      </p>
+
+      <h2 id="reentrancy">Reentrancy</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Three independent refusals to run a loop inside a loop.
+          </caption>
+          <thead>
+            <tr>
+              <th>Guard</th>
+              <th>Refuses</th>
+              <th>Where</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_check_running</code></td>
+              <td>
+                A second <code>run_forever</code> on this loop, or any
+                <code>run_forever</code> while another loop runs in this thread.
+              </td>
+              <td><code>base_events.py:635-640</code></td>
+            </tr>
+            <tr>
+              <td><code>_enter_task</code> / <code>_leave_task</code></td>
+              <td>A task step inside a task step, on the same loop.</td>
+              <td><code>tasks.py:1057-1070</code></td>
+            </tr>
+            <tr>
+              <td><code>Runner.run</code> / <code>asyncio.run</code></td>
+              <td>
+                “<code>asyncio.run()</code> cannot be called from a running event
+                loop”, with a short traceback on purpose.
+              </td>
+              <td><code>runners.py:189-192</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <code>call_soon_threadsafe</code> is the exception and is documented as
+        reentrancy-safe: “safe to be called from a reentrant context or signal
+        handler, however, it is not safe or fruitful to use the returned handle
+        in such contexts” (<code>Doc/library/asyncio-eventloop.rst:241-242</code>).
+        That contradicts PEP 3156, and the
+        <a href="unverified-claims.html">unverified-claims page</a> resolves it.
+      </p>
+
+      <h2 id="there-is-no-per-loop-task-registry">There is no per-loop task registry</h2>
+
+      <p>
+        <code>_scheduled_tasks</code> is one module-level
+        <code>weakref.WeakSet</code> shared by every loop in the process, and
+        <code>all_tasks(loop)</code> filters it by
+        <code>futures._get_loop(t) is loop</code>. In the C build it is created
+        once in the module's per-interpreter state, so the registry is
+        <strong>per-interpreter</strong> — not per-loop, not per-thread. Twenty
+        loops in twenty threads share one <code>WeakSet</code>, and
+        <code>all_tasks</code> linearises the whole thing on every call.
+        <strong>[impl detail]</strong>, and undocumented.
+      </p>
+
+      <p class="small-print">
+        Taught in
+        <a href="../lessons/0013-threads-and-the-self-pipe.html">lesson 13</a>;
+        vocabulary in the <a href="glossary.html">glossary</a>; the six steps in
+        the <a href="run-once.html">run-once reference</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

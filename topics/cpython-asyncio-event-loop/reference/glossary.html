@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glossary &mdash; CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Glossary</h1>
+        <p class="page-blurb">
+          The vocabulary of the machinery: the objects the loop owns, the
+          protocol that joins a coroutine to it, the timing terms, the threading
+          terms, and the two evidence markers this topic keeps apart. Where a term
+          has a quoted definition in a PEP, in the 3.13 documentation, or in a
+          CPython source comment, that quotation is the authority and the entry is
+          its compression.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Canonical source: <code>GLOSSARY.md</code> in this topic. The two are kept
+        in step; this page is the readable rendering. All source references are
+        against tag <code>v3.13.11</code>.
+      </p>
+
+      <h2 id="the-two-evidence-markers">The two evidence markers</h2>
+
+      <div class="definition">
+        <span class="term">[guaranteed]</span>
+        <p>
+          A claim stated in a PEP, in the language reference, or in the
+          <a class="citation" href="https://docs.python.org/3.13/library/asyncio.html"
+            ><code>docs.python.org</code> reference for 3.13</a
+          >. You may rely on it; if CPython breaks it, that is a bug in CPython.
+        </p>
+        <span class="attribution">Avoid: Documented, official, safe.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">[impl detail]</span>
+        <p>
+          A claim true of CPython 3.13.11 because that is how this code is
+          written. Not promised anywhere. A different event loop (uvloop), a
+          different Python version, or a refactor may change it without notice.
+          <strong>Most of what is interesting in this topic is
+          [impl detail].</strong>
+        </p>
+        <span class="attribution">Avoid: Internal, private, hack.</span>
+      </div>
+
+      <h2 id="the-loop-s-own-state">The loop's own state</h2>
+
+      <div class="definition">
+        <span class="term">Event loop proper</span>
+        <p>
+          The half of the loop that schedules callbacks and timers, owns the
+          ready queue and the clock, and knows nothing about I/O. PEP 3156 splits
+          the design here: “The event loop can be broken up into a multiplexer
+          (the part responsible for notifying us of I/O events) and the event loop
+          proper, which wraps a multiplexer with functionality for scheduling
+          callbacks, immediately or at a given time in the future”
+          (<a class="citation" href="https://peps.python.org/pep-3156/">PEP 3156</a>,
+          repeated almost verbatim as the <code>base_events.py</code> module
+          docstring). In CPython this is <code>BaseEventLoop</code>, and it is
+          <strong>pure Python, always</strong>.
+        </p>
+        <span class="attribution">Avoid: The core, the scheduler, the runtime.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Multiplexer</span>
+        <p>
+          The half that turns file-descriptor readiness into events. In CPython
+          this is <code>BaseSelectorEventLoop</code> (Unix, and Windows'
+          <code>SelectorEventLoop</code>) or <code>ProactorEventLoop</code>
+          (Windows IOCP). The seam between the two halves is the pair of
+          <code>NotImplementedError</code> stubs at
+          <code>base_events.py:541-552</code>.
+        </p>
+        <span class="attribution">Avoid: The poller, the reactor, the backend.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_ready</code></span>
+        <p>
+          A <code>collections.deque</code> of <code>Handle</code> objects due
+          <em>now</em>. FIFO: <code>call_soon</code> appends on the right, the
+          drain pops from the left. Together with <code>_scheduled</code> it is
+          the loop's <strong>entire</strong> scheduling state
+          (<code>base_events.py:420-424</code>).
+        </p>
+        <span class="attribution">Avoid: The queue, the callback list, the run queue.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_scheduled</code></span>
+        <p>
+          A plain list used as a min-heap via <code>heapq</code>, holding
+          <code>TimerHandle</code> objects ordered by absolute fire time.
+        </p>
+        <span class="attribution">Avoid: The timers, the schedule, the timer queue.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_run_once()</code></span>
+        <p>
+          One full iteration of the event loop: timer-heap hygiene, compute the
+          poll timeout, poll, turn events into callbacks, move due timers into
+          <code>_ready</code>, drain. <code>run_forever</code> is a
+          <code>while True</code> around it and nothing else
+          (<a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L1970-L2051"
+            ><code>base_events.py:1970-2051</code></a
+          >).
+        </p>
+        <span class="attribution">Avoid: A tick, a cycle, a turn.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">The drain</span>
+        <p>
+          Step 6 of <code>_run_once</code>, and “the only place where callbacks
+          are actually <em>called</em>” (source comment,
+          <code>base_events.py:2027-2028</code>). Everything else in asyncio only
+          <em>adds</em> to <code>_ready</code>.
+        </p>
+        <span class="attribution">Avoid: The dispatch, the execution phase.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>ntodo</code></span>
+        <p>
+          The snapshot <code>ntodo = len(self._ready)</code> taken once, before
+          the drain begins. It is what makes the drain fair — a callback that
+          schedules a callback does not get to run it this iteration — and
+          thread-safe without a lock, since a concurrent append can only make the
+          real length larger, never smaller.
+        </p>
+        <span class="attribution">Avoid: The batch size, the count.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>Handle</code></span>
+        <p>
+          The loop's unit of scheduled work: a callback, its arguments, a
+          captured <code>contextvars.Context</code>, and a cancelled flag
+          (<code>events.py:29-105</code>). <code>__slots__</code>-ed, because one
+          is allocated per callback.
+        </p>
+        <span class="attribution">Avoid: Job, task, callback object.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>TimerHandle</code></span>
+        <p>
+          A <code>Handle</code> with an absolute deadline <code>_when</code> and a
+          <code>_scheduled</code> flag recording whether it is currently in the
+          heap (<code>events.py:108-168</code>). Orders by <code>_when</code>
+          alone, but compares equal only on callback and args too — so the
+          ordering is a <strong>preorder</strong>, not a total order.
+        </p>
+        <span class="attribution">Avoid: Timer, alarm, scheduled callback.</span>
+      </div>
+
+      <h2 id="futures-tasks-and-the-handshake">Futures, Tasks and the handshake</h2>
+
+      <div class="definition">
+        <span class="term">Future</span>
+        <p>
+          One result-or-exception slot, a state enum, a list of done-callbacks,
+          and a reference to its loop. It knows nothing about who is waiting or
+          why. Its one active behaviour is turning <code>set_result</code> into
+          <code>loop.call_soon</code> — the callbacks are <strong>never</strong>
+          called inline
+          (<a class="citation" href="https://peps.python.org/pep-3156/#futures"
+            >PEP 3156 § Futures</a
+          >).
+        </p>
+        <span class="attribution">Avoid: Promise, deferred, result.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Task</span>
+        <p>
+          A <code>Future</code> subclass that also owns a coroutine object, a
+          <code>contextvars.Context</code>, cancellation bookkeeping, and
+          <code>_fut_waiter</code>. It drives <code>coro.send</code> /
+          <code>coro.throw</code> and knows nothing about the ready queue, the
+          selector, or time.
+        </p>
+        <span class="attribution">Avoid: Green thread, fiber, job.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_fut_waiter</code></span>
+        <p>
+          The Future a Task is currently blocked on, and the only structural
+          difference between a <code>Task</code> and a plain <code>Future</code>.
+          It exists so cancellation can propagate <em>inward</em>: cancelling a
+          Task cancels the Future it is waiting on
+          (<code>tasks.py:229-238</code>).
+        </p>
+        <span class="attribution">Avoid: The awaited thing, the child.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_asyncio_future_blocking</code></span>
+        <p>
+          The attribute the whole coroutine/loop join rests on, described by its
+          own source comment as serving “a dual purpose”: a marker declaring
+          Future-protocol compatibility, and the flag “set by
+          <code>__iter__()</code> […] so that <code>Task._step()</code> can tell
+          the difference between <code>await Future()</code> […] (correct) vs.
+          <code>yield Future()</code> (incorrect)”
+          (<a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/futures.py#L59-L68"
+            ><code>futures.py:59-68</code></a
+          >). Read it as <strong>three-valued</strong>: <code>None</code> means
+          “not a Future”, <code>False</code> means “a Future yielded wrongly”,
+          <code>True</code> means “a Future that suspended properly”.
+        </p>
+        <span class="attribution">Avoid: The blocking flag, the future flag.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">The one-shot token</span>
+        <p>
+          The lifecycle of <code>_asyncio_future_blocking</code> on one hand-off.
+          <code>Future.__await__</code> mints it by setting the flag to
+          <code>True</code> (<code>futures.py:285</code>);
+          <code>Task.__step</code> burns it by immediately setting it back to
+          <code>False</code> (<code>tasks.py:340</code>). A second
+          <code>yield</code> of the same Future without a second
+          <code>__await__</code> is rejected.
+        </p>
+        <span class="attribution">Avoid: The handshake bit, the one-time flag.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Duck-typed Future</span>
+        <p>
+          Any object advertising itself as Future-compatible by carrying
+          <code>_asyncio_future_blocking</code> on its <strong>class</strong> with
+          a value that is <strong>not <code>None</code></strong>
+          (<code>base_futures.py:13-21</code>). A class can opt <em>out</em> by
+          setting the attribute to <code>None</code> at class level while its
+          instances set <code>False</code> to opt back in — a subtlety the
+          <code>isfuture</code> documentation omits.
+        </p>
+        <span class="attribution">Avoid: Future-like, awaitable.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Eager task</span>
+        <p>
+          A Task whose first step runs <em>inline in the constructor</em> rather
+          than through <code>call_soon</code>, enabled by
+          <code>eager_task_factory</code> (3.12). If the coroutine finishes in
+          that first step the task is never registered and never touches
+          <code>_ready</code>; if it blocks, it <em>graduates</em> to the normal
+          registry. The
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-task.html#eager-task-factory"
+            >documentation</a
+          >
+          calls this “a semantic change”, not an optimisation.
+        </p>
+        <span class="attribution">Avoid: Fast task, inline task, sync task.</span>
+      </div>
+
+      <h2 id="timing">Timing</h2>
+
+      <div class="definition">
+        <span class="term"><code>loop.time()</code></span>
+        <p>
+          The loop's clock. <strong>[guaranteed]</strong> by the 3.13 docs to be
+          monotonic; <strong>[impl detail]</strong> that it is precisely
+          <code>time.monotonic()</code>. PEP 3156 permits
+          <code>time.time()</code>, and the docstring disclaims epoch, precision,
+          accuracy and drift. Not POSIX time: the base is undefined, “e.g. the
+          time of the system power on” (<code>timeouts.py:171-172</code>).
+        </p>
+        <span class="attribution">Avoid: Now, wall clock, timestamp.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_clock_resolution</code></span>
+        <p>
+          <code>time.get_clock_info('monotonic').resolution</code>, captured once
+          at loop construction and used in exactly one place: step 5 of
+          <code>_run_once</code>.
+        </p>
+        <span class="attribution">Avoid: Tick, granularity, precision.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">The clock-resolution fudge</span>
+        <p>
+          Step 5 treats a timer as due when
+          <code>_when &lt; now + _clock_resolution</code>, rather than
+          <code>_when &lt;= now</code> — firing up to one clock tick
+          <em>early</em> rather than burning a whole extra iteration on a timer
+          within the clock's own measurement error of being due.
+          <strong>[guaranteed]</strong>, and one of the very few pieces of
+          <code>_run_once</code> in the reference documentation.
+        </p>
+        <span class="attribution">Avoid: Rounding, slack, jitter.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>MAXIMUM_SELECT_TIMEOUT</code></span>
+        <p>
+          <code>24 * 3600</code>, the ceiling on any single poll timeout, “to
+          avoid OS limitations” (<code>base_events.py:67-68</code>). Not a limit
+          on how long a timer may be: a 30-day timer simply costs 30 iterations
+          that each wake, find the head still in the future, and re-block.
+        </p>
+        <span class="attribution">Avoid: The max sleep, the timeout cap.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Compaction</span>
+        <p>
+          The O(n) rebuild of <code>_scheduled</code> that drops cancelled
+          handles, triggered only when there are more than
+          <code>_MIN_SCHEDULED_TIMER_HANDLES</code> (100) timers <em>and</em> more
+          than <code>_MIN_CANCELLED_TIMER_HANDLES_FRACTION</code> (0.5) of them
+          are believed cancelled. The alternative, cheap path pops cancelled
+          handles off the <em>head</em> only. Both constants are
+          <strong>[impl detail]</strong> and appear nowhere in the documentation —
+          but CPython's test suite imports them by name.
+        </p>
+        <span class="attribution">Avoid: Cleanup, GC, vacuum.</span>
+      </div>
+
+      <h2 id="threads-and-wakeups">Threads and wakeups</h2>
+
+      <div class="definition">
+        <span class="term"><code>call_soon_threadsafe</code></span>
+        <p>
+          <code>call_soon</code> plus one mandatory
+          <code>_write_to_self()</code>. Per
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#thread-interaction"
+            >PEP 3156</a
+          >, “This is the <em>only</em> method that is safe to call from another
+          thread.”
+        </p>
+        <span class="attribution">Avoid: The thread-safe version, the async post.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">The self-pipe</span>
+        <p>
+          A <code>socket.socketpair()</code> — despite the name — owned by every
+          selector loop from birth (<code>selector_events.py:118-124</code>). The
+          read end is registered with the selector; writing a byte to the write
+          end forces <code>select()</code> to return. The bytes are discarded:
+          <strong>the wakeup is the payload</strong>.
+        </p>
+        <span class="attribution">Avoid: The wake pipe, the eventfd, the trigger.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>_write_to_self</code></span>
+        <p>
+          The write half, deliberately written to be callable from any thread at
+          any time, including during loop teardown. Copies
+          <code>self._csock</code> into a local <em>before</em> the
+          <code>None</code> check and swallows <code>OSError</code>, so a
+          concurrent close cannot break it.
+        </p>
+        <span class="attribution">Avoid: Wake, poke, signal.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Signal demultiplexing</span>
+        <p>
+          On Unix, <code>add_signal_handler</code> points CPython's signal-wakeup
+          fd at the <em>same</em> socket the self-pipe uses, so the kernel writing
+          a signal number both wakes the loop and delivers the number.
+          <code>b'\0'</code> is the chosen wakeup byte precisely because signal
+          number 0 does not exist (<code>unix_events.py:83-88</code>).
+        </p>
+        <span class="attribution">Avoid: Signal handling, the signal pipe.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">Reentrancy</span>
+        <p>
+          Running a loop inside a loop, which asyncio refuses in three separate
+          places: <code>_check_running</code>
+          (<code>base_events.py:635-640</code>),
+          <code>_enter_task</code>/<code>_leave_task</code>
+          (<code>tasks.py:1057-1070</code>) and <code>Runner.run</code>
+          (<code>runners.py:189-192</code>). There is no nested-loop facility and
+          none is planned.
+        </p>
+        <span class="attribution">Avoid: Nesting, recursion, re-entry.</span>
+      </div>
+
+      <h2 id="the-c-accelerator">The C accelerator</h2>
+
+      <div class="definition">
+        <span class="term"><code>_asyncio</code></span>
+        <p>
+          The C extension module that replaces <code>Future</code>,
+          <code>Task</code>, <code>current_task</code> and the running-loop
+          accessors at import time. The Python versions stay importable as
+          <code>_PyFuture</code>/<code>_PyTask</code>, which is what makes the
+          six-way parity test matrix possible. <strong>There is no C event
+          loop</strong>: <code>BaseEventLoop</code>, <code>Handle</code>,
+          <code>_ready</code>, <code>_run_once</code> and
+          <code>call_soon</code> are pure Python in every build.
+        </p>
+        <span class="attribution">Avoid: The C core, the native loop, the fast path.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">The parity requirement</span>
+        <p>
+          Because both implementations are live,
+          <code>test_tasks.py</code> runs the same test body six ways — C Task
+          with Python Future, Python Task with C Future, and subclass variants —
+          asserting identical <em>observable call sequences</em>, down to
+          <code>add_done_callback</code> being called exactly once.
+        </p>
+        <span class="attribution">Avoid: Compatibility, the test matrix.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>Py_BEGIN_CRITICAL_SECTION</code></span>
+        <p>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-0703/#python-critical-sections"
+            >PEP 703</a
+          >'s deadlock-avoiding per-object lock.
+          <code>swap_current_task</code> is the only place in
+          <code>_asynciomodule.c</code> that takes one, because it is a
+          <em>compound</em> read-then-write that must be atomic as a unit.
+        </p>
+        <span class="attribution">Avoid: The lock, the mutex.</span>
+      </div>
+
+      <p class="small-print">
+        The mechanics are in the <a href="run-once.html">run-once reference</a>,
+        threading in the <a href="thread-safety.html">thread-safety table</a>,
+        dates in the <a href="version-ledger.html">version ledger</a>, and gaps in
+        <a href="unverified-claims.html">unverified claims</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

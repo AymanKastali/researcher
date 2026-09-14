@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CPython's asyncio Event Loop, From the Inside</title>
+    <link rel="stylesheet" href="../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Topic</span>
+        <h1>CPython's asyncio Event Loop, From the Inside</h1>
+        <p class="page-blurb">
+          What <code>BaseEventLoop._run_once()</code> actually does, read out of
+          the source: six steps, two queues, one blocking call, and the
+          three-valued attribute that joins every coroutine you have written to
+          all of it.
+        </p>
+      </header>
+
+      <p class="lead">
+        Fifteen lessons, built to be spaced over days rather than read in one
+        sitting. The five reference documents at the bottom are the ones designed
+        to be come back to. <strong>CPython 3.13.11</strong> is the version
+        taught throughout, and every line citation is against that tag.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Who this is for</span>
+        <p>
+          Someone who already writes <code>async def</code> and
+          <code>await</code> fluently and wants to know what happens underneath.
+          There is no tutorial content here — no explanation of the syntax, no
+          coroutine primer. Lessons 1 to 6 do not mention <code>await</code> at
+          all.
+        </p>
+      </div>
+
+      <h2>Lessons</h2>
+
+      <ul class="index-list">
+        <li>
+          <span class="index-number">0001</span>
+          <a
+            class="index-title"
+            href="lessons/0001-four-lines-and-two-queues.html"
+            >Four lines, two queues</a
+          >
+          <p class="index-summary">
+            <code>run_forever</code> is ten lines. <code>stop()</code> is one
+            assignment. The loop's entire scheduling state is a
+            <code>deque</code> and a <code>heapq</code>, and there is no third
+            queue.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0002</span>
+          <a
+            class="index-title"
+            href="lessons/0002-six-steps-of-one-iteration.html"
+            >Six steps of one iteration</a
+          >
+          <p class="index-summary">
+            The map. Polling happens before running, nothing user-written runs
+            outside step 6, and exactly one step can block — which is where “don't
+            block the loop” comes from.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0003</span>
+          <a class="index-title" href="lessons/0003-the-ntodo-snapshot.html"
+            >The <code>ntodo</code> snapshot</a
+          >
+          <p class="index-summary">
+            The hinge. Four lines that solve fairness and lock-free thread safety
+            at once — plus why a cancelled <code>call_soon</code> handle still
+            consumes a slot.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0004</span>
+          <a class="index-title" href="lessons/0004-the-only-blocking-call.html"
+            >The only blocking call</a
+          >
+          <p class="index-summary">
+            Three timeout cases in priority order, both clamps, and
+            <code>epoll_wait</code> rounding away from zero. The precise statement
+            of what a slow callback costs: not itself, the <em>poll</em>.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0005</span>
+          <a
+            class="index-title"
+            href="lessons/0005-readiness-becomes-callbacks.html"
+            >Readiness becomes callbacks</a
+          >
+          <p class="index-summary">
+            Twelve lines are the whole of asyncio's I/O dispatch, and two
+            <code>NotImplementedError</code> stubs are the whole seam between the
+            scheduler and the multiplexer.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0006</span>
+          <a class="index-title" href="lessons/0006-inside-handle-run.html"
+            >Inside <code>Handle._run</code></a
+          >
+          <p class="index-summary">
+            Context captured at construction, exceptions swallowed into the
+            handler, and the two that are re-raised and can kill a loop. The
+            callback machine is now complete, with no coroutine in it.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0007</span>
+          <a class="index-title" href="lessons/0007-the-blocking-flag.html"
+            >The blocking flag</a
+          >
+          <p class="index-summary">
+            The second hinge. <code>_asyncio_future_blocking</code> read as a
+            three-valued signal, and why a PEP 3156 clause from 2012 left a
+            duck-typed attribute as the only available tool.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0008</span>
+          <a class="index-title" href="lessons/0008-a-complete-round-trip.html"
+            >A complete round trip</a
+          >
+          <p class="index-summary">
+            One <code>await</code> down to <code>epoll_wait</code> and back —
+            including the fast path where the coroutine never suspends, and the
+            full extra iteration the Future costs.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0009</span>
+          <a class="index-title" href="lessons/0009-who-owns-what.html"
+            >Who owns what</a
+          >
+          <p class="index-summary">
+            Three objects, and the right-hand column of the table does the work:
+            the loop has never heard of <code>await</code>. Plus the Task's own
+            three-state invariant and why <code>cancel()</code> is a request.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0010</span>
+          <a class="index-title" href="lessons/0010-the-c-accelerator.html"
+            >The C accelerator</a
+          >
+          <p class="index-summary">
+            <code>Task</code> and <code>Future</code> are C types; the loop never
+            can be. Worth 1.1×–1.5×, not 10×, and the reason why is the same PEP
+            clause as lesson 7.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0011</span>
+          <a class="index-title" href="lessons/0011-the-timer-heap.html"
+            >The timer heap</a
+          >
+          <p class="index-summary">
+            An ordering that is a preorder rather than a total order, a clock
+            with three different claims attached to it, and a loop that fires
+            timers slightly early on purpose.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0012</span>
+          <a
+            class="index-title"
+            href="lessons/0012-cancelled-timers-and-sleep.html"
+            >Cancelled timers, and <code>sleep</code></a
+          >
+          <p class="index-summary">
+            Step 1: two strategies, two undocumented constants, and a
+            reproducible counter oddity presented as an observation rather than a
+            bug. Plus what <code>sleep(0)</code> actually allocates.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0013</span>
+          <a
+            class="index-title"
+            href="lessons/0013-threads-and-the-self-pipe.html"
+            >Threads and the self-pipe</a
+          >
+          <p class="index-summary">
+            The most operationally useful lesson here. What
+            <code>call_soon</code> from a worker thread really does — a measured
+            2.8-second stall, unbounded in principle — and the socket that makes
+            the safe version safe.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0014</span>
+          <a
+            class="index-title"
+            href="lessons/0014-what-changed-311-to-313.html"
+            >What changed, 3.11 → 3.13</a
+          >
+          <p class="index-summary">
+            Structured concurrency, eager tasks, a free-threading port — and
+            <code>_run_once</code> moved twice, cosmetically. Which tells you what
+            in this topic will survive 3.15.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0015</span>
+          <a class="index-title" href="lessons/0015-docs-versus-source.html"
+            >Where the docs and the source disagree</a
+          >
+          <p class="index-summary">
+            Five conflicts, each argued with both texts on the page and each
+            decided — then the deciding turned into four questions to ask of any
+            claim.
+          </p>
+        </li>
+      </ul>
+
+      <h2>Reference</h2>
+
+      <p>
+        Compressed for lookup rather than reading. These are what the lessons are
+        for.
+      </p>
+
+      <ul class="index-list">
+        <li>
+          <a class="index-title" href="reference/glossary.html">Glossary</a>
+          <p class="index-summary">
+            Every term this topic uses, with the aliases to avoid and the source
+            each definition comes from — including the two evidence markers as
+            terms in their own right.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/run-once.html"
+            ><code>_run_once</code> reference</a
+          >
+          <p class="index-summary">
+            The six steps, every constant with its grade, the four rules of the
+            drain, the <code>await</code> round trip stage by stage, the
+            three-valued table, and ten line numbers worth having.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/thread-safety.html"
+            >Thread safety</a
+          >
+          <p class="index-summary">
+            What may and may not be touched from another thread, what getting it
+            wrong costs, the self-pipe's four moving parts, and the three
+            independent refusals to nest a loop.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/version-ledger.html"
+            >Version ledger</a
+          >
+          <p class="index-summary">
+            What shipped in which release, dated by diffing tags; a symbol table
+            for <code>_asynciomodule.c</code>; and a checklist for re-verifying
+            this topic when a new release lands.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/unverified-claims.html"
+            >Unverified claims</a
+          >
+          <p class="index-summary">
+            Five source conflicts and ten things that could not be established —
+            including an API that turned out not to exist. Reach for this when a
+            claim needs grading.
+          </p>
+        </li>
+      </ul>
+
+      <h2>How to study this</h2>
+
+      <div class="aside insight">
+        <span class="label">Storage strength, not fluency</span>
+        <p>
+          The goal is retention in a year, not comprehension today. That means
+          leaving gaps between lessons, and — before opening the next one —
+          trying to state the previous one's argument out loud from memory. The
+          recall attempt is the learning; re-reading only feels like it.
+        </p>
+        <p>
+          Lessons 1–6 are the callback machine, 7–10 the coroutine layer, 11–12
+          timers, 13 threads, 14–15 reading the evidence. The natural long pauses
+          are after 6 and after 10. Lessons 3 and 7 are the two to over-learn:
+          almost everything later leans on one or the other.
+        </p>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">On line numbers</span>
+        <p>
+          Every citation here is exact against tag <code>v3.13.11</code>, because
+          each file was diffed byte-for-byte against the upstream tag before being
+          quoted. That precision is deliberate and it is fragile: a reformat would
+          break every anchor without changing any behaviour. When a new release
+          lands, the
+          <a href="reference/version-ledger.html">version ledger</a> has the
+          checklist.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">What is not here</span>
+        <p>
+          No Windows: <code>ProactorEventLoop</code> was not read, and IOCP is a
+          completion model rather than a readiness one. No third-party loops:
+          uvloop replaces exactly the layer these lessons open up. No
+          <code>streams.py</code> or <code>sslproto.py</code>. And no benchmark
+          presented as a benchmark — the measurements quoted are single-machine
+          and establish orders of magnitude only.
+          <a href="reference/unverified-claims.html">Unverified claims</a> records
+          every such limit.
+        </p>
+      </div>
+
+      <p>
+        The mission, the sources and the working notes live beside this page as
+        <code>MISSION.md</code>, <code>RESOURCES.md</code>,
+        <code>GLOSSARY.md</code> and <code>NOTES.md</code>.
+      </p>
+
+      <p class="small-print">
+        Built from primary sources: the CPython source tree at tag
+        <code>v3.13.11</code> (<code>Lib/asyncio/</code>,
+        <code>Lib/selectors.py</code>, <code>Modules/_asynciomodule.c</code> and
+        <code>Lib/test/test_asyncio/</code>), PEPs 3156, 492, 567 and 703, and the
+        Python 3.13 documentation. Claims sourced only to the implementation are
+        marked <strong>[impl detail]</strong>; claims you may rely on are marked
+        <strong>[guaranteed]</strong>.
+        <a href="../../index.html">Back to all topics</a>.
+      </p>
+    </main>
+  </body>
+</html>

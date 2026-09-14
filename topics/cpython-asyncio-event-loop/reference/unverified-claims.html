@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Unverified claims &mdash; CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Unverified claims</h1>
+        <p class="page-blurb">
+          Everything this topic does not know, and everywhere its sources
+          contradict each other. Reach for this page when a claim about asyncio
+          needs grading, or when something taught here stops matching what you
+          see.
+        </p>
+      </header>
+
+      <p class="small-print">
+        A page that names its own gaps is more useful than one that does not.
+        Every entry below is either a source conflict resolved with both texts on
+        the page, or a plainly stated limit on what was checked.
+      </p>
+
+      <h2 id="the-two-markers">The two markers</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The distinction every page in this topic carries.
+          </caption>
+          <thead>
+            <tr>
+              <th>Marker</th>
+              <th>Means</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>[guaranteed]</strong></td>
+              <td>
+                You may rely on it. If CPython breaks it, that is a bug in
+                CPython.
+              </td>
+              <td>
+                A PEP, the language reference, or
+                <code>docs.python.org</code> for 3.13.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>[impl detail]</strong></td>
+              <td>
+                True of CPython 3.13.11 because that is how the code is written.
+                Promised nowhere. A different loop, a different version, or a
+                refactor may change it without notice.
+              </td>
+              <td>The source at tag <code>v3.13.11</code>, and nothing else.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <strong>Most of what is interesting in this topic is
+        [impl detail].</strong> The six steps, the <code>ntodo</code> snapshot,
+        the <code>_asyncio_future_blocking</code> protocol, the compaction
+        constants, the self-pipe and the C/Python division are none of them
+        promised anywhere.
+      </p>
+
+      <h2 id="five-source-conflicts">Five source conflicts</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Where PEP, documentation and source disagree, and which wins.
+          </caption>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Conflict</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>
+                PEP 3156 says <code>call_soon_threadsafe</code> is not
+                signal-safe “(since it may use locks)”. The 3.13 docs say it is.
+              </td>
+              <td>
+                <strong>Prefer the docs and the source.</strong> The path is
+                <code>_check_closed</code> → <code>Handle()</code> →
+                <code>copy_context()</code> → <code>deque.append</code> →
+                <code>socket.send</code>. No lock anywhere. The PEP describes an
+                implementation that no longer exists. The caveat about the
+                returned handle is real: <code>Handle.cancel()</code> mutates
+                three attributes unsynchronised.
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>
+                PEP 3156 intends <code>stop()</code> to “stop short of polling
+                for I/O”. The 3.13 docs say the loop polls once with a zero
+                timeout.
+              </td>
+              <td>
+                <strong>The 3.13 docs are precisely right.</strong> It depends
+                when you call it: <code>stop()</code> <em>before</em>
+                <code>run_forever</code> means <code>_stopping</code> is already
+                true at <code>base_events.py:2001-2003</code>, so the loop polls
+                with <code>timeout = 0</code> and drains. <code>stop()</code>
+                <em>during</em> the drain means no further poll, as the PEP
+                intends. The PEP's “not to run any callbacks scheduled in the
+                future” is also slightly strong — a due timer will fire.
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>
+                The clock-resolution fudge is documented twice; the
+                cancelled-timer compaction beside it is documented nowhere.
+              </td>
+              <td>
+                <strong>Not a contradiction — the clearest illustration of the
+                line.</strong> Documentation commits to the observable (“may run
+                up to one clock-resolution early”) and stays silent about the
+                mechanism. Relying on a mechanism rather than an observable puts
+                you in <strong>[impl detail]</strong> whether or not anything said
+                so.
+              </td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>
+                <code>asyncio.isfuture</code>'s documentation describes a weaker
+                test than <code>base_futures.py:20-21</code> performs.
+              </td>
+              <td>
+                <strong>Prefer the source.</strong> Two omitted conditions: the
+                attribute must be on the <em>class</em>, and its value must not be
+                <code>None</code>. A class opts <em>out</em> with a class-level
+                <code>None</code> while its instances opt back in with
+                <code>False</code> — and <code>test_isfuture</code> asserts
+                exactly that pair. Following the documentation literally gets both
+                backwards.
+              </td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>
+                What's New in 3.13 says three <code>create_task</code> entry
+                points gained <code>**kwargs</code>. One did.
+              </td>
+              <td>
+                <strong>Prefer the source and the reference pages.</strong> At
+                <code>v3.13.11</code>, only
+                <code>BaseEventLoop.create_task</code> (<code>base_events.py:461</code>)
+                has it; <code>asyncio.create_task</code>
+                (<code>tasks.py:402</code>) and
+                <code>TaskGroup.create_task</code>
+                (<code>taskgroups.py:181</code>) do not. The entry describes the
+                3.13.3 state; two signatures were reverted in 3.13.4 and it was
+                never updated. Release notes are the least maintained grade.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="ten-things-that-could-not-be-verified">Ten things that could not be verified</h2>
+
+      <ol>
+        <li>
+          <p>
+            <strong><code>asyncio.free_running_loop</code> does not exist</strong>,
+            in 3.13 or anywhere findable. It was on the research brief as a
+            “verify, don't assume” item.
+            <code>grep -rn free_running_loop</code> over a full
+            <code>asyncio/</code> install returns nothing;
+            <code>hasattr(asyncio, 'free_running_loop')</code> is
+            <code>False</code>; the string does not appear in
+            <code>Doc/whatsnew/3.13.rst</code> or any of the four relevant library
+            pages at tag <code>v3.13.11</code>. <strong>No such API is described
+            anywhere in this workspace.</strong>
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>The origin of the <code>ntodo</code> idiom was not
+            traced.</strong>
+            <a href="../lessons/0003-the-ntodo-snapshot.html">Lesson 3</a> is
+            argued from the in-source comment, from
+            <code>test__run_once_schedule_handle</code>, from the documented
+            <code>run_forever</code> behaviour, and from the
+            <code>collections.deque</code> guarantee. The comment says “Use an
+            idiom that is thread-safe without using locks”; the commit or
+            Tulip-era issue that first wrote it was not found, so the
+            <em>historical</em> motivation is inferred from the comment rather
+            than sourced from a discussion.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>The <code>_timer_cancelled_count</code> staleness is an
+            observation, not a known issue.</strong> A cancelled timer buried
+            behind a live one is popped by step 5 without decrementing the
+            counter, so the counter is an <em>upper bound</em> rather than a
+            count. The behaviour is certain — the code path is short and the
+            reproduction in
+            <a href="../lessons/0012-cancelled-timers-and-sleep.html">lesson 12</a>
+            is deterministic. Whether it is considered a defect or an accepted
+            approximation is <em>not</em> certain: a semantic search of
+            <code>python/cpython</code> issues found nothing describing it. It is
+            presented as an observation, not a bug report.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>No free-threaded interpreter was available.</strong>
+            <code>sys._is_gil_enabled()</code> returned <code>True</code> on the
+            install used, so every claim about the
+            <code>Py_GIL_DISABLED</code> build is read from
+            <code>#ifdef</code> branches, PEP 703 and the free-threading how-to.
+            None of it was executed. In particular, “N loops in N threads do not
+            contend on a GIL” is a reading of <code>Py_mod_gil</code>, not a
+            measurement.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong><code>ProactorEventLoop</code> (Windows) is not
+            covered.</strong> Everything in <code>BaseEventLoop</code> applies to
+            it, because it inherits the same <code>_run_once</code> — so lessons
+            1–3, 6, 11 and 12 hold. Everything about the selector, the
+            <code>await</code> round trip and the self-pipe does not: IOCP is a
+            completion model, not a readiness model, and
+            <code>proactor_events.py</code> and <code>windows_events.py</code>
+            were not read. <strong>No claim here should be transferred to Windows
+            without checking.</strong>
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong><code>sslproto.py</code>, <code>streams.py</code> and
+            <code>subprocess.py</code> were not read.</strong> The transport trace
+            in <a href="../lessons/0008-a-complete-round-trip.html">lesson 8</a>
+            stops at <code>_SelectorSocketTransport</code>. How
+            <code>StreamReader</code> turns <code>data_received</code> callbacks
+            back into awaitable Futures is one layer further up and is not
+            described.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>The benchmark numbers are single-machine,
+            best-of-three.</strong> They establish orders of magnitude — “the C
+            accelerator is worth tens of percent, not an order of magnitude”,
+            “eager tasks are worth several times” — and nothing finer. No CPU
+            pinning, no <code>pyperf</code>, no isolation from an otherwise-busy
+            desktop. They are reported because they falsify plausible
+            assumptions, not because they characterise performance.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>The two <code>_run_once</code> changes between 3.12 and 3.13
+            have no cited issue numbers.</strong> They were found by diffing the
+            file across tags, which establishes <em>that</em> and <em>when</em>
+            they changed but not <em>why</em> or <em>by whom</em>. The
+            <code>_run_forever_setup</code> split has a motivation only because
+            its docstring states one; the timeout un-inlining does not, and none
+            is asserted.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>PEP 3156's <code>Status: Final</code> was taken at face
+            value.</strong> Conflicts 1 and 2 above are reported as
+            PEP-versus-implementation drift. No search of python-dev or the issue
+            tracker was made for a discussion formally superseding either passage,
+            so it is possible one was consciously amended somewhere unexamined
+            rather than silently outgrown.
+          </p>
+        </li>
+        <li>
+          <p>
+            <strong>“<code>BaseEventLoop</code> has no C implementation” is scoped
+            to CPython.</strong> It is true of the source tree at
+            <code>v3.13.11</code> — no loop type in
+            <code>Modules/_asynciomodule.c</code>, no accelerator import in
+            <code>base_events.py</code>. Third-party loops, uvloop in particular,
+            replace exactly this layer, and nothing in lessons 1–5 or 11–13 should
+            be assumed to hold under one.
+          </p>
+        </li>
+      </ol>
+
+      <h2 id="four-questions-to-ask-of-any-claim">Four questions to ask of any claim</h2>
+
+      <ol>
+        <li>
+          <strong>Which grade is it?</strong> Traceable to a PEP, to
+          <code>docs.python.org</code> for a named version, or only to a line of
+          source? If only to source, it is <strong>[impl detail]</strong>.
+        </li>
+        <li>
+          <strong>Observable, or mechanism?</strong> Documentation commits to
+          observables. A claim about <em>how</em> rather than <em>what</em> will
+          never be confirmed by reading the docs.
+        </li>
+        <li>
+          <strong>Does a test pin it?</strong> A behaviour
+          <code>Lib/test/test_asyncio/</code> asserts is not promised, but it is
+          deliberate and changing it would break CI. That is the strongest
+          evidence available for the drain semantics and the compaction
+          constants.
+        </li>
+        <li>
+          <strong>Which version, and which loop?</strong> Everything here is
+          CPython 3.13.11 with a selector loop. Name both, every time.
+        </li>
+      </ol>
+
+      <div class="aside insight">
+        <span class="label">The reason this page exists</span>
+        <p>
+          A confident sentence with nothing behind it is the one failure this
+          topic cannot absorb. Every claim in the fifteen lessons is either
+          quoted from a source that is linked, labelled as a measurement, or
+          listed here as something that could not be established. If you find a
+          fourth kind, it is a defect.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Drawn from
+        <a href="../lessons/0015-docs-versus-source.html">lesson 15</a> and
+        §9 of <code>docs/research/cpython-asyncio-event-loop.md</code> in this
+        repo. The sources themselves are listed in <code>RESOURCES.md</code>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

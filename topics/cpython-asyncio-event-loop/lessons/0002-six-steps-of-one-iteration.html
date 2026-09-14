@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2. Six steps of one iteration — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0002</span>
+        <h1>Six steps of one iteration</h1>
+        <p class="lesson-mission">
+          The mission is to reason from the machinery. This is the machinery:
+          one method, eighty lines, six steps. Every later lesson in this topic
+          is a magnification of one of them.
+        </p>
+      </header>
+
+      <p class="lead">
+        <a href="0001-four-lines-and-two-queues.html">Lesson 1</a> left
+        <code>run_forever</code> calling <code>_run_once()</code> in a loop. This
+        lesson is the map of <code>_run_once()</code>. The single win to take
+        away is being able to recite the six steps in order — because once you
+        can, questions like “why did my callback not run until the next socket
+        event?” stop needing to be asked.
+      </p>
+
+      <h2>The shape</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code>                       ┌─────────────────────────────────────┐
+                       │  _run_once()                        │
+                       └─────────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼───────────────────────────────────┐
+  │ 1. TIMER-HEAP HYGIENE                                base_events:1978 │
+  │    if len(_scheduled) > 100 and cancelled/total > 0.5:                │
+  │        rebuild _scheduled without cancelled handles, heapify,         │
+  │        _timer_cancelled_count = 0                                     │
+  │    else:                                                              │
+  │        pop cancelled handles off the *head* only                      │
+  └───────────────────────────────────┬───────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼───────────────────────────────────┐
+  │ 2. COMPUTE THE POLL TIMEOUT                          base_events:2001 │
+  │    _ready non-empty or _stopping  -> 0      (don't block)             │
+  │    _scheduled non-empty           -> clamp(head._when - time(),       │
+  │                                            0, 86400)                  │
+  │    otherwise                      -> None  (block indefinitely)       │
+  └───────────────────────────────────┬───────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼───────────────────────────────────┐
+  │ 3. THE ONLY BLOCKING CALL                            base_events:2012 │
+  │    event_list = self._selector.select(timeout)   ──► epoll_wait(2)    │
+  └───────────────────────────────────┬───────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼───────────────────────────────────┐
+  │ 4. EVENTS -> CALLBACKS                               base_events:2013 │
+  │    _process_events(event_list): for each ready fd, take the           │
+  │    (reader, writer) Handles out of key.data and _ready.append() them  │
+  │    (no user code runs here)                       selector_events:740 │
+  └───────────────────────────────────┬───────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼───────────────────────────────────┐
+  │ 5. DUE TIMERS -> _ready                              base_events:2018 │
+  │    end_time = time() + _clock_resolution                              │
+  │    pop every TimerHandle with _when &lt; end_time onto _ready            │
+  └───────────────────────────────────┬───────────────────────────────────┘
+                                      │
+  ┌───────────────────────────────────▼───────────────────────────────────┐
+  │ 6. DRAIN                                             base_events:2033 │
+  │    ntodo = len(_ready)            &lt;-- SNAPSHOT, taken once            │
+  │    repeat ntodo times: handle = _ready.popleft(); handle._run()       │
+  │    (this is the only place callbacks are actually called)             │
+  └───────────────────────────────────────────────────────────────────────┘</code></pre>
+        </div>
+        <figcaption>
+          Drawn for this lesson from
+          <code>Lib/asyncio/base_events.py:1970-2051</code> at tag
+          <code>v3.13.11</code>. The line numbers are real; the boxes are not in
+          the source.
+        </figcaption>
+      </figure>
+
+      <h2>The method, uncut</h2>
+
+      <p>
+        The rest of this topic is commentary on the following, so it is worth
+        having seen it whole once, even if most of it does not land yet.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _run_once(self):
+        """Run one full iteration of the event loop.
+
+        This calls all currently ready callbacks, polls for I/O,
+        schedules the resulting callbacks, and finally schedules
+        'call_later' callbacks.
+        """
+
+        sched_count = len(self._scheduled)
+        if (sched_count &gt; _MIN_SCHEDULED_TIMER_HANDLES and
+            self._timer_cancelled_count / sched_count &gt;
+                _MIN_CANCELLED_TIMER_HANDLES_FRACTION):
+            # Remove delayed calls that were cancelled if their number
+            # is too high
+            new_scheduled = []
+            for handle in self._scheduled:
+                if handle._cancelled:
+                    handle._scheduled = False
+                else:
+                    new_scheduled.append(handle)
+
+            heapq.heapify(new_scheduled)
+            self._scheduled = new_scheduled
+            self._timer_cancelled_count = 0
+        else:
+            # Remove delayed calls that were cancelled from head of queue.
+            while self._scheduled and self._scheduled[0]._cancelled:
+                self._timer_cancelled_count -= 1
+                handle = heapq.heappop(self._scheduled)
+                handle._scheduled = False
+
+        timeout = None
+        if self._ready or self._stopping:
+            timeout = 0
+        elif self._scheduled:
+            # Compute the desired timeout.
+            timeout = self._scheduled[0]._when - self.time()
+            if timeout &gt; MAXIMUM_SELECT_TIMEOUT:
+                timeout = MAXIMUM_SELECT_TIMEOUT
+            elif timeout &lt; 0:
+                timeout = 0
+
+        event_list = self._selector.select(timeout)
+        self._process_events(event_list)
+        # Needed to break cycles when an exception occurs.
+        event_list = None
+
+        # Handle 'later' callbacks that are ready.
+        end_time = self.time() + self._clock_resolution
+        while self._scheduled:
+            handle = self._scheduled[0]
+            if handle._when &gt;= end_time:
+                break
+            handle = heapq.heappop(self._scheduled)
+            handle._scheduled = False
+            self._ready.append(handle)
+
+        # This is the only place where callbacks are actually *called*.
+        # All other places just add them to ready.
+        # Note: We run all currently scheduled callbacks, but not any
+        # callbacks scheduled by callbacks run this time around --
+        # they will be run the next time (after another I/O poll).
+        # Use an idiom that is thread-safe without using locks.
+        ntodo = len(self._ready)
+        for i in range(ntodo):
+            handle = self._ready.popleft()
+            if handle._cancelled:
+                continue
+            if self._debug:
+                try:
+                    self._current_handle = handle
+                    t0 = self.time()
+                    handle._run()
+                    dt = self.time() - t0
+                    if dt &gt;= self.slow_callback_duration:
+                        logger.warning('Executing %s took %.3f seconds',
+                                       _format_handle(handle), dt)
+                finally:
+                    self._current_handle = None
+            else:
+                handle._run()
+        handle = None  # Needed to break cycles when an exception occurs.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:1970-2051</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L1970-L2051"
+          ><code>BaseEventLoop._run_once()</code></a
+        >. This method was byte-identical between tags <code>v3.13.0</code> and
+        <code>v3.13.11</code>.
+      </p>
+
+      <h2>Three things the shape tells you immediately</h2>
+
+      <h3>Polling happens before running, every time</h3>
+
+      <p>
+        Step 3 comes before step 6. An iteration always asks the kernel what is
+        ready <em>first</em>, and only then runs callbacks. This is why the
+        documented behaviour of <code>stop()</code> before
+        <code>run_forever()</code> is “poll once with a zero timeout, then exit”
+        rather than “exit”: step 2 sees <code>_stopping</code> and chooses a zero
+        timeout, but step 3 still runs.
+        <a href="0015-docs-versus-source.html">Lesson 15</a> shows PEP 3156
+        expecting the opposite.
+      </p>
+
+      <h3>Nothing user-written runs outside step 6</h3>
+
+      <p>
+        Steps 1, 2, 4 and 5 only move objects between a heap, a deque and a
+        selector. The source comment says it in as many words:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This is the only place where callbacks are actually <em>called</em>.
+            All other places just add them to ready.
+          </p>
+        </blockquote>
+        <figcaption>
+          Source comment at
+          <a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L2027-L2028"
+            ><code>Lib/asyncio/base_events.py:2027-2028</code></a
+          >. <strong>[impl detail]</strong>, but pinned by CPython's own tests —
+          see <a href="0003-the-ntodo-snapshot.html">lesson 3</a>.
+        </figcaption>
+      </figure>
+
+      <p>
+        That is a stronger statement than it looks. When a socket becomes
+        readable, your <code>data_received</code> does not run at step 4; a
+        <code>Handle</code> is appended and the loop continues to step 5. When a
+        Future is resolved, its done-callbacks do not run inline; they are
+        appended. The whole system is one queue and one place that empties it.
+      </p>
+
+      <h3>Exactly one step can block</h3>
+
+      <p>
+        Steps 1, 2, 4, 5 are bounded by the work already queued. Step 6 is
+        bounded by however long <em>your</em> callbacks take. Step 3 is the only
+        place the process voluntarily waits, and
+        <a href="0004-the-only-blocking-call.html">lesson 4</a> is about it.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The operational corollary</span>
+        <p>
+          Because step 3 of iteration <em>N+1</em> cannot begin until step 6 of
+          iteration <em>N</em> has finished, a slow callback does not merely
+          delay itself — it delays the <em>poll</em>. No file descriptor in the
+          process is even <em>looked at</em> while it runs. The documentation
+          states the consequence without the mechanism: “if a function performs a
+          CPU-intensive calculation for 1 second, all concurrent asyncio Tasks and
+          IO operations would be delayed by 1 second”
+          (<a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-dev.html#running-blocking-code"
+            >Running Blocking Code</a
+          >, <code>Doc/library/asyncio-dev.rst:122-125</code>).
+          <strong>[guaranteed]</strong>
+        </p>
+      </div>
+
+      <h2>Which lesson magnifies which step</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            A map of the rest of the topic onto the six steps.
+          </caption>
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>What it does</th>
+              <th>Taught in</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1 — timer hygiene</td>
+              <td>
+                Drops cancelled <code>TimerHandle</code>s, cheaply or by
+                compaction.
+              </td>
+              <td>
+                <a href="0012-cancelled-timers-and-sleep.html">Lesson 12</a>
+              </td>
+            </tr>
+            <tr>
+              <td>2 — the timeout</td>
+              <td>Zero, a clamped deadline, or block forever.</td>
+              <td><a href="0004-the-only-blocking-call.html">Lesson 4</a></td>
+            </tr>
+            <tr>
+              <td>3 — <code>select()</code></td>
+              <td>The one syscall the loop waits in.</td>
+              <td>
+                <a href="0004-the-only-blocking-call.html">Lesson 4</a>, and
+                <a href="0013-threads-and-the-self-pipe.html">lesson 13</a> for
+                how another thread interrupts it.
+              </td>
+            </tr>
+            <tr>
+              <td>4 — events to callbacks</td>
+              <td>Readiness becomes <code>_ready</code> entries.</td>
+              <td>
+                <a href="0005-readiness-becomes-callbacks.html">Lesson 5</a>
+              </td>
+            </tr>
+            <tr>
+              <td>5 — due timers</td>
+              <td>
+                The heap head moves to <code>_ready</code>, up to one clock tick
+                early.
+              </td>
+              <td><a href="0011-the-timer-heap.html">Lesson 11</a></td>
+            </tr>
+            <tr>
+              <td>6 — the drain</td>
+              <td>
+                <code>ntodo</code> handles run, inside their captured contexts.
+              </td>
+              <td>
+                <a href="0003-the-ntodo-snapshot.html">Lesson 3</a> and
+                <a href="0006-inside-handle-run.html">lesson 6</a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A readable socket's callback is appended to <code>_ready</code> at step
+          4. When does it actually run?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Inside step 4, right after the poll returns
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Inside step 6, of that very same iteration
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Inside step 6, of the following loop iteration
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Inside step 3, once the fd becomes ready
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Step 4 appends, step 6 drains, and both happen in the same call to
+          <code>_run_once</code> — so an I/O callback runs in the iteration that
+          polled for it. What waits until the <em>next</em> iteration is anything
+          scheduled <em>by</em> a callback running in step 6, because
+          <code>ntodo</code> was snapshotted before the drain began. That is
+          <a href="0003-the-ntodo-snapshot.html">lesson 3</a>.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which single step of <code>_run_once</code> can block for a meaningful
+          duration?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Step 1, the timer heap hygiene pass
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Step 3, the call into the selector
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Step 5, moving due timers into <code>_ready</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Step 6, draining the whole ready queue
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>self._selector.select(timeout)</code> is the only call that waits
+          on the kernel. Step 6 can certainly take a long time, but only because
+          your own callbacks do — the loop is not <em>waiting</em> there, it is
+          running your code. Steps 1 and 5 are bounded by the size of the heap.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Six steps, one of which blocks, and one of which runs anything. The next
+        three lessons take the last three steps in reverse order of subtlety:
+        <a href="0003-the-ntodo-snapshot.html">lesson 3</a> on the four lines of
+        step 6 that quietly solve two different problems at once, then
+        <a href="0004-the-only-blocking-call.html">lesson 4</a> on the timeout,
+        then <a href="0005-readiness-becomes-callbacks.html">lesson 5</a> on the
+        conversion from events to callbacks.
+      </p>
+
+      <p>
+        The six steps, as a bare table with the source line for each, are in the
+        <a href="../reference/run-once.html#the-six-steps"
+          ><code>_run_once</code> reference</a
+        >. Recall them from memory first; that page is for checking yourself, not
+        for learning them from.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L1970-L2051"
+              ><code>BaseEventLoop._run_once()</code> at tag
+              <code>v3.13.11</code></a
+            >
+            — read it on GitHub rather than here, so the line numbers on the
+            left are the ones every later lesson cites. Eighty lines. If you read
+            one thing from CPython in your life, this is a strong candidate.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good question to put to it now: “what
+          would break if steps 5 and 6 were swapped?” Working out the answer from
+          the code is worth more than reading the next lesson.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the lesson to over-learn: almost everything later leans on
+            it. Before lesson 3, try to name the six steps in order from memory,
+            out loud, and then check. Recalling five and missing one teaches you
+            more than re-reading the diagram, and the one you miss is usually
+            step 1 — which is exactly why it gets its own lesson later.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0001-four-lines-and-two-queues.html"
+              >1. Four lines, two queues</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0003-the-ntodo-snapshot.html">3. The <code>ntodo</code> snapshot</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

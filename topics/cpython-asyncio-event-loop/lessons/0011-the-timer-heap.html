@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>11. The timer heap — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0011</span>
+        <h1>The timer heap</h1>
+        <p class="lesson-mission">
+          Step 5, and the clock it depends on. Why <code>TimerHandle</code>'s
+          ordering is a preorder rather than a total order, why the loop fires
+          timers slightly <em>early</em> on purpose, and which of all this you are
+          entitled to rely on.
+        </p>
+      </header>
+
+      <p class="lead">
+        The second of the loop's two queues. Everything with a deadline in
+        asyncio — <code>sleep</code>, <code>timeout</code>,
+        <code>wait_for</code>, keepalives, retry backoff — is a
+        <code>TimerHandle</code> in one min-heap, and the whole of step 5 is six
+        lines of popping it.
+      </p>
+
+      <h2><code>TimerHandle</code></h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">class TimerHandle(Handle):
+    """Object returned by timed callback registration methods."""
+
+    __slots__ = ['_scheduled', '_when']
+
+    def __init__(self, when, callback, args, loop, context=None):
+        super().__init__(callback, args, loop, context)
+        if self._source_traceback:
+            del self._source_traceback[-1]
+        self._when = when
+        self._scheduled = False</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:108-118</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L108-L118"
+          ><code>TimerHandle</code></a
+        >.
+      </p>
+
+      <p>
+        Two fields on top of <code>Handle</code>: an absolute deadline, and a
+        flag recording whether this handle is currently sitting in the heap. Both
+        <code>Handle</code> and <code>TimerHandle</code> are
+        <code>__slots__</code>-ed, because one is allocated per callback and
+        their size shows up in real workloads.
+      </p>
+
+      <h3>The ordering is a preorder, not a total order</h3>
+
+      <p>The comparison methods order on <code>_when</code> alone:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __lt__(self, other):
+        if isinstance(other, TimerHandle):
+            return self._when &lt; other._when
+        return NotImplemented</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:129-132</code>. <code>__le__</code>,
+        <code>__gt__</code> and <code>__ge__</code> follow the same shape.
+      </p>
+
+      <p>But <code>__eq__</code> does not:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __eq__(self, other):
+        if isinstance(other, TimerHandle):
+            return (self._when == other._when and
+                    self._callback == other._callback and
+                    self._args == other._args and
+                    self._cancelled == other._cancelled)
+        return NotImplemented</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/events.py:149-155</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L149-L155"
+          ><code>TimerHandle.__eq__()</code></a
+        >. <code>__hash__</code> is <code>hash(self._when)</code>, consistent
+        with <code>__eq__</code> being a refinement of deadline equality.
+      </p>
+
+      <p>
+        So two <code>TimerHandle</code>s with the same deadline but different
+        callbacks are neither <code>&lt;</code> nor <code>&gt;</code> nor
+        <code>==</code> each other. <code>heapq</code> never needs more than
+        <code>__lt__</code>, so this is harmless in practice — but it is also
+        exactly why the ordering of same-deadline timers is left undefined, which
+        is the one part of this that <em>is</em> promised:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <em>callback</em> will be called exactly once. If two callbacks are
+            scheduled for exactly the same time, the order in which they are
+            called is undefined.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.call_later"
+            ><code>loop.call_later</code>, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-eventloop.rst:289-291</code>.
+          <strong>[guaranteed]</strong> PEP 3156 says the same: “Callbacks
+          scheduled in the past or at exactly the same time will be called in an
+          undefined order.”
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">A cheap way to be bitten</span>
+        <p>
+          If two timers must fire in a known order, do not give them the same
+          deadline and hope. Nothing in the heap, the comparison methods, or the
+          documentation will keep them ordered — and unlike most undefined
+          behaviour, this one will be stable in your tests and unstable in
+          production, because it depends on heap shape rather than on time.
+        </p>
+      </div>
+
+      <h2><code>call_at</code> is the primitive; <code>call_later</code> is sugar</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def call_at(self, when, callback, *args, context=None):
+        """Like call_later(), but uses an absolute time.
+
+        Absolute time corresponds to the event loop's time() method.
+        """
+        if when is None:
+            raise TypeError("when cannot be None")
+        self._check_closed()
+        if self._debug:
+            self._check_thread()
+            self._check_callback(callback, 'call_at')
+        timer = events.TimerHandle(when, callback, args, self, context)
+        if timer._source_traceback:
+            del timer._source_traceback[-1]
+        heapq.heappush(self._scheduled, timer)
+        timer._scheduled = True
+        return timer</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:805-821</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L805-L821"
+          ><code>BaseEventLoop.call_at()</code></a
+        >. <code>call_later</code> is one line:
+        <code>self.call_at(self.time() + delay, callback, *args, context=context)</code>
+        at <code>base_events.py:799-800</code>.
+      </p>
+
+      <p>This is PEP 3156's stated equivalence, implemented literally:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>call_at(when, callback, *args)</code>. This is like
+            <code>call_later()</code>, but the time is expressed as an absolute
+            time. Returns a similar <code>Handle</code>. There is a simple
+            equivalency: <code>loop.call_later(delay, callback, *args)</code> is
+            the same as
+            <code>loop.call_at(loop.time() + delay, callback, *args)</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#basic-callbacks"
+            >PEP 3156 § Basic Callbacks</a
+          >. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <p>
+        The practical consequence of <code>call_later</code> snapshotting
+        <code>self.time()</code> <em>at scheduling time</em> is worth stating:
+        a delay is relative to when you scheduled it, not to when the previous
+        iteration ended. <strong>There is no drift accumulation from the loop
+        itself</strong> — only from however long the callback is delayed by a
+        busy queue once it is due.
+      </p>
+
+      <h2>The clock</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def time(self):
+        """Return the time according to the event loop's clock.
+
+        This is a float expressed in seconds since an epoch, but the
+        epoch, precision, accuracy and drift are unspecified and may
+        differ per event loop.
+        """
+        return time.monotonic()</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:772-779</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L772-L779"
+          ><code>BaseEventLoop.time()</code></a
+        >.
+      </p>
+
+      <p>
+        Three sources say three different things about this clock, and the
+        differences are exactly the <strong>[guaranteed]</strong> /
+        <strong>[impl detail]</strong> line:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What each source commits to about <code>loop.time()</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Says</th>
+              <th>Grade</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PEP 3156 § Basic Callbacks</td>
+              <td>
+                “may be <code>time.time()</code> or
+                <code>time.monotonic()</code> or some other system-specific
+                clock, but it must return a float expressing the time in units of
+                approximately one second since some epoch”
+              </td>
+              <td>A float in approximately-seconds. <strong>[guaranteed]</strong></td>
+            </tr>
+            <tr>
+              <td>The 3.13 reference</td>
+              <td>
+                “Return the current time […] according to the event loop's
+                internal <strong>monotonic</strong> clock”
+                (<code>Doc/library/asyncio-eventloop.rst:342-345</code>)
+              </td>
+              <td>Monotonicity. <strong>[guaranteed]</strong></td>
+            </tr>
+            <tr>
+              <td>The source</td>
+              <td><code>return time.monotonic()</code></td>
+              <td>
+                That it is precisely <code>time.monotonic()</code>.
+                <strong>[impl detail]</strong>
+              </td>
+            </tr>
+            <tr>
+              <td>The docstring</td>
+              <td>
+                “the epoch, precision, accuracy and drift are unspecified and may
+                differ per event loop”
+              </td>
+              <td>
+                Stronger disclaimer than the published documentation. Believe the
+                docstring when writing a custom loop.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        And <code>asyncio.timeout_at</code> spells out what monotonic means for
+        callers, in the one place it is stated bluntly:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Please note: it is not POSIX time but a time with undefined starting
+            base, e.g. the time of the system power on.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/timeouts.py#L165-L184"
+            ><code>Lib/asyncio/timeouts.py:171-172</code></a
+          >, the <code>timeout_at()</code> docstring. Passing a
+          <code>time.time()</code> value to <code>call_at</code> schedules
+          something roughly fifty-five years in the future.
+        </figcaption>
+      </figure>
+
+      <h2>Step 5, and the fudge</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        # Handle 'later' callbacks that are ready.
+        end_time = self.time() + self._clock_resolution
+        while self._scheduled:
+            handle = self._scheduled[0]
+            if handle._when &gt;= end_time:
+                break
+            handle = heapq.heappop(self._scheduled)
+            handle._scheduled = False
+            self._ready.append(handle)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:2017-2025</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L2017-L2025"
+          >step 5 of <code>_run_once()</code></a
+        >. <code>self._clock_resolution</code> is
+        <code>time.get_clock_info('monotonic').resolution</code>, captured once at
+        <code>base_events.py:430</code> and used in this one place.
+      </p>
+
+      <p>
+        A timer is considered due if <code>_when &lt; now + resolution</code>,
+        <strong>not</strong> <code>_when &lt;= now</code>. The loop deliberately
+        fires timers <em>up to one clock tick early</em>, rather than burning an
+        entire extra iteration — another <code>select()</code>, another syscall —
+        on a timer that is within the clock's own measurement error of being due.
+      </p>
+
+      <p>
+        This is one of very few pieces of <code>_run_once</code> internals that
+        made it into the reference documentation, and it is stated as a note on
+        both <code>call_later</code> and <code>call_at</code>:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            For performance, callbacks scheduled with
+            <code>loop.call_later()</code> may run up to one clock-resolution
+            early (see <code>time.get_clock_info('monotonic').resolution</code>).
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.call_later"
+            ><code>loop.call_later</code>, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-eventloop.rst:301-305</code>; the same note
+          appears at 327–331 for <code>call_at</code>.
+          <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Two roundings, pulling opposite ways</span>
+        <p>
+          <a href="0004-the-only-blocking-call.html">Lesson 4</a> showed
+          <code>EpollSelector.select</code> rounding the poll timeout
+          <strong>up</strong> to the next whole millisecond, so the sleep is never
+          short. Step 5 treats a timer as due one resolution
+          <strong>early</strong>. The two pull in opposite directions and roughly
+          cancel.
+        </p>
+        <p>
+          On Linux, <code>time.get_clock_info('monotonic').resolution</code> is
+          typically 1&nbsp;ns, so the fudge is negligible and the epoll rounding
+          dominates. On a platform with a coarse monotonic clock, the fudge is
+          what stops timers being late by a full tick. Two mechanisms, each
+          load-bearing on a different platform.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Two timers are scheduled for exactly the same deadline. In what order
+          do their callbacks run?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              In the order they were originally scheduled in
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              In reverse order, since a heap pops backwards
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              In an order the documentation refuses to define
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              In the order their callback names would sort
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Both the 3.13 reference and PEP 3156 state it as undefined, and the
+          mechanism is visible in the source: <code>TimerHandle</code> orders on
+          <code>_when</code> alone, so equal deadlines make the two handles
+          incomparable and the outcome depends on heap shape. It will look stable
+          in a small test and will not be.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does step 5 compare against
+          <code>now + _clock_resolution</code> rather than against
+          <code>now</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              To make sure a timer never fires before its time
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              To avoid a whole extra iteration for a tiny wait
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              To leave room for the rounding done by the selector
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              To keep the heap ordered when the clock jumps back
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A timer within one clock tick of being due is fired now rather than
+          costing another <code>select()</code> syscall — the documentation calls
+          it out as “for performance”, and the effect is that callbacks may run
+          up to one clock-resolution <em>early</em>. It is the opposite of the
+          first answer, and it happens to partly offset the epoll rounding from
+          lesson 4 rather than being designed around it.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Timers go into the heap easily. Getting them <em>out</em> when they are
+        cancelled is the awkward part, because you cannot cheaply remove from the
+        middle of a heap.
+        <a href="0012-cancelled-timers-and-sleep.html">Lesson 12</a> is step 1 —
+        the two strategies, the two undocumented constants, and one observation
+        about the counter that no CPython issue appears to describe.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/events.py#L29-L168"
+              ><code>Lib/asyncio/events.py</code>, lines 29–168 at tag
+              <code>v3.13.11</code></a
+            >
+            — <code>Handle</code> and <code>TimerHandle</code> complete. It is
+            140 lines for both classes, and it is the smallest self-contained
+            piece of asyncio worth knowing by heart. Note how much of it is
+            <code>__slots__</code>, comparison methods and traceback bookkeeping.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: “what actually happens if I
+          pass a <code>time.time()</code> value to <code>loop.call_at</code>?”
+          The answer is more interesting than “it doesn't work”, and it is a good
+          check on whether the monotonic-epoch point has landed.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 12, try to recall which of the four clock claims are
+            guaranteed and which are implementation detail. Getting the grading
+            right matters more here than getting the facts right — the facts are
+            in the <a href="../reference/glossary.html#timing">glossary</a>, the grading
+            is the skill.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0010-the-c-accelerator.html">10. The C accelerator</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0012-cancelled-timers-and-sleep.html"
+              >12. Cancelled timers, and <code>sleep</code></a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

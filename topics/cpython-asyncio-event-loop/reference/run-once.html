@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>_run_once reference &mdash; CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1><code>_run_once</code></h1>
+        <p class="page-blurb">
+          One iteration of the loop, compressed for lookup: the six steps, the
+          constants, the line numbers, and the round trip an
+          <code>await</code> takes through them. Everything here is against
+          CPython tag <code>v3.13.11</code>.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Line numbers are exact against
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/base_events.py#L1970-L2051"
+          ><code>Lib/asyncio/base_events.py</code> at tag
+          <code>v3.13.11</code></a
+        >, and hold for that tag only. <code>_run_once</code> is byte-identical
+        between <code>v3.13.0</code> and <code>v3.13.11</code>.
+      </p>
+
+      <h2 id="the-six-steps">The six steps</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            One iteration, in order. Only step 3 blocks; only step 6 runs
+            anything.
+          </caption>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Step</th>
+              <th>What happens</th>
+              <th>Lines</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Timer-heap hygiene</td>
+              <td>
+                Compaction if <code>len(_scheduled) &gt; 100</code> and
+                <code>cancelled/total &gt; 0.5</code>; otherwise pop cancelled
+                handles off the head only.
+              </td>
+              <td>1978–1999</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Compute the poll timeout</td>
+              <td>
+                <code>0</code> if <code>_ready</code> or <code>_stopping</code>;
+                else <code>head._when - now</code> clamped to
+                <code>[0, 86400]</code>; else <code>None</code>.
+              </td>
+              <td>2001–2010</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td><strong>The only blocking call</strong></td>
+              <td>
+                <code>event_list = self._selector.select(timeout)</code> →
+                <code>epoll_wait(2)</code> on Linux.
+              </td>
+              <td>2012</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Events → callbacks</td>
+              <td>
+                <code>_process_events</code> appends the stored reader/writer
+                handles to <code>_ready</code>. No user code runs.
+              </td>
+              <td>
+                2013, and
+                <code>selector_events.py:740-752</code>
+              </td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>Due timers → <code>_ready</code></td>
+              <td>
+                Pop every <code>TimerHandle</code> with
+                <code>_when &lt; now + _clock_resolution</code>.
+              </td>
+              <td>2017–2025</td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>Drain</td>
+              <td>
+                <code>ntodo = len(_ready)</code>, then
+                <code>ntodo</code> × <code>popleft()</code> +
+                <code>_run()</code>. <strong>The only place callbacks are
+                called.</strong>
+              </td>
+              <td>2027–2051</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="the-constants">The constants</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Every named constant <code>_run_once</code> depends on.
+          </caption>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Value</th>
+              <th>Where</th>
+              <th>Grade</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_MIN_SCHEDULED_TIMER_HANDLES</code></td>
+              <td><code>100</code></td>
+              <td><code>base_events.py:56-58</code></td>
+              <td>
+                <strong>[impl detail]</strong> — undocumented, but imported by
+                name in <code>test_base_events.py</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>_MIN_CANCELLED_TIMER_HANDLES_FRACTION</code></td>
+              <td><code>0.5</code></td>
+              <td><code>base_events.py:60-62</code></td>
+              <td><strong>[impl detail]</strong>, same</td>
+            </tr>
+            <tr>
+              <td><code>MAXIMUM_SELECT_TIMEOUT</code></td>
+              <td><code>24 * 3600</code></td>
+              <td><code>base_events.py:67-68</code></td>
+              <td>
+                <strong>[impl detail]</strong>; the 3.8 removal of the one-day
+                <em>delay</em> limit is documented
+              </td>
+            </tr>
+            <tr>
+              <td><code>_clock_resolution</code></td>
+              <td>
+                <code>time.get_clock_info('monotonic').resolution</code>,
+                captured once
+              </td>
+              <td><code>base_events.py:430</code></td>
+              <td>
+                Its <em>effect</em> is <strong>[guaranteed]</strong> —
+                “callbacks […] may run up to one clock-resolution early”
+              </td>
+            </tr>
+            <tr>
+              <td><code>slow_callback_duration</code></td>
+              <td><code>0.1</code></td>
+              <td><code>base_events.py:437</code></td>
+              <td>
+                <strong>[guaranteed]</strong> —
+                <code>Doc/library/asyncio-dev.rst:56-58</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>max_size</code> (per-<code>recv</code> ceiling)</td>
+              <td><code>256 * 1024</code></td>
+              <td><code>selector_events.py:762</code></td>
+              <td><strong>[impl detail]</strong></td>
+            </tr>
+            <tr>
+              <td><code>THREAD_JOIN_TIMEOUT</code></td>
+              <td><code>300</code></td>
+              <td><code>constants.py:33-34</code></td>
+              <td>
+                The “5 minutes” the <code>asyncio.run</code> docstring promises
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="the-four-rules-of-the-drain">The four rules of the drain</h2>
+
+      <ol>
+        <li>
+          <strong>The batch is fixed before it starts.</strong>
+          <code>ntodo = len(self._ready)</code> is read once. Callbacks scheduled
+          <em>by</em> callbacks run next iteration, after another poll.
+        </li>
+        <li>
+          <strong>No lock is taken.</strong> A concurrent
+          <code>call_soon_threadsafe</code> append can only make the real length
+          larger than <code>ntodo</code>, never smaller, and
+          <code>deque.append</code>/<code>popleft</code> are individually atomic.
+        </li>
+        <li>
+          <strong>A cancelled handle still consumes a slot.</strong> It is
+          popped, skipped at <code>base_events.py:2036-2037</code>, and the
+          counter has already budgeted for it.
+        </li>
+        <li>
+          <strong>Debug mode is checked per handle</strong>, not per iteration —
+          <code>if self._debug:</code> is inside the <code>for</code> at line
+          2038.
+        </li>
+      </ol>
+
+      <h2 id="the-three-poll-timeouts">The three poll timeouts</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        timeout = None
+        if self._ready or self._stopping:
+            timeout = 0
+        elif self._scheduled:
+            # Compute the desired timeout.
+            timeout = self._scheduled[0]._when - self.time()
+            if timeout &gt; MAXIMUM_SELECT_TIMEOUT:
+                timeout = MAXIMUM_SELECT_TIMEOUT
+            elif timeout &lt; 0:
+                timeout = 0</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>base_events.py:2001-2010</code>. <code>EpollSelector.select</code>
+        then maps <code>None</code> → <code>-1</code> (block forever),
+        <code>&lt;= 0</code> → <code>0</code>, and rounds anything else
+        <strong>up</strong> to the next whole millisecond
+        (<code>Lib/selectors.py:435-448</code>).
+      </p>
+
+      <h2 id="the-await-round-trip">The <code>await</code> round trip</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>await loop.sock_recv(s, n)</code>, stage by stage.
+          </caption>
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Call</th>
+              <th>Where</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>0 — fast path</td>
+              <td>
+                <code>sock.recv(n)</code> tried first. Success means
+                <strong>no suspension at all</strong>.
+              </td>
+              <td><code>selector_events.py:374-377</code></td>
+            </tr>
+            <tr>
+              <td>1 — register</td>
+              <td>
+                <code>create_future()</code>, then
+                <code>_add_reader(fd, self._sock_recv, fut, sock, n)</code> →
+                <code>selector.register(fd, EVENT_READ, (handle, None))</code>
+              </td>
+              <td><code>selector_events.py:378-384</code>, <code>274-287</code></td>
+            </tr>
+            <tr>
+              <td>2 — suspend</td>
+              <td>
+                <code>Future.__await__</code> sets the flag and
+                <code>yield self</code>; the Task subscribes
+                <code>__wakeup</code> and records <code>_fut_waiter</code>.
+              </td>
+              <td>
+                <code>futures.py:283-289</code>,
+                <code>tasks.py:324-343</code>
+              </td>
+            </tr>
+            <tr>
+              <td>3 — readiness</td>
+              <td>
+                <code>epoll_wait</code> returns; step 4 appends; step 6 runs
+                <code>_sock_recv</code>, which calls
+                <code>fut.set_result(data)</code>.
+              </td>
+              <td><code>selector_events.py:740</code>, <code>390-404</code></td>
+            </tr>
+            <tr>
+              <td>4 — <strong>one extra iteration</strong></td>
+              <td>
+                <code>set_result</code> → <code>__schedule_callbacks</code> →
+                <code>call_soon(__wakeup)</code>. The <code>ntodo</code> snapshot
+                defers it to iteration <em>N+1</em>.
+              </td>
+              <td><code>futures.py:248-258</code>, <code>158-170</code></td>
+            </tr>
+            <tr>
+              <td>5 — resume</td>
+              <td>
+                <code>__wakeup</code> → <code>__step</code> →
+                <code>coro.send(None)</code>;
+                <code>Future.__await__</code> returns
+                <code>self.result()</code>.
+              </td>
+              <td><code>tasks.py:373-387</code>, <code>281-304</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="the-asyncio-future-blocking-signal">The <code>_asyncio_future_blocking</code> signal</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            <code>getattr(result, '_asyncio_future_blocking', None)</code> in
+            <code>Task.__step_run_and_handle_result</code>
+            (<code>tasks.py:323-369</code>).
+          </caption>
+          <thead>
+            <tr>
+              <th>Value</th>
+              <th>Meaning</th>
+              <th>Response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>None</code></td>
+              <td>Not a Future.</td>
+              <td>
+                <code>result is None</code> → <code>call_soon(__step)</code>;
+                generator or anything else → <code>RuntimeError</code>.
+              </td>
+            </tr>
+            <tr>
+              <td><code>False</code></td>
+              <td>A Future, yielded rather than awaited.</td>
+              <td>
+                <code>RuntimeError('yield was used instead of yield from …')</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>True</code></td>
+              <td>A Future that suspended properly.</td>
+              <td>
+                Clear the flag, <code>add_done_callback(__wakeup)</code>, set
+                <code>_fut_waiter</code>, return.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        Also check the loop —
+        <code>futures._get_loop(result) is not self._loop</code> raises before
+        any of the above — and self-await, which raises “Task cannot await on
+        itself”.
+      </p>
+
+      <h2 id="the-task-s-three-states">The Task's three states</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            From the invariant comment at <code>tasks.py:76-93</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Condition</th>
+              <th>Meaning</th>
+              <th><code>cancel()</code> does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>
+                <code>_fut_waiter is not None and not _fut_waiter.done()</code>
+              </td>
+              <td>Waiting on a pending Future.</td>
+              <td>Cancels that Future.</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>
+                <code>_fut_waiter</code> is None or done, and
+                <code>__step()</code> is scheduled
+              </td>
+              <td>Waiting to be stepped.</td>
+              <td>Sets <code>_must_cancel</code>.</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>
+                <code>_fut_waiter is None</code> and <code>__step()</code> is not
+                scheduled
+              </td>
+              <td>Currently executing.</td>
+              <td>Sets <code>_must_cancel</code>.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="ten-line-numbers-worth-having">Ten line numbers worth having</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            The citations the lessons return to most.
+          </caption>
+          <thead>
+            <tr>
+              <th>What</th>
+              <th>Where</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>BaseEventLoop._run_once()</code></td>
+              <td><code>base_events.py:1970-2051</code></td>
+            </tr>
+            <tr>
+              <td><code>run_forever()</code></td>
+              <td><code>base_events.py:678-687</code></td>
+            </tr>
+            <tr>
+              <td><code>stop()</code></td>
+              <td><code>base_events.py:727-733</code></td>
+            </tr>
+            <tr>
+              <td><code>call_soon</code> / <code>call_soon_threadsafe</code></td>
+              <td><code>base_events.py:823-840</code> / <code>876-885</code></td>
+            </tr>
+            <tr>
+              <td><code>Handle._run()</code></td>
+              <td><code>events.py:87-105</code></td>
+            </tr>
+            <tr>
+              <td><code>TimerHandle</code></td>
+              <td><code>events.py:108-168</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>_asyncio_future_blocking</code> comment /
+                <code>Future.__await__</code>
+              </td>
+              <td><code>futures.py:59-68</code> / <code>283-291</code></td>
+            </tr>
+            <tr>
+              <td><code>Task.__step_run_and_handle_result()</code></td>
+              <td><code>tasks.py:298-371</code></td>
+            </tr>
+            <tr>
+              <td><code>_process_events()</code></td>
+              <td><code>selector_events.py:740-752</code></td>
+            </tr>
+            <tr>
+              <td>The self-pipe</td>
+              <td><code>selector_events.py:110-157</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        Everything on this page comes from the lessons in this topic; the
+        vocabulary is in the <a href="glossary.html">glossary</a>, threading is in
+        the <a href="thread-safety.html">thread-safety table</a>, and what is
+        <em>not</em> known is in
+        <a href="unverified-claims.html">unverified claims</a>.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

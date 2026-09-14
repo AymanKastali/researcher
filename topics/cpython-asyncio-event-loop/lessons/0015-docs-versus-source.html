@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>15. Where the docs and the source disagree — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0015</span>
+        <h1>Where the docs and the source disagree</h1>
+        <p class="lesson-mission">
+          The last lesson, and the one that outlasts every version number. Five
+          places where a PEP, a documentation page and the 3.13.11 source
+          contradict each other — each argued in full, each decided, and the
+          deciding turned into a method.
+        </p>
+      </header>
+
+      <p class="lead">
+        Fourteen lessons have carried two markers,
+        <strong>[guaranteed]</strong> and <strong>[impl detail]</strong>, without
+        ever making the distinction the object of study. This lesson does. The
+        facts above will change; how to check them will not.
+      </p>
+
+      <h2>The three grades, and their standing</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What each kind of source is the authority for.
+          </caption>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Authority for</th>
+              <th>Not authority for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>A PEP</strong></td>
+              <td>
+                What was <em>intended and promised</em> at the time it was
+                written.
+              </td>
+              <td>
+                What today's code does. PEP 3156 is dated 2012 and marked
+                <code>Status: Final</code> — final means closed, not current.
+              </td>
+            </tr>
+            <tr>
+              <td><strong><code>docs.python.org</code> for 3.13</strong></td>
+              <td>
+                What a user is <em>entitled to rely on</em>. This is what
+                <strong>[guaranteed]</strong> means.
+              </td>
+              <td>
+                Completeness. It is a contract, and contracts are deliberately
+                narrower than behaviour.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>CPython source at a tag</strong></td>
+              <td>
+                What the implementation <em>actually does</em>, on that version,
+                on that day.
+              </td>
+              <td>
+                What it will do next release, and what any other loop does. This
+                is what <strong>[impl detail]</strong> means.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        When they conflict, the source is the authority for
+        <em>behaviour</em> and the documentation is the authority for
+        <em>entitlement</em>. Those are different questions, and most confusion
+        about internals comes from asking one and answering the other.
+      </p>
+
+      <h2>Disagreement 1: is <code>call_soon_threadsafe</code> signal-safe?</h2>
+
+      <p>PEP 3156 says no:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Note: this is not safe to call from a signal handler (since it may
+            use locks). In fact, no API is signal-safe; if you want to handle
+            signals, use <code>add_signal_handler()</code> described below.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#thread-interaction"
+            >PEP 3156 § Thread interaction</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>The 3.13 reference says yes:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This function is safe to be called from a reentrant context or signal
+            handler, however, it is not safe or fruitful to use the returned
+            handle in such contexts.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.call_soon_threadsafe"
+            ><code>loop.call_soon_threadsafe</code>, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-eventloop.rst:241-242</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        <strong>The source supports the docs.</strong> The whole path is
+        <code>_check_closed</code> → <code>events.Handle(...)</code> →
+        <code>contextvars.copy_context()</code> → <code>deque.append</code> →
+        <code>socket.send(b'\0')</code>. You have read every one of those in
+        <a href="0013-threads-and-the-self-pipe.html">lesson 13</a>. There is no
+        <code>threading.Lock</code> anywhere in it.
+      </p>
+
+      <p>
+        PEP 3156's parenthetical “(since it may use locks)” describes an
+        implementation that no longer exists. And the caveat about the returned
+        handle is the honest residue: <code>Handle.cancel()</code> mutates
+        <code>_cancelled</code>, <code>_callback</code> and <code>_args</code>
+        with no synchronisation, so cancelling from a signal handler a handle the
+        loop is about to run is genuinely racy.
+      </p>
+
+      <p>
+        <strong>Verdict: prefer the docs and the source.</strong> The PEP is
+        normative about intent, not about the 3.13 code.
+      </p>
+
+      <h2>Disagreement 2: does <code>stop()</code> poll for I/O?</h2>
+
+      <p>PEP 3156 intends not:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>stop()</code>. Stops the event loop as soon as it is
+            convenient. […] How soon after this point the event loop stops is up
+            to the implementation, but the intention is to stop short of polling
+            for I/O, and not to run any callbacks scheduled in the future; the
+            major freedom an implementation has is how much of the “ready queue”
+            (callbacks already scheduled with <code>call_soon()</code>) it
+            processes before stopping.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#starting-stopping-and-closing"
+            >PEP 3156 § Starting, Stopping and Closing</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>The 3.13 reference says it does:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If <code>stop()</code> is called before
+            <code>run_forever()</code> is called, the loop will poll the I/O
+            selector once with a timeout of zero, run all callbacks scheduled in
+            response to I/O events (and those that were already scheduled), and
+            then exit.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.run_forever"
+            ><code>loop.run_forever</code>, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-eventloop.rst:129-132</code>.
+        </figcaption>
+      </figure>
+
+      <p>
+        <strong>The source says: it depends on when you call it</strong> — and
+        the deciding line is one you already know, from
+        <a href="0004-the-only-blocking-call.html">lesson 4</a>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        timeout = None
+        if self._ready or self._stopping:
+            timeout = 0</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_events.py:2001-2003</code>.
+        <code>_stopping</code> sharing a branch with <code>_ready</code> is the
+        whole mechanism.
+      </p>
+
+      <ul>
+        <li>
+          <strong><code>stop()</code> before <code>run_forever()</code>:</strong>
+          <code>_stopping</code> is already true when the first
+          <code>_run_once</code> computes its timeout, so it polls with
+          <code>timeout = 0</code>, runs <code>_process_events</code>, runs due
+          timers, drains the ready queue, and exits. Exactly as the docs say, and
+          <em>not</em> “short of polling for I/O”.
+        </li>
+        <li>
+          <strong><code>stop()</code> during the drain:</strong>
+          <code>select()</code> for this iteration already happened before the
+          callback ran, and <code>run_forever</code> breaks immediately after
+          <code>_run_once</code> returns. No further poll. As the PEP intends.
+        </li>
+      </ul>
+
+      <p>
+        The PEP's “not to run any callbacks scheduled in the future” is also
+        slightly strong: if a timer is already due when <code>stop()</code> is
+        called before <code>run_forever</code>, step 5 moves it into
+        <code>_ready</code> and step 6 runs it.
+      </p>
+
+      <p>
+        <strong>Verdict: the 3.13 docs are precisely right; the PEP describes
+        intent for one of the two cases.</strong>
+      </p>
+
+      <h2>Disagreement 3: what the timer documentation does and does not cover</h2>
+
+      <p>
+        Not strictly a contradiction, but the sharpest illustration of where the
+        line actually sits. Contrast two pieces of the same method:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Two mechanisms inside <code>_run_once</code>, one documented and one
+            not.
+          </caption>
+          <thead>
+            <tr>
+              <th>Mechanism</th>
+              <th>Where</th>
+              <th>Documented?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>The clock-resolution fudge — timers may run one tick early</td>
+              <td><code>base_events.py:2018</code></td>
+              <td>
+                <strong>Yes, twice</strong> —
+                <code>Doc/library/asyncio-eventloop.rst:301-305</code> and
+                327–331.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                The cancelled-timer compaction, its two constants, and the
+                counter staleness
+              </td>
+              <td><code>base_events.py:1978-1999</code></td>
+              <td><strong>Nowhere at all.</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The pattern to generalise</span>
+        <p>
+          <strong>The observable timing skew is promised. The entire
+          data-structure hygiene mechanism behind it is not.</strong> That is how
+          the line is drawn throughout CPython: documentation commits to
+          <em>what you can observe and must tolerate</em>, and stays silent about
+          <em>how</em>. When you find yourself relying on a mechanism rather than
+          on an observable, you have crossed into
+          <strong>[impl detail]</strong> whether or not anything said so.
+        </p>
+      </div>
+
+      <h2>Disagreement 4: <code>isfuture</code> performs a stricter test than it documents</h2>
+
+      <p>The docs:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>Return <code>True</code> if <em>obj</em> is either of:</p>
+          <p>
+            • an instance of <code>asyncio.Future</code>,<br />
+            • an instance of <code>asyncio.Task</code>,<br />
+            • a Future-like object with a
+            <code>_asyncio_future_blocking</code> attribute.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-future.html#asyncio.isfuture"
+            ><code>asyncio.isfuture</code>, Python 3.13 documentation</a
+          >, <code>Doc/library/asyncio-future.rst:22-29</code>. This is the
+          <em>only</em> place <code>_asyncio_future_blocking</code> appears in the
+          documentation at all.
+        </figcaption>
+      </figure>
+
+      <p>The source, from <a href="0007-the-blocking-flag.html">lesson 7</a>:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    return (hasattr(obj.__class__, '_asyncio_future_blocking') and
+            obj._asyncio_future_blocking is not None)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/base_futures.py:20-21</code>.
+      </p>
+
+      <p>Two conditions the documentation omits:</p>
+
+      <ol>
+        <li>
+          The attribute must be on the <strong>class</strong>. An instance-only
+          attribute does not count.
+        </li>
+        <li>
+          Its value must <strong>not be <code>None</code></strong>. This is not
+          an accident — it is the opt-out documented in the source: “The value
+          must also be not-None, to enable a subclass to declare that it is not
+          compatible by setting this to None” (<code>futures.py:62-64</code>).
+        </li>
+      </ol>
+
+      <p>And CPython's test suite asserts exactly the inverted case:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def test_isfuture(self):
+        class MyFuture:
+            _asyncio_future_blocking = None
+
+            def __init__(self):
+                self._asyncio_future_blocking = False
+
+        self.assertFalse(asyncio.isfuture(MyFuture))
+        self.assertTrue(asyncio.isfuture(MyFuture()))</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/test/test_asyncio/test_futures.py:138-146</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/test/test_asyncio/test_futures.py#L138-L159"
+          ><code>test_isfuture</code></a
+        >.
+      </p>
+
+      <p>
+        A class sets <code>_asyncio_future_blocking = None</code> at class level
+        to <em>opt out</em>, while its instances set <code>False</code> to opt
+        back in. <strong>Following the documentation literally would get both of
+        those backwards.</strong>
+      </p>
+
+      <p>
+        <strong>Verdict: prefer the source.</strong> The documented rule is a
+        simplification that is wrong at the edges — and the edges are the whole
+        reason the attribute is three-valued.
+      </p>
+
+      <h2>Disagreement 5: a What's New entry that outran the code</h2>
+
+      <p>What's New in 3.13 says three methods gained <code>**kwargs</code>:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The function and methods named <code>create_task</code> have received
+            a new <code>**kwargs</code> argument that is passed through to the
+            task constructor. […] This affects the following function and
+            methods: <code>asyncio.create_task()</code>,
+            <code>asyncio.loop.create_task()</code>,
+            <code>asyncio.TaskGroup.create_task()</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a
+            class="citation"
+            href="https://docs.python.org/3.13/whatsnew/3.13.html#asyncio"
+            >What's New in Python 3.13 § asyncio</a
+          >, <code>Doc/whatsnew/3.13.rst:742-757</code>.
+        </figcaption>
+      </figure>
+
+      <p>The source at 3.13.11 says one did:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The three signatures, as they actually stand at tag
+            <code>v3.13.11</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Where</th>
+              <th>Signature</th>
+              <th>Has <code>**kwargs</code>?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>base_events.py:461</code></td>
+              <td>
+                <code>def create_task(self, coro, *, name=None, context=None, **kwargs)</code>
+              </td>
+              <td><strong>Yes</strong></td>
+            </tr>
+            <tr>
+              <td><code>tasks.py:402</code></td>
+              <td>
+                <code>def create_task(coro, *, name=None, context=None)</code>
+              </td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>taskgroups.py:181</code></td>
+              <td>
+                <code>def create_task(self, coro, *, name=None, context=None)</code>
+              </td>
+              <td>No</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The two reference pages agree with the source, not with What's New:
+        <code>Doc/library/asyncio-task.rst:241</code> and
+        <code>:333</code> both document the plain signature, and only
+        <code>Doc/library/asyncio-eventloop.rst:370</code> shows the
+        <code>**kwargs</code>. For completeness, the change is a
+        <em>patch-release</em> event rather than a 3.13.0 one: at tag
+        <code>v3.13.0</code>, even <code>BaseEventLoop.create_task</code> has no
+        <code>**kwargs</code>.
+      </p>
+
+      <p>
+        <strong>Verdict: prefer the source and the reference pages.</strong> The
+        What's New entry describes the 3.13.3 state of all three signatures; two
+        of them were reverted in 3.13.4 and the entry was not fully updated.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The general point about release notes</span>
+        <p>
+          A What's New entry is written once, at feature-freeze, and is rarely
+          revisited during a release's five-year patch life. It is the
+          <em>least</em> reliable of the three grades and it is the one most
+          often quoted second-hand. When a release note and a reference page
+          disagree, the reference page is maintained and the release note is
+          not.
+        </p>
+      </div>
+
+      <h2>Four questions to ask of any claim</h2>
+
+      <p>
+        This is what to take away when everything above has gone out of date.
+        Given any statement about how asyncio behaves:
+      </p>
+
+      <ol>
+        <li>
+          <strong>Which grade is it?</strong> Can it be traced to a PEP, to
+          <code>docs.python.org</code> for a named version, or only to a line of
+          source? If only to source, it is
+          <strong>[impl detail]</strong> — say so, and expect it to change.
+        </li>
+        <li>
+          <strong>Is it an observable, or a mechanism?</strong> Documentation
+          commits to observables. If your claim is about <em>how</em> rather than
+          <em>what</em>, no amount of reading the docs will confirm it.
+        </li>
+        <li>
+          <strong>Does a test pin it?</strong> A behaviour that
+          <code>Lib/test/test_asyncio/</code> asserts is not promised, but it is
+          deliberate, and changing it would break CI. That is a real, if weaker,
+          form of stability — and it is the strongest evidence available for most
+          of lessons 3, 12 and 15.
+        </li>
+        <li>
+          <strong>Which version, and which loop?</strong> Every claim in this
+          topic is scoped to CPython 3.13.11 with a selector loop. uvloop
+          replaces the whole of lessons 1–5 and 11–13.
+          <code>ProactorEventLoop</code> replaces lessons 4, 5, 8 and 13. Neither
+          was read.
+        </li>
+      </ol>
+
+      <div class="aside insight">
+        <span class="label">And the honest fifth question</span>
+        <p>
+          <strong>What could not be verified?</strong> The
+          <a href="../reference/unverified-claims.html">unverified-claims
+          reference</a> lists everything this topic does not know: the
+          <code>_timer_cancelled_count</code> observation that no CPython issue
+          appears to describe, the historical origin of the
+          <code>ntodo</code> idiom, the free-threading claims that were never
+          executed, and the API that turned out not to exist. A page that names
+          its own gaps is more useful than one that does not — and it is the
+          first place to look when something here stops matching what you see.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          PEP 3156 and the 3.13 documentation contradict each other. Which do you
+          follow?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The PEP, since a PEP is the normative specification
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The docs, then check the source for actual behaviour
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Whichever of them the release notes happen to match
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Neither, since only a benchmark can settle the point
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A PEP marked <code>Status: Final</code> is closed, not current — it
+          records intent at the time of writing, and PEP 3156 is from 2012. The
+          3.13 documentation is what you are entitled to rely on, and the source
+          at a tag is what actually happens. Release notes are the least reliable
+          grade, as disagreement 5 shows.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A class sets <code>_asyncio_future_blocking = None</code> at class
+          level. What does <code>asyncio.isfuture</code> say about it?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              True for the class, and true for its instances
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              True for the class, but false for its instances
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              False for the class, unless an instance overrides it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              False for the class, and false for its instances
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A class-level <code>None</code> is the documented-in-source opt-out, so
+          the class itself fails the test — but an instance that sets the
+          attribute to <code>False</code> passes, because the
+          <code>hasattr</code> check is on the class and the value check is on
+          the object. <code>test_isfuture</code> asserts exactly this pair, and
+          the published documentation describes neither condition.
+        </p>
+      </div>
+
+      <h2>The end, and what to keep</h2>
+
+      <p>
+        Fifteen lessons. The mechanism — six steps, two queues, one blocking
+        call, one three-valued attribute — is durable enough to survive several
+        releases, as
+        <a href="0014-what-changed-311-to-313.html">lesson 14</a> showed. The
+        line numbers are not.
+      </p>
+
+      <p>
+        What is worth revisiting lives in the five reference documents rather
+        than here: the
+        <a href="../reference/run-once.html">run-once reference</a>, the
+        <a href="../reference/thread-safety.html">thread-safety table</a>, the
+        <a href="../reference/version-ledger.html">version ledger</a>, the
+        <a href="../reference/unverified-claims.html">unverified claims</a>, and
+        the <a href="../reference/glossary.html">glossary</a>. Lessons are read
+        once; those are the pages designed to be come back to.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/MagicStack/uvloop"
+              >uvloop</a
+            >
+            — not documentation, and the sharpest available test of whether this
+            topic landed. It replaces exactly the layer you have spent fifteen
+            lessons inside. Reading its loop implementation against
+            <code>base_events.py</code> will tell you, faster than any quiz,
+            which of these lessons describe <em>asyncio</em> and which describe
+            <em>CPython's event loop</em>.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher, and this is where that matters most. The
+          best use of it now is adversarial: give it a claim about asyncio you
+          half-remember from somewhere and ask it to grade the claim rather than
+          answer it. Which source would settle this? Does one exist? If the
+          answer is “only the source”, you have found an
+          <strong>[impl detail]</strong>, and you now know what that costs.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The most valuable thing you can do a week from now is
+            <em>not</em> re-read these pages. Try instead to write out the six
+            steps, the two differences between <code>call_soon</code> and
+            <code>call_soon_threadsafe</code>, and the three-valued table from
+            lesson 7 — on paper, from memory, badly. Then come back and check.
+            The gap between what you produce and what is here is the only
+            reliable measure of what has actually stuck.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0014-what-changed-311-to-313.html"
+              >14. What changed, 3.11 → 3.13</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

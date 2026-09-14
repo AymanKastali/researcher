@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>8. A complete round trip — CPython's asyncio Event Loop</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0008</span>
+        <h1>A complete round trip</h1>
+        <p class="lesson-mission">
+          One <code>await</code>, followed all the way to
+          <code>epoll_wait</code> and back. Everything in lessons 1–7 appears
+          here in sequence — including the two places where a whole extra loop
+          iteration is spent, and the case where the coroutine never suspends at
+          all.
+        </p>
+      </header>
+
+      <p class="lead">
+        The path traced is <code>await loop.sock_recv(sock, n)</code>: the
+        shortest complete journey from a coroutine to the kernel and back that
+        fits in one lesson. At the end, the transport path is shown as a
+        contrast, because its most surprising property is only visible against
+        this one.
+      </p>
+
+      <h2>The whole trip, in one picture</h2>
+
+      <figure>
+        <div class="figure-body">
+          <pre><code>  YOUR COROUTINE                     TASK                         LOOP / SELECTOR
+  ──────────────                     ────                         ───────────────
+
+  data = await loop.sock_recv(s, n)
+        │
+        │ sock_recv tries sock.recv(n) first      selector_events.py:374-377
+        │   └─ succeeded? return immediately, coroutine never suspends
+        │
+        │ blocked. create the Future:             selector_events.py:378
+        │   fut = self.create_future()   ───────────────────►  futures.Future
+        │ register interest:                      selector_events.py:381
+        │   self._add_reader(fd, self._sock_recv, fut, sock, n)
+        │                                 ───────►  Handle(_sock_recv, ...)
+        │                                 ───────►  selector.register(
+        │                                              fd, EVENT_READ,
+        │                                              (handle, None))
+        │                                                  └─► epoll_ctl(ADD)
+        │ await fut
+        ▼
+    Future.__await__            futures.py:283-289
+      self._asyncio_future_blocking = True
+      yield self  ─────────────────►
+                              __step_run_and_handle_result
+                              tasks.py:324-343
+                                blocking = getattr(result,
+                                    '_asyncio_future_blocking', None)
+                                result._asyncio_future_blocking = False
+                                result.add_done_callback(self.__wakeup, ...)
+                                self._fut_waiter = result
+                                return          ──► control back to _run_once
+                                                    ──► select() blocks
+
+                                                 ═══ kernel: data arrives ═══
+                                                    epoll_wait returns (fd, EPOLLIN)
+
+                                                 _process_events        sel_ev:740
+                                                   _ready.append(handle)
+
+                                                 drain: handle._run()   base:2050
+                                                   → _sock_recv(fut, sock, n)
+                                                        sel_ev:390-404
+                                                     data = sock.recv(n)
+                                                     fut.set_result(data)
+                                                        futures.py:248-258
+                                                          → __schedule_callbacks
+                                                          → call_soon(__wakeup,
+                                                                      fut)
+
+                                                 next iteration, drain:
+                                                   Task.__wakeup(fut)   tasks:373
+                                                     fut.result()  (may raise)
+                                                     self.__step()
+                              __step / __step_run_and_handle_result
+                                self._fut_waiter = None
+                                result = coro.send(None)   ◄── resumes here
+        ▲                                          tasks.py:304
+        │
+  data is the value                Future.__await__ resumes past the yield,
+  returned by await                returns self.result()          futures.py:289</code></pre>
+        </div>
+        <figcaption>
+          Drawn for this lesson from
+          <code>Lib/asyncio/selector_events.py</code>,
+          <code>futures.py</code>, <code>tasks.py</code> and
+          <code>base_events.py</code> at tag <code>v3.13.11</code>. Every line
+          number is real; the arrows are not in the source. Each stage is quoted
+          below.
+        </figcaption>
+      </figure>
+
+      <h2>Stage 0: the fast path nobody mentions</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    async def sock_recv(self, sock, n):
+        """Receive data from the socket.
+
+        The return value is a bytes object representing the data received.
+        The maximum amount of data to be received at once is specified by
+        nbytes.
+        """
+        base_events._check_ssl_socket(sock)
+        if self._debug and sock.gettimeout() != 0:
+            raise ValueError("the socket must be non-blocking")
+        try:
+            return sock.recv(n)
+        except (BlockingIOError, InterruptedError):
+            pass
+        fut = self.create_future()
+        fd = sock.fileno()
+        self._ensure_fd_no_transport(fd)
+        handle = self._add_reader(fd, self._sock_recv, fut, sock, n)
+        fut.add_done_callback(
+            functools.partial(self._sock_read_done, fd, handle=handle))
+        return await fut</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/selector_events.py:364-384</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/selector_events.py#L364-L384"
+          ><code>BaseSelectorEventLoop.sock_recv()</code></a
+        >.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">Read lines 374–377 again</span>
+        <p>
+          If the socket already has data buffered, <code>sock.recv(n)</code>
+          returns it and the coroutine <strong>returns without ever
+          suspending</strong>. No Future, no selector registration, no trip
+          through the loop, no yield.
+          <code>await loop.sock_recv(...)</code> is then just a function call
+          that happens to be spelled with <code>await</code>.
+        </p>
+        <p>
+          <strong>[impl detail]</strong> — the documentation for
+          <code>loop.sock_recv</code> says only “Receive up to <em>nbytes</em>
+          from <em>sock</em>” and promises nothing about suspension. The write
+          side has the same optimisation, commented “Optimization: try to send
+          now” at <code>selector_events.py:1064-1067</code>.
+        </p>
+      </div>
+
+      <h2>Stage 1: registering with the selector</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _add_reader(self, fd, callback, *args):
+        self._check_closed()
+        handle = events.Handle(callback, args, self, None)
+        key = self._selector.get_map().get(fd)
+        if key is None:
+            self._selector.register(fd, selectors.EVENT_READ,
+                                    (handle, None))
+        else:
+            mask, (reader, writer) = key.events, key.data
+            self._selector.modify(fd, mask | selectors.EVENT_READ,
+                                  (handle, writer))
+            if reader is not None:
+                reader.cancel()
+        return handle</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/selector_events.py:274-287</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/selector_events.py#L274-L287"
+          ><code>BaseSelectorEventLoop._add_reader()</code></a
+        >.
+      </p>
+
+      <ul>
+        <li>
+          <strong><code>register</code> versus <code>modify</code>.</strong> The
+          selector holds <em>one</em> registration per descriptor with a combined
+          read/write mask. First interest is a <code>register</code>
+          (<code>epoll_ctl(EPOLL_CTL_ADD)</code>); adding the other direction is
+          a <code>modify</code> (<code>EPOLL_CTL_MOD</code>) that ORs the bit in.
+          <code>_remove_reader</code> reverses it, and calls
+          <code>unregister</code> only when the mask goes empty.
+        </li>
+        <li>
+          <strong>One reader per descriptor, and the old one is silently
+          cancelled</strong> — <code>if reader is not None: reader.cancel()</code>.
+          This one <em>is</em> documented: “Any preexisting callback registered
+          for <em>fd</em> is cancelled and replaced by <em>callback</em>”
+          (<a
+            class="citation"
+            href="https://docs.python.org/3.13/library/asyncio-eventloop.html#asyncio.loop.add_reader"
+            ><code>loop.add_reader</code></a
+          >, <code>Doc/library/asyncio-eventloop.rst:1010-1011</code>).
+          <strong>[guaranteed]</strong>
+        </li>
+        <li>
+          <strong><code>context=None</code> at registration</strong>, so
+          <code>Handle.__init__</code> copies the current context — the I/O
+          callback inherits the context of whoever registered interest, not of
+          whoever's data arrives. That is
+          <a href="0006-inside-handle-run.html">lesson 6</a> paying off.
+        </li>
+        <li>
+          <strong>The private method returns the <code>Handle</code>; the public
+          one throws it away.</strong> <code>add_reader</code> is four lines and
+          returns nothing, exactly as specified: “Note that
+          <code>add_reader()</code>, <code>add_writer()</code> and
+          <code>add_signal_handler()</code> do not return Handles”
+          (<a class="citation" href="https://peps.python.org/pep-3156/#handles"
+            >PEP 3156 § Handles</a
+          >). <strong>[guaranteed]</strong> The internal one returns it because
+          <code>sock_recv</code> needs to know, later, whether the reader it
+          installed is still the live one.
+        </li>
+      </ul>
+
+      <h2>Stage 2: the data arrives</h2>
+
+      <p>
+        Step 4 queues the reader handle, step 6 runs it, and the callback is:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def _sock_recv(self, fut, sock, n):
+        # _sock_recv() can add itself as an I/O callback if the operation can't
+        # be done immediately. Don't use it directly, call sock_recv().
+        if fut.done():
+            return
+        try:
+            data = sock.recv(n)
+        except (BlockingIOError, InterruptedError):
+            return  # try again next time
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            fut.set_exception(exc)
+        else:
+            fut.set_result(data)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/selector_events.py:390-404</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/selector_events.py#L390-L404"
+          ><code>BaseSelectorEventLoop._sock_recv()</code></a
+        >. Note the two-tier <code>except</code> from
+        <a href="0006-inside-handle-run.html">lesson 6</a>, again.
+      </p>
+
+      <p>
+        <code>fut.done()</code> is checked first because the Future may have been
+        cancelled between registration and readiness, and a spurious wakeup
+        (<code>BlockingIOError</code>) is treated as “no data yet, stay
+        registered”.
+      </p>
+
+      <h2>Stage 3: the resolution that costs an iteration</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __schedule_callbacks(self):
+        """Internal: Ask the event loop to call all callbacks.
+
+        The callbacks are scheduled to be called as soon as possible. Also
+        clears the callback list.
+        """
+        callbacks = self._callbacks[:]
+        if not callbacks:
+            return
+
+        self._callbacks[:] = []
+        for callback, ctx in callbacks:
+            self._loop.call_soon(callback, self, context=ctx)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/futures.py:158-170</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/futures.py#L158-L170"
+          ><code>Future.__schedule_callbacks()</code></a
+        >, called by <code>set_result</code> at
+        <code>futures.py:248-258</code>.
+      </p>
+
+      <p>
+        <strong>The callbacks are never called inline.</strong>
+        <code>set_result</code> returns having only <em>enqueued</em> them. This
+        is a guarantee, and PEP 3156 is explicit that it is a deliberate
+        divergence from the older concurrent-futures design:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <code>add_done_callback(fn)</code>. Add a callback to be run when the
+            Future becomes done (or is cancelled). If the Future is already done
+            (or cancelled), schedules the callback to using
+            <code>call_soon()</code>. Difference with PEP 3148: The callback is
+            never called immediately, and always in the context of the caller […]
+            You can think of this as calling the callback through
+            <code>call_soon()</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://peps.python.org/pep-3156/#futures"
+            >PEP 3156 § Futures</a
+          >. <strong>[guaranteed]</strong>
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Count the iterations</span>
+        <p>
+          <code>_sock_recv</code> runs in iteration <em>N</em>'s drain and calls
+          <code>call_soon(__wakeup)</code>. The <code>ntodo</code> snapshot
+          (<a href="0003-the-ntodo-snapshot.html">lesson 3</a>) means
+          <code>__wakeup</code> cannot run until iteration <em>N+1</em>. So there
+          is <strong>a full extra loop iteration between “the bytes arrived” and
+          “your coroutine sees them”</strong>.
+        </p>
+        <p>
+          That is latency, bought deliberately, in exchange for the strict
+          serialisation PEP 3156 calls out as “an important guarantee: when two or
+          more callbacks use or modify shared state, each callback is guaranteed
+          that while it is running, the shared state isn't changed by another
+          callback”
+          (<a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#basic-callbacks"
+            >§ Basic Callbacks</a
+          >). It is the reason you have never needed a lock inside a coroutine.
+        </p>
+      </div>
+
+      <h2>Stage 4: waking up</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __wakeup(self, future):
+        try:
+            future.result()
+        except BaseException as exc:
+            # This may also be a cancellation.
+            self.__step(exc)
+        else:
+            # Don't pass the value of `future.result()` explicitly,
+            # as `Future.__iter__` and `Future.__await__` don't need it.
+            # If we call `_step(value, None)` instead of `_step()`,
+            # Python eval loop would use `.send(value)` method call,
+            # instead of `__next__()`, which is slower for futures
+            # that return non-generator iterators from their `__iter__`.
+            self.__step()
+        self = None  # Needed to break cycles when an exception occurs.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:373-387</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L373-L387"
+          ><code>Task.__wakeup()</code></a
+        >.
+      </p>
+
+      <p>
+        <code>__wakeup</code> calls <code>future.result()</code> purely to turn a
+        stored exception — or a cancellation — into a live raise, then forwards it
+        into the coroutine via <code>coro.throw</code>. On success the
+        <em>value is deliberately discarded</em> and re-fetched by
+        <code>Future.__await__</code> resuming past its <code>yield</code>. The
+        comment gives the performance reason, and it is worth noticing that the
+        team wrote it down rather than leaving it as a puzzle.
+      </p>
+
+      <h2>Stage 5: back into the coroutine</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">    def __step(self, exc=None):
+        if self.done():
+            raise exceptions.InvalidStateError(
+                f'_step(): already done: {self!r}, {exc!r}')
+        if self._must_cancel:
+            if not isinstance(exc, exceptions.CancelledError):
+                exc = self._make_cancelled_error()
+            self._must_cancel = False
+        self._fut_waiter = None
+
+        _enter_task(self._loop, self)
+        try:
+            self.__step_run_and_handle_result(exc)
+        finally:
+            _leave_task(self._loop, self)
+            self = None  # Needed to break cycles when an exception occurs.</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:281-296</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L281-L296"
+          ><code>Task.__step()</code></a
+        >; the actual resumption is
+        <code>result = coro.send(None)</code> at <code>tasks.py:304</code>.
+      </p>
+
+      <p>
+        <code>_enter_task</code> / <code>_leave_task</code> are what make
+        <code>asyncio.current_task()</code> work, and they enforce
+        non-reentrancy:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">def _enter_task(loop, task):
+    current_task = _current_tasks.get(loop)
+    if current_task is not None:
+        raise RuntimeError(f"Cannot enter into task {task!r} while another "
+                           f"task {current_task!r} is being executed.")
+    _current_tasks[loop] = task</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/tasks.py:1057-1062</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/tasks.py#L1057-L1062"
+          ><code>_enter_task()</code></a
+        >. <a href="0013-threads-and-the-self-pipe.html">Lesson 13</a> returns to
+        this dictionary.
+      </p>
+
+      <h2>The transport path, for contrast</h2>
+
+      <p>
+        <code>sock_recv</code> is the low-level API, and it registers a reader
+        per read. A transport registers its reader <em>once</em>, at
+        construction:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+        </div>
+        <pre><code class="language-python">        self._loop.call_soon(self._protocol.connection_made, self)
+        # only start reading when connection_made() has been called
+        self._loop.call_soon(self._add_reader,
+                             self._sock_fd, self._read_ready)
+        if waiter is not None:
+            # only wake up the waiter when connection_made() has been called
+            self._loop.call_soon(futures._set_result_unless_cancelled,
+                                 waiter, None)</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>Lib/asyncio/selector_events.py:944-951</code> —
+        <a
+          class="citation"
+          href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/selector_events.py#L944-L951"
+          ><code>_SelectorSocketTransport.__init__()</code></a
+        >.
+      </p>
+
+      <p>
+        Even <code>_add_reader</code> is deferred through
+        <code>call_soon</code> — that is how
+        <code>connection_made</code> is guaranteed to have run before any
+        <code>data_received</code>. Ordering by queue position, not by locking.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The thing to notice</span>
+        <p>
+          There is <strong>no Future anywhere in the transport read path</strong>.
+          <code>_read_ready__data_received</code> calls
+          <code>sock.recv</code> and hands the bytes straight to
+          <code>self._protocol.data_received(data)</code>
+          (<code>selector_events.py:1001-1019</code>). It is a plain callback.
+          The Future only reappears one layer up, in <code>StreamReader</code>,
+          when somebody <code>await</code>s.
+        </p>
+        <p>
+          That is PEP 3156's layering made visible: the callback API is the
+          primitive, and “usage of coroutines is optional”
+          (<a
+            class="citation"
+            href="https://peps.python.org/pep-3156/#coroutines-and-the-scheduler"
+            >§ Coroutines and the Scheduler</a
+          >). The extra iteration you counted in stage 3 is the price of the
+          coroutine layer, and the transport path does not pay it.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          <code>await loop.sock_recv(s, n)</code> on a socket that already has
+          buffered data. How many loop iterations does it cost?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              None at all, because the coroutine never suspends
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One, spent polling the selector for its readiness
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Two, one spent polling and one spent resuming
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Three, since the future resolves an iteration late
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>sock_recv</code> tries <code>sock.recv(n)</code> before doing
+          anything else, and returns its result directly if it succeeds. No
+          Future is created, nothing is registered, and no <code>yield</code>
+          happens — so the <code>await</code> is a plain call. Two and three are
+          the costs of the <em>slow</em> path, which is what the rest of the
+          lesson traces.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does <code>fut.set_result(data)</code> not resume the waiting
+          coroutine immediately?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the future has not finished its transition
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because the done-callbacks are all sent via <code>call_soon</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the task is still holding its context
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the selector must be polled once between
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>__schedule_callbacks</code> enqueues every done-callback with
+          <code>call_soon</code>, and PEP 3156 makes that a guarantee: “the
+          callback is never called immediately”. Combined with the
+          <code>ntodo</code> snapshot, that costs one whole extra iteration — and
+          buys the serialisation guarantee that means no callback ever observes
+          shared state changing underneath it.
+        </p>
+      </div>
+
+      <h2>Where this is going</h2>
+
+      <p>
+        Five objects took part in that trip — the loop, the selector, a
+        <code>Handle</code>, a <code>Future</code> and a <code>Task</code> — and
+        it is worth being precise about which of them owns what.
+        <a href="0009-who-owns-what.html">Lesson 9</a> draws the boundaries, and
+        explains the one attribute that makes a Task more than a Future.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://github.com/python/cpython/blob/v3.13.11/Lib/asyncio/selector_events.py#L260-L410"
+              ><code>Lib/asyncio/selector_events.py</code>, lines 260–410 at tag
+              <code>v3.13.11</code></a
+            >
+            — the reader/writer registration block and the whole
+            <code>sock_*</code> family. Reading <code>sock_sendall</code> and
+            <code>sock_connect</code> after <code>sock_recv</code> shows the same
+            five-stage shape three times, which is what turns a trace into a
+            pattern.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: “trace
+          <code>await asyncio.sleep(1)</code> through the same five stages.” It
+          is the same shape with a <code>TimerHandle</code> where the selector
+          registration was, and doing it yourself before
+          <a href="0012-cancelled-timers-and-sleep.html">lesson 12</a> makes that
+          lesson almost free.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before lesson 9, try to redraw the round-trip diagram from memory —
+            badly is fine. The two things to get right are where the
+            <code>yield</code> happens and where the extra iteration is spent.
+            Everything else you can look up in the
+            <a href="../reference/run-once.html#the-await-round-trip"
+              >run-once reference</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Up</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0007-the-blocking-flag.html">7. The blocking flag</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0009-who-owns-what.html">9. Who owns what</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>
