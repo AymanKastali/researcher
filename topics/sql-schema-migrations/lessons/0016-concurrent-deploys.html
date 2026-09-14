@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>16. Concurrent deploys — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0016</span>
+        <h1>Concurrent deploys</h1>
+        <p class="lesson-mission">
+          What does Alembic do when two instances run
+          <code>alembic upgrade head</code> at once? Nothing. Establishing that
+          properly — as an absence, with evidence — is the whole lesson.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is the question everyone asks first and the one with the shortest
+        honest answer. But “the tool provides nothing” is a claim that has to be
+        <em>established</em> rather than asserted, and the method for proving an
+        absence is more transferable than the conclusion.
+      </p>
+
+      <h2>The documentation contains no concurrency material at all</h2>
+
+      <p>
+        Searching a few likely pages is not sufficient to prove an absence, so
+        the whole published search index was searched instead —
+        <code>https://alembic.sqlalchemy.org/en/latest/searchindex.js</code>,
+        which covers every page including the full changelog. Stemmed token
+        counts, run while writing this lesson:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Run against the live index, 14 September 2026 (169,521 bytes, HTTP 200)</span>
+        </div>
+        <pre><code>advisori      0        (control group, same index:)
+concurr       0          batch        3
+mutex         0          sqlite       3
+lock          0          stamp        3
+kubernet      0          offlin       2
+deploy        1</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Why the control group is the important half</span>
+        <p>
+          Five zeroes prove nothing on their own — they are equally consistent
+          with a broken search. The right-hand column establishes that the index
+          and the method both work: terms that <em>should</em> be there are
+          found.
+        </p>
+        <p>
+          <strong>There is no page, paragraph, or changelog entry in the Alembic
+          documentation about running migrations concurrently, about mutual
+          exclusion, about advisory locks, or about rolling deploys.</strong>
+          The single <code>deploy</code> hit is a cookbook sentence about slow
+          DDL, not concurrency.
+        </p>
+      </div>
+
+      <h2>The source contains no locking primitive</h2>
+
+      <p>An exhaustive grep over the entire installed 1.14.1 package:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Shell</span>
+          <span class="code-illustrative">Run against the installed tree, 14 September 2026</span>
+        </div>
+        <pre><code class="language-bash">$ grep -rniE "advisory|for_update|for update|lock" alembic/ | wc -l
+35
+$ grep -rniE "advisory|for_update|for update|lock" alembic/ \
+      | grep -viE "block" | wc -l
+0</code></pre>
+      </div>
+
+      <p>
+        All 35 hits are the English word <em>block</em> —
+        <code>autocommit_block</code>, prose about “transaction block”, test
+        names, a comment reading “assert outside the block”. Zero hits for
+        <code>advisory</code>, <code>pg_advisory</code>,
+        <code>FOR UPDATE</code>, <code>LOCK TABLE</code>,
+        <code>threading.Lock</code>, or any mutex of any kind.
+      </p>
+
+      <p>
+        <strong>Alembic 1.14.1 has no built-in mutual exclusion of any
+        form.</strong> Nothing serialises two
+        <code>alembic upgrade head</code> processes except the database’s own
+        transaction semantics.
+      </p>
+
+      <h2>The read that starts every run is a bare <code>SELECT</code></h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/runtime/migration.py:533-539 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">assert self.connection is not None
+return tuple(
+    row[0]
+    for row in self.connection.execute(
+        _select(self._version.c.version_num)
+    )
+)</code></pre>
+      </div>
+
+      <p>
+        No <code>.with_for_update()</code>, no execution option. It compiles to
+        <code>SELECT alembic_version.version_num FROM alembic_version</code>. Two
+        processes starting together both read the same head and both compute the
+        same list of migrations to run.
+      </p>
+
+      <p>
+        There is a second, narrower race on a virgin database.
+        <code>_ensure_version_table</code> uses
+        <code>self._version.create(self.connection, checkfirst=True)</code>, and
+        <code>checkfirst=True</code> is a read-then-write with no lock: two
+        processes can both observe the table as absent and both attempt the
+        <code>CREATE</code>. Because it is guarded by <code>not heads</code>,
+        this window exists on first-ever deploy only — which is exactly when
+        nobody is watching.
+      </p>
+
+      <h2>The compare-and-swap is the only serialisation point</h2>
+
+      <p>
+        <a href="0010-where-the-version-write-sits.html">Lesson 10</a>
+        established the mechanism; what matters here is its scope.
+        <code>HeadMaintainer._update_version</code> emits
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson, from alembic/runtime/migration.py:797-804</span>
+        </div>
+        <pre><code class="language-sql">UPDATE alembic_version SET version_num='&lt;to&gt;' WHERE alembic_version.version_num = '&lt;from&gt;'</code></pre>
+      </div>
+
+      <p>and raises unless exactly one row matched:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/runtime/migration.py:806-817 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">if (
+    not self.context.as_sql
+    and self.context.dialect.supports_sane_rowcount
+    and ret is not None
+    and ret.rowcount != 1
+):
+    raise util.CommandError(
+        "Online migration expected to match one "
+        "row when updating '%s' to '%s' in '%s'; "
+        "%d found"
+        % (from_, to_, self.context.version_table, ret.rowcount)
+    )</code></pre>
+      </div>
+
+      <p>Alembic’s author describes it in exactly those terms:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            within the realm of UPDATE, if you are on at least a working
+            REPEATABLE READ, and two transactions attempt to SELECT and then
+            UPDATE against this table, the second one should detect that the
+            update failed to match no rows and will raise an error, that is, the
+            UPDATE is performed using a standard compare and swap technique.
+          </p>
+        </blockquote>
+        <figcaption>
+          Mike Bayer (<code>@zzzeek</code>),
+          <a class="citation" href="https://github.com/sqlalchemy/alembic/issues/633"
+            >sqlalchemy/alembic issue #633</a
+          >, 6 December 2019.
+          <strong>First-party, but a tracker comment — not documentation.</strong>
+        </figcaption>
+      </figure>
+
+      <h2>What it catches, and what it does not</h2>
+
+      <div class="aside insight">
+        <span class="label">The ordering from lesson 10 is the whole story</span>
+        <p>
+          <code>head_maintainer.update_to_step(step)</code> runs at line 630,
+          <em>after</em> <code>step.migration_fn(**kw)</code> at line 623. The
+          <code>CREATE TABLE</code> and <code>ALTER TABLE</code> statements have
+          <strong>already been issued</strong> before the version row is touched.
+        </p>
+        <p>
+          So the compare-and-swap catches the <strong>bookkeeping</strong> race —
+          it will not let two processes both stamp — but it cannot prevent the
+          <strong>DDL</strong> race, because the DDL has already happened by the
+          time it runs.
+        </p>
+      </div>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The loser of the race, by backend. Same code, two very different
+            outcomes.
+          </caption>
+          <thead>
+            <tr>
+              <th>Backend</th>
+              <th>What happens to the loser</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <strong>Transactional DDL</strong> — PostgreSQL, MSSQL
+              </td>
+              <td>
+                The DDL and the version <code>UPDATE</code> are in one
+                transaction, so the loser’s <code>CommandError</code> rolls the
+                DDL back with it. An ugly failure, but a <strong>safe</strong>
+                one
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Non-transactional DDL</strong> — MySQL, SQLite, Oracle
+              </td>
+              <td>
+                The DDL has already committed and cannot be rolled back. The
+                loser leaves the schema half-changed and the version table
+                <strong>inconsistent with it</strong>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Three further preconditions narrow the guard:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>When the only guard is not in effect.</caption>
+          <thead>
+            <tr>
+              <th>Situation</th>
+              <th>Behaviour</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Loser’s <code>UPDATE</code> matches 0 rows</td>
+              <td>
+                <code
+                  >CommandError: Online migration expected to match one row when
+                  updating …; 0 found</code
+                >
+              </td>
+              <td><code>migration.py:806-817</code></td>
+            </tr>
+            <tr>
+              <td>Branch-create step (an <code>INSERT</code>)</td>
+              <td><strong>No check at all</strong></td>
+              <td><code>migration.py:759-767</code></td>
+            </tr>
+            <tr>
+              <td>Offline (<code>--sql</code>)</td>
+              <td>
+                <strong>Check disabled</strong> — <code>not self.context.as_sql</code>
+              </td>
+              <td><code>migration.py:806-811</code></td>
+            </tr>
+            <tr>
+              <td>Dialect without sane rowcount</td>
+              <td>Check disabled</td>
+              <td><code>migration.py:808</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <code>supports_sane_rowcount</code> is <code>True</code> on all five
+        major dialects in SQLAlchemy 2.0.36, so in practice only the offline and
+        <code>INSERT</code> exclusions bite.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The defensible summary</span>
+        <p>
+          The compare-and-swap <strong>serialises the bookkeeping</strong>,
+          converting a concurrent run into a rolled-back
+          <code>CommandError</code> on transactional-DDL backends — not into a
+          correct queued migration, and <strong>not into anything at all on the
+          backends that need it most</strong>.
+        </p>
+      </div>
+
+      <h2>The maintainer’s position</h2>
+
+      <p>
+        The absence is deliberate, and the project says so — on the issue
+        tracker, which is authoritative about intent and carries no versioned
+        guarantee:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            I really dont have an answer as to specifics, it should be noted that
+            I personally don’t support the “run Alembic concurrently” use case
+            and implementing it is up to the people who want this sort of thing
+            to work. The reason Alembic has the <code>env.py</code> architecture
+            is so that the entire process and connectivity model is open-ended so
+            that we (alembic devs, mostly me) don’t have to be on the hook to
+            maintain cases like this ourselves.
+          </p>
+        </blockquote>
+        <figcaption>
+          Mike Bayer (<code>@zzzeek</code>),
+          <a class="citation" href="https://github.com/sqlalchemy/alembic/issues/633"
+            >issue #633</a
+          >, 18 May 2025. <strong>Maintainer statement, not documentation.</strong>
+        </figcaption>
+      </figure>
+
+      <p>And, asked directly about running migrations on every instance start:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            yah that’s totally not correct, you’d have multiple connections all
+            trying to run the same CREATE / ALTER statements etc. and
+            conflicting. you need to run just one connection at a time with DDL
+            in it, you can’t mix those things up.
+          </p>
+          <p>
+            usually the part of the program that runs migrations is separate from
+            the part of the program that handles requests, so the “run the
+            migrations” part would not be in an “auto scaled” system. it would be
+            part of whatever your framework uses for building up initial setup.
+          </p>
+        </blockquote>
+        <figcaption>
+          Mike Bayer,
+          <a class="citation" href="https://github.com/sqlalchemy/alembic/discussions/1438"
+            >discussion #1438</a
+          >, 7 March 2024. <strong>Maintainer statement, not documentation.</strong>
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">This is the entire evidential basis for standard practice</span>
+        <p>
+          “Run migrations as a separate step, before rolling out application
+          instances” is the near-universal recommendation, and the quotation
+          above is <strong>the only first-party support it has anywhere</strong>.
+          It is not in the Alembic documentation — the search above proves that —
+          nor in SQLAlchemy’s nor PostgreSQL’s.
+        </p>
+        <p>
+          Everything beyond it — Kubernetes init containers, Job-before-Deployment
+          ordering, Helm pre-install hooks — is
+          <strong>unverified practitioner consensus</strong>. It may well be
+          right. It is not sourced, and this topic will not pretend otherwise.
+        </p>
+      </div>
+
+      <h2>If you must serialise it yourself</h2>
+
+      <p>
+        Since Alembic provides nothing, the exclusion has to come from the
+        database, and <code>env.py</code> is the place to put it. PostgreSQL’s
+        advisory locks are the fit:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            PostgreSQL provides a means for creating locks that have
+            application-defined meanings. These are called advisory locks,
+            because the system does not enforce their use — it is up to the
+            application to use them correctly. Advisory locks can be useful for
+            locking strategies that are an awkward fit for the MVCC model.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+            >13.3.5. Advisory Locks</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>The session/transaction distinction is the crux:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Once acquired at session level, an advisory lock is held until
+            explicitly released or the session ends. Unlike standard lock
+            requests, session-level advisory lock requests do not honor
+            transaction semantics: a lock acquired during a transaction that is
+            later rolled back will still be held following the rollback […]
+            Transaction-level lock requests, on the other hand, behave more like
+            regular lock requests: they are automatically released at the end of
+            the transaction, and there is no explicit unlock operation.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson — a sketch, not a recipe with an owner</span>
+        </div>
+        <pre><code class="language-python">from sqlalchemy import text
+
+# In env.py, inside run_migrations_online(), before context.run_migrations().
+# The key is any constant you choose; every migrator must use the same one.
+MIGRATION_LOCK_KEY = 0x4D494752  # "MIGR"
+
+with connectable.connect() as connection:
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        got_it = connection.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK_KEY}
+        )
+        if not got_it:
+            # Someone else is migrating. Exit zero and let them finish,
+            # rather than queueing behind them.
+            return
+        context.run_migrations()
+    # Transaction-level lock is released automatically at transaction end.</code></pre>
+      </div>
+
+      <p>
+        <code>pg_advisory_xact_lock(key)</code> “obtains an exclusive
+        transaction-level advisory lock, waiting if necessary”;
+        <code>pg_try_advisory_xact_lock(key)</code> “will either obtain the lock
+        immediately and return true, or return false without waiting”
+        (<a class="citation" href="https://www.postgresql.org/docs/16/functions-admin.html"
+          >9.27.10</a
+        >). The <code>try_</code> forms are what you want in a deploy pipeline.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Two caveats, both sourced</span>
+        <p>
+          <strong>The maintainer’s own suggestion has a known hole.</strong> The
+          <code>LOCK TABLE alembic_version IN ACCESS EXCLUSIVE MODE</code> recipe
+          in issue #633 cannot protect the case where the table does not exist
+          yet — the virgin-database race above. An advisory lock does not depend
+          on the table existing, which is why later commenters moved to
+          <code>pg_advisory_xact_lock</code>. Those specific <code>env.py</code>
+          recipes are <em>user</em> comments; the maintainer explicitly declined
+          to endorse them.
+        </p>
+        <p>
+          <strong>Session-level advisory locks and connection poolers do not
+          mix.</strong> PostgreSQL’s manual does not discuss pooling at all. The
+          first-party statement comes from PgBouncer’s own feature matrix, which
+          lists “Session-level advisory locks” as <code>Yes</code> under session
+          pooling and <strong><code>Never</code></strong> under transaction
+          pooling
+          (<a class="citation" href="https://www.pgbouncer.org/features.html"
+            >PgBouncer Features</a
+          >). That is the concrete reason to prefer the
+          <code>_xact_</code> form — with the corresponding limitation that a
+          transaction-scoped lock cannot span a multi-transaction run, so
+          <code>transaction_per_migration</code> or an
+          <code>autocommit_block</code> steps outside its protection.
+        </p>
+      </div>
+
+      <h2>A deploy gate that <em>is</em> documented</h2>
+
+      <p>
+        Separately from exclusion, the cookbook documents a read-only check that
+        the database is at head, useful as a pipeline gate:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Quoted from the Alembic Cookbook</span>
+        </div>
+        <pre><code>alembic current --check-heads
+...
+ERROR [alembic.util.messaging] Database is not on all head revisions
+FAILED: Database is not on all head revisions</code></pre>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Note the version</span>
+        <p>
+          <code>--check-heads</code> arrived in <strong>1.17.1</strong>, so it is
+          <strong>not available on 1.14.1</strong>. On the version you are
+          learning, the same check has to be the hand-rolled recipe the cookbook
+          also gives: compare
+          <code>ScriptDirectory.get_heads()</code> against
+          <code>MigrationContext.get_current_heads()</code>.
+        </p>
+        <p>
+          And either way it is a <strong>gate, not a lock</strong>: it tells you
+          whether to proceed, not whether anyone else is already proceeding.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Two instances run <code>alembic upgrade head</code> simultaneously
+          against PostgreSQL. What happens?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The second one waits for the first, then finds nothing
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Both run the DDL; the loser errors and rolls back
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The second one detects the first and then exits cleanly
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Both complete, and the version table records two head rows
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Nothing serialises them: the opening read is a bare
+          <code>SELECT</code>, so both compute the same work and both issue the
+          DDL. The compare-and-swap runs <em>after</em> the body, so the loser
+          matches zero rows and raises <code>CommandError</code> — and because
+          PostgreSQL has transactional DDL, that rolls its schema changes back
+          too. Ugly, but safe. On MySQL the loser’s DDL would already be
+          committed.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which advisory lock scope suits a migration running behind a
+          connection pooler?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A session-level lock, held until the connection closes
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A transaction-level lock, released when the transaction ends
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A session-level lock, released explicitly after each run
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A table-level lock, taken against the version table
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          PgBouncer lists session-level advisory locks as <code>Never</code>
+          supported under transaction pooling, which rules out both session-level
+          answers however they are released. The transaction-level form —
+          <code>pg_try_advisory_xact_lock</code> — is released at transaction
+          end, so a pooler reassigning the connection cannot strand it, and the
+          <code>try_</code> prefix lets a second migrator exit zero rather than
+          queue. A <code>LOCK TABLE</code> on <code>alembic_version</code> is the
+          maintainer’s own suggestion and has the hole described above: it cannot
+          protect a database where the table does not exist yet.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        This lesson leaned on four different grades of evidence — a documented
+        guarantee, source code, a maintainer comment, and an argument from
+        absence — and the difference between them mattered every time. That is
+        worth making explicit, because it is the part of this topic that survives
+        the next release. <a href="0017-reading-the-evidence.html">Lesson 17</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://github.com/sqlalchemy/alembic/issues/633"
+              >sqlalchemy/alembic issue #633</a
+            >
+            — read the whole thread, 2019 to 2025. It is the single best document
+            on this question anywhere, and it is an issue tracker rather than
+            documentation, which is itself the lesson. Watch the community
+            converge on advisory locks while the maintainer declines to bless
+            any of it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth doing together: take the
+          <code>env.py</code> sketch above and find its holes. What happens if
+          the migration needs an <code>autocommit_block</code>? What if the
+          second migrator exits zero but the first then fails? Neither has a
+          documented answer, which is exactly why working it out matters.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Two things to retain: <strong>Alembic provides no mutual exclusion at
+            all</strong>, and <strong>the compare-and-swap runs after the DDL,
+            not before</strong>. The second is what makes the first survivable on
+            PostgreSQL and dangerous everywhere else. The exclusions are
+            tabulated in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>,
+            and the serialising recipe is in the
+            <a href="../reference/safe-migration-recipes.html"
+              >safe migration recipes</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0015-batch-mode.html">15. Batch mode</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0017-reading-the-evidence.html">17. Reading the evidence</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

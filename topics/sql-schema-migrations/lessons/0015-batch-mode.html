@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>15. Batch mode — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0015</span>
+        <h1>Batch mode</h1>
+        <p class="lesson-mission">
+          Why SQLite’s <code>ALTER TABLE</code> is weak — SQLite’s own answer,
+          which is more interesting than “it just is” — and what Alembic’s
+          move-and-copy workaround silently drops on the way.
+        </p>
+      </header>
+
+      <p class="lead">
+        The usual framing is “SQLite has a weak <code>ALTER TABLE</code>”. True,
+        and incurious. SQLite explains the cause itself, and the explanation
+        turns a quirk into a design consequence — one that predicts exactly which
+        operations are supported and which are not.
+      </p>
+
+      <h2>The cause, in SQLite’s own words</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Most SQL database engines store the schema already parsed into
+            various system tables. On those database engines, ALTER TABLE merely
+            has to make modifications to the corresponding system tables.
+          </p>
+          <p>
+            SQLite is different in that it stores the schema in the sqlite_schema
+            table as the original text of the CREATE statements that define the
+            schema. Hence ALTER TABLE needs to revise the text of the CREATE
+            statement. Doing so can be tricky for certain “creative” schema
+            designs.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://www.sqlite.org/lang_altertable.html"
+            >SQLite, <code>ALTER TABLE</code> §9, “Why ALTER TABLE is such a
+            problem for SQLite”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The limitation is architectural</span>
+        <p>
+          Other engines edit a parsed structure. SQLite edits
+          <strong>text</strong> — the literal <code>CREATE TABLE</code>
+          statement you originally typed. An <code>ALTER</code> is a
+          string-rewriting problem, which is why the supported set is so small
+          and so oddly shaped.
+        </p>
+        <p>
+          Alembic’s own documentation agrees on the prognosis, calling these
+          “philosophical and architectural concerns within SQLite, and they are
+          unlikely to be changed”.
+        </p>
+      </div>
+
+      <p>What SQLite supports is exactly four forms:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            SQLite supports a limited subset of ALTER TABLE. The ALTER TABLE
+            command in SQLite allows these alterations of an existing table: it
+            can be renamed; a column can be renamed; a column can be added to it;
+            or a column can be dropped from it.
+          </p>
+        </blockquote>
+        <figcaption>SQLite, <code>ALTER TABLE</code> §1.</figcaption>
+      </figure>
+
+      <h2>SQLite’s twelve-step procedure — and the ordering warning</h2>
+
+      <p>
+        For anything else, SQLite documents a procedure (§8): disable foreign
+        keys, begin a transaction, record dependent objects,
+        <code>CREATE TABLE new_X</code>,
+        <code>INSERT INTO new_X SELECT … FROM X</code>,
+        <code>DROP TABLE X</code>,
+        <code>ALTER TABLE new_X RENAME TO X</code>, rebuild indexes, triggers and
+        views, <code>PRAGMA foreign_key_check</code>, commit, re-enable foreign
+        keys.
+      </p>
+
+      <p>
+        The part worth quoting is the Caution attached to it, because it is the
+        reason Alembic’s step order is what it is rather than the more obvious
+        alternative:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>Caution:</strong> Take care to follow the procedure above
+            precisely. The boxes below summarize two procedures for modifying a
+            table definition. At first glance, they both appear to accomplish the
+            same thing. However, the procedure on the right does not always work,
+            especially with the enhanced rename table capabilities added by
+            versions 3.25.0 and 3.26.0. In the procedure on the right, the initial
+            rename of the table to a temporary name might corrupt references to
+            that table in triggers, views, and foreign key constraints. The safe
+            procedure on the left constructs the revised table definition using a
+            new temporary name, then renames the table into its final name, which
+            does not break links.
+          </p>
+        </blockquote>
+        <figcaption>SQLite, <code>ALTER TABLE</code> §8.</figcaption>
+      </figure>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Two orderings that look equivalent. Only one is safe.
+          </caption>
+          <thead>
+            <tr>
+              <th>Correct</th>
+              <th>Incorrect</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Create new table</td>
+              <td>Rename old table</td>
+            </tr>
+            <tr>
+              <td>Copy data</td>
+              <td>Create new table</td>
+            </tr>
+            <tr>
+              <td>Drop old table</td>
+              <td>Copy data</td>
+            </tr>
+            <tr>
+              <td>Rename new into old</td>
+              <td>Drop old table</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Alembic implements the left-hand column exactly:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/operations/batch.py:443-480, abridged (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">def _create(self, op_impl: DefaultImpl) -> None:
+    self._transfer_elements_to_new_table()
+
+    op_impl.prep_table_for_batch(self, self.table)
+    assert self.new_table is not None
+    op_impl.create_table(self.new_table)
+
+    try:
+        op_impl._exec(
+            _insert_inline(self.new_table).from_select(...)
+        )
+        op_impl.drop_table(self.table)
+    except:
+        op_impl.drop_table(self.new_table)
+        raise
+    else:
+        op_impl.rename_table(
+            self.temp_table_name, self.table.name, schema=self.table.schema
+        )</code></pre>
+      </div>
+
+      <div class="aside note">
+        <span class="label">The bare <code>except:</code> is not decoration</span>
+        <p>
+          On SQLite <code>transactional_ddl</code> is <code>False</code> (lesson
+          10), so a rollback <strong>cannot be relied on</strong> to clean up
+          after a failed copy. The explicit
+          <code>op_impl.drop_table(self.new_table)</code> is doing the work a
+          transaction would do elsewhere.
+        </p>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Source disagrees with documentation — the temp table name</span>
+        <p>
+          The documentation shows <code>_alembic_batch_temp</code> in its worked
+          example, and a source comment repeats it. The actual name comes from
+          <code>ApplyBatchImpl._calc_temp_name</code>,
+          <code>batch.py:244-245</code>:
+        </p>
+        <p>
+          <code>return ("_alembic_tmp_%s" % tablename)[0:50]</code>
+        </p>
+        <p>
+          The real name is <code>_alembic_tmp_&lt;tablename&gt;</code>, truncated
+          to 50 characters. Prefer the source — and note the consequence hiding
+          in the truncation: two tables whose names share a long prefix can
+          truncate to the <em>same</em> temp name.
+        </p>
+      </div>
+
+      <h2>When <code>recreate="auto"</code> actually recreates</h2>
+
+      <p>The documented rule:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>recreate</strong>: under what circumstances the table should
+            be recreated. At its default of <code>"auto"</code>, the SQLite
+            dialect will recreate the table if any operations other than
+            <code>add_column()</code>, <code>create_index()</code>, or
+            <code>drop_index()</code> are present. Other options include
+            <code>"always"</code> and <code>"never"</code>.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>Operations.batch_alter_table</code> docstring,
+          <code>alembic/operations/base.py:298-303</code> (1.14.1).
+        </figcaption>
+      </figure>
+
+      <p>
+        <code>SQLiteImpl.requires_recreate_in_batch</code> is that rule plus two
+        escalations:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/sqlite.py:59-74 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">for op in batch_op.batch:
+    if op[0] == "add_column":
+        col = op[1][1]
+        if isinstance(
+            col.server_default, schema.DefaultClause
+        ) and isinstance(col.server_default.arg, sql.ClauseElement):
+            return True
+        elif (
+            isinstance(col.server_default, util.sqla_compat.Computed)
+            and col.server_default.persisted
+        ):
+            return True
+    elif op[0] not in ("create_index", "drop_index"):
+        return True
+else:
+    return False</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The implementation is tracking the spec, not approximating it</span>
+        <p>
+          Even an <code>add_column</code> escalates to a full recreate if its
+          server default is a SQL expression, or if it is a persisted computed
+          column. Those two escalations map <em>precisely</em> onto SQLite’s own
+          stated <code>ADD COLUMN</code> restrictions: a column “may not have a
+          default value of CURRENT_TIME, CURRENT_DATE, CURRENT_TIMESTAMP, or an
+          expression in parentheses”, and “may not be GENERATED ALWAYS … STORED,
+          though VIRTUAL columns are allowed” (§4).
+        </p>
+      </div>
+
+      <p>Two asymmetries worth knowing:</p>
+
+      <ul>
+        <li>
+          <code>DefaultImpl.requires_recreate_in_batch</code> returns
+          <code>False</code> (<code>impl.py:187</code>), so
+          <strong>non-SQLite backends never auto-recreate</strong>. Batch mode on
+          PostgreSQL is a no-op wrapper around ordinary
+          <code>ALTER TABLE</code> unless you pass
+          <code>recreate="always"</code>.
+        </li>
+        <li>
+          <code>drop_column</code> forces a full recreate on SQLite even though
+          SQLite has supported <code>DROP COLUMN</code> natively since 3.35.0.
+          Alembic 1.14.1 does not take that shortcut.
+        </li>
+      </ul>
+
+      <h2>What batch mode silently drops</h2>
+
+      <p>
+        <code>_grab_table_elements</code> sorts reflected constraints into
+        buckets, and one of them is a hole:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/operations/batch.py:267-275 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">elif (
+    self.reflected
+    and isinstance(const, CheckConstraint)
+    and not const.name
+):
+    # TODO: we are skipping unnamed reflected CheckConstraint
+    # because
+    # we have no way to determine _is_type_bound() for these.
+    pass</code></pre>
+      </div>
+
+      <p>
+        An unnamed CHECK constraint on a reflected table is
+        <strong>discarded</strong> when the table is recreated. The constraint
+        was in your schema before the migration and is not in it afterwards, and
+        nothing told you.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Version gap, stated precisely</span>
+        <p>
+          The published documentation says: <em>“Unnamed CHECK constraints
+          continue to be omitted from the table recreate operation; up until
+          version 1.20, this omission was silent. As of 1.20, it emits a
+          warning.”</em>
+        </p>
+        <p>
+          <strong>On 1.14.1 the omission is silent</strong> — the
+          <code>pass</code> above has no <code>util.warn</code> anywhere near it.
+          The documentation is describing a version you are not running.
+        </p>
+        <p>
+          A second staleness runs the <em>other</em> way. The
+          <code>batch_alter_table</code> docstring at
+          <code>base.py:292-295</code> still carries pre-1.7 text: <em>“The table
+          copy operation will currently not copy CHECK constraints, and may not
+          copy UNIQUE constraints that are unnamed.”</em> That contradicts both
+          the docs and the 1.14.1 code, which routes <em>named</em> CHECK
+          constraints into <code>self.named_constraints</code>. Here the
+          <strong>docstring</strong> is the stale one: named CHECK constraints do
+          participate in 1.14.1; only unnamed ones vanish.
+        </p>
+      </div>
+
+      <p>
+        There is a second silent drop, this one undocumented anywhere —
+        <code>batch.py:345-346</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/operations/batch.py:345-346 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">if not const_columns.issubset(self.column_transfers):
+    continue</code></pre>
+      </div>
+
+      <p>Any constraint touching a dropped column is discarded without comment.</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Batch-mode limitations that live only in source, with locations.
+          </caption>
+          <thead>
+            <tr>
+              <th>Behaviour</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <code>create_table</code> / <code>drop_table</code> inside a
+                batch block raise <code>NotImplementedError</code>
+              </td>
+              <td><code>batch.py:204, 207</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>rename_table</code> inside a recreate batch raises
+                <code>NotImplementedError("TODO")</code>
+              </td>
+              <td><code>batch.py:717</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>insert_before</code> / <code>insert_after</code> on
+                <code>add_column</code> require <code>recreate="always"</code>
+              </td>
+              <td><code>batch.py:169-177</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>drop_index</code> for a non-reflected index raises
+                <code>ValueError("No such index: '%s'")</code>
+              </td>
+              <td><code>batch.py:714</code></td>
+            </tr>
+            <tr>
+              <td>Any constraint covering a dropped column is silently discarded</td>
+              <td><code>batch.py:345-346</code></td>
+            </tr>
+            <tr>
+              <td>Temp table name truncated to 50 chars → possible collision</td>
+              <td><code>batch.py:244-245</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Where batch mode and offline mode collide</h2>
+
+      <p>
+        Batch mode’s whole method rests on reflecting the existing table. Lesson
+        14’s offline mode has no database to reflect from. The two are therefore
+        mutually exclusive <em>by construction</em>, and
+        <code>BatchOperationsImpl.flush</code> says so with an unusually long
+        error (<code>batch.py:127-140</code>):
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This operation cannot proceed in --sql mode; batch mode with dialect
+            {dialect} requires a live database connection with which to reflect
+            the table “{table_name}”. To generate a batch SQL migration script
+            using table “move and copy”, a complete Table object should be passed
+            to the “copy_from” argument of the batch_alter_table() method so that
+            table reflection can be skipped.
+          </p>
+        </blockquote>
+        <figcaption>
+          The error message itself, <code>alembic/operations/batch.py:128-140</code>
+          (1.14.1).
+        </figcaption>
+      </figure>
+
+      <p>
+        The documented escape is to hand Alembic the table definition it would
+        otherwise reflect, via <code>copy_from</code> — and the documentation is
+        candid that this is miserable: “The above use pattern is pretty tedious
+        and quite far off from Alembic’s preferred style of working; however […]
+        there’s not much alternative.” Autogenerate does not bridge the gap
+        either; <code>copy_from</code> tables must be written by hand.
+      </p>
+
+      <h2>One thing batch mode does not do for you</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            It is important to note that batch table operations do not work with
+            foreign keys that enforce referential integrity. This because the
+            target table is dropped; if foreign keys refer to it, this will raise
+            an error. On SQLite, whether or not foreign keys actually enforce is
+            controlled by the PRAGMA FOREIGN KEYS pragma; this pragma, if in use,
+            must be disabled when the workflow mode proceeds.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/batch.html"
+            >Alembic documentation, “Running ‘Batch’ Migrations”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        <strong>Alembic does not emit those pragmas.</strong> There is no
+        <code>foreign_keys</code> pragma emission anywhere in
+        <code>alembic/ddl/sqlite.py</code>. SQLite’s own procedure begins and ends
+        with them; that step is the operator’s.
+      </p>
+
+      <h2>Batch on backends that do support <code>ALTER</code></h2>
+
+      <p>The documented reason to reach for <code>recreate="always"</code> elsewhere is lock avoidance:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            There’s an odd use case some shops have, where the “move and copy”
+            style of migration is useful in some cases for databases that do
+            already support ALTER. There’s some cases where an ALTER operation may
+            block access to the table for a long time, which might not be
+            acceptable.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Be clear-eyed about this, given lessons 3–5</span>
+        <p>
+          Move-and-copy on PostgreSQL does not avoid the lock so much as
+          <strong>relocate</strong> it. The <code>DROP TABLE</code> and
+          <code>RENAME</code> at the end take
+          <code>ACCESS EXCLUSIVE</code> anyway, and the copy window is one during
+          which <strong>writes to the original table are lost</strong> unless you
+          have arranged otherwise.
+        </p>
+        <p>
+          The documentation is candid about the unautomated parts too: “existing
+          foreign key constraints which refer to the target table will need to be
+          unconditionally dropped before the batch operation, and re-created to
+          refer to the new table afterwards. <strong>Batch mode currently does
+          not provide any automation for this.</strong>”
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why does SQLite have such a limited <code>ALTER TABLE</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because it is embedded and optimises for a small size
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because it stores the schema as the CREATE statement text
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because it has no support for transactional DDL at all
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because its storage engine cannot rewrite a table in place
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          SQLite’s own §9: other engines store the schema parsed into system
+          tables, so <code>ALTER</code> edits a structure; SQLite stores the
+          original <code>CREATE</code> text, so <code>ALTER</code> must rewrite
+          text. The third answer is also false on its face — SQLite
+          <em>does</em> support transactional DDL; it is pysqlite that does not,
+          which is why Alembic marks the dialect <code>False</code>.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          On Alembic 1.14.1, what happens to an unnamed CHECK constraint during a
+          batch recreate?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It is carried across to the newly created table intact
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It is dropped, with no warning emitted on this version
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It is dropped, and a clear warning is emitted first
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It is kept, since only named ones are ever transferred
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>batch.py:272-275</code> is a bare <code>pass</code> with a
+          <code>TODO</code> comment and no <code>util.warn</code>. The warning
+          described in the current documentation arrived in 1.20 — the third
+          answer is right about a later version. Named CHECK constraints
+          <em>are</em> transferred on 1.14.1, which is where the
+          <code>batch_alter_table</code> docstring is itself stale.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        One question is left, and it is the one everybody asks first: what
+        happens when two instances run
+        <code>alembic upgrade head</code> at the same time? The answer is an
+        absence, and establishing an absence takes more care than establishing a
+        fact. <a href="0016-concurrent-deploys.html">Lesson 16</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://www.sqlite.org/lang_altertable.html"
+              >SQLite, <code>ALTER TABLE</code></a
+            >
+            — specifically §8 and §9. It is some of the best technical writing in
+            any database manual: it explains the design trade-off, admits the
+            cost, gives a precise procedure, and warns you about the plausible
+            wrong version of it. Read §9 even if you never touch SQLite.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth working through: given what lessons
+          3–5 said about locks, what would you actually have to build to make
+          move-and-copy safe on PostgreSQL — around the lost-writes window and
+          the dependent foreign keys? The answer is most of a replication system,
+          and arriving at that yourself is the point.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Retain two things: <em>why</em> SQLite is like this, and the correct
+            four-step ordering with the reason the obvious alternative is wrong.
+            The limitations table is lookup material and lives in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0014-offline-mode-is-a-compiler.html"
+              >14. Offline mode is a compiler</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0016-concurrent-deploys.html">16. Concurrent deploys</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

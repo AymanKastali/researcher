@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>10. Where the version write sits — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0010</span>
+        <h1>Where the version write sits</h1>
+        <p class="lesson-mission">
+          Is <code>alembic_version</code> updated inside the transaction that ran
+          your migration? One line of source answers it, the answer is not
+          configurable, and it is the reason a failed deploy on PostgreSQL is
+          recoverable and on MySQL is not.
+        </p>
+      </header>
+
+      <p class="lead">
+        Lesson 9 ended with a question the documentation does not answer. The
+        source answers it in one <code>with</code> block — and then hands you a
+        second question, about where the transaction boundary actually is, which
+        turns out to be a two-line truth table.
+      </p>
+
+      <h2>The ordering: always, and after</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/runtime/migration.py:610-630 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">assert self._migrations_fn is not None
+for step in self._migrations_fn(heads, self):
+    with self.begin_transaction(_per_migration=True):
+        if self.as_sql and not head_maintainer.heads:
+            # for offline mode, include a CREATE TABLE from
+            # the base
+            assert self.connection is not None
+            self._version.create(self.connection)
+        log.info("Running %s", step)
+        if self.as_sql:
+            self.impl.static_output(
+                "-- Running %s" % (step.short_log,)
+            )
+        step.migration_fn(**kw)
+
+        # previously, we wouldn't stamp per migration
+        # if we were in a transaction, however given the more
+        # complex model that involves any number of inserts
+        # and row-targeted updates and deletes, it's simpler for now
+        # just to run the operations on every version
+        head_maintainer.update_to_step(step)</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Two lines are the whole answer</span>
+        <p>
+          <code>step.migration_fn(**kw)</code> — line 623 — is your revision
+          script’s <code>upgrade()</code>.
+        </p>
+        <p>
+          <code>head_maintainer.update_to_step(step)</code> — line 630 — is the
+          <code>alembic_version</code> write.
+        </p>
+        <p>
+          They share one <code>with</code> block, and the body comes first.
+          <strong>The version row is written after your DDL, in the same
+          scope.</strong> This is not configurable.
+        </p>
+      </div>
+
+      <p>
+        The comment at lines 625–629 is worth reading as history: Alembic used to
+        skip the per-migration stamp when the whole run was already inside a
+        transaction, and now always emits it. Behaviour people rely on is often
+        the residue of a simplification.
+      </p>
+
+      <h2>But <em>which</em> transaction?</h2>
+
+      <p>
+        The <code>with</code> block above settles the ordering. It does not
+        settle the boundary, because
+        <code>begin_transaction</code> may not open a real transaction at all.
+        That decision is one line:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/runtime/migration.py:413-419 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">if self._in_external_transaction:
+    return nullcontext()
+
+if self.impl.transactional_ddl:
+    transaction_now = _per_migration == self._transaction_per_migration
+else:
+    transaction_now = _per_migration is True</code></pre>
+      </div>
+
+      <p>
+        <code>begin_transaction</code> is called from exactly two places: your
+        <code>env.py</code>, with no arguments — so
+        <code>_per_migration=False</code> — and <code>run_migrations</code>
+        above, once per step, with <code>_per_migration=True</code>. Line 417 is
+        an equality between two booleans, which makes the behaviour a truth
+        table:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            <code>transaction_now</code> on a transactional-DDL backend, by
+            configuration and call site.
+          </caption>
+          <thead>
+            <tr>
+              <th><code>transaction_per_migration</code></th>
+              <th>Outer call (<code>env.py</code>)</th>
+              <th>Per-step call</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>False</code> (the default)</td>
+              <td><strong>Real transaction</strong></td>
+              <td><code>nullcontext()</code></td>
+            </tr>
+            <tr>
+              <td><code>True</code></td>
+              <td><code>nullcontext()</code></td>
+              <td><strong>Real transaction</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Exactly one level opens a transaction</span>
+        <p>
+          Never both, never neither. So on PostgreSQL with defaults,
+          <strong>a single transaction wraps the entire
+          <code>alembic upgrade</code> command</strong> — every migration body
+          and every version-table write for the whole run commits or rolls back
+          together.
+        </p>
+        <p>
+          Set <code>transaction_per_migration=True</code> and the unit becomes
+          one revision script plus its own stamp. That is the only choice on
+          offer, and it is a real one: ten revisions as one atom, or ten atoms.
+        </p>
+      </div>
+
+      <p>
+        Line 418 — the <code>else</code> branch — is the non-transactional-DDL
+        case: MySQL, SQLite and Oracle always take the per-step path regardless
+        of the setting. There is no point holding a run-wide transaction open
+        around DDL the server has already committed behind your back, which is
+        <a href="0002-what-a-half-failed-migration-leaves.html">lesson 2</a>’s
+        implicit commit showing up in a tool’s control flow.
+      </p>
+
+      <p>
+        And line 413 is an escape hatch worth knowing about: if the
+        <code>Connection</code> handed to <code>configure()</code> was already
+        inside a transaction, Alembic opens and closes nothing — the embedding
+        application owns the boundary. That is implementation detail, not a
+        documented promise.
+      </p>
+
+      <h2>Which backends Alembic believes have transactional DDL</h2>
+
+      <p>
+        <code>transactional_ddl</code> is a class attribute on the dialect impl,
+        overridable per-run via
+        <code>EnvironmentContext.configure(transactional_ddl=…)</code>:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Read directly from the 1.14.1 tree. Two of six are <code>True</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Impl</th>
+              <th>file:line</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>DefaultImpl</code></td>
+              <td><code>alembic/ddl/impl.py:97</code></td>
+              <td><code>False</code></td>
+            </tr>
+            <tr>
+              <td><code>PostgresqlImpl</code></td>
+              <td><code>alembic/ddl/postgresql.py:81</code></td>
+              <td><strong><code>True</code></strong></td>
+            </tr>
+            <tr>
+              <td><code>MSSQLImpl</code></td>
+              <td><code>alembic/ddl/mssql.py:53</code></td>
+              <td><strong><code>True</code></strong></td>
+            </tr>
+            <tr>
+              <td><code>MySQLImpl</code></td>
+              <td><code>alembic/ddl/mysql.py:44</code></td>
+              <td><code>False</code></td>
+            </tr>
+            <tr>
+              <td><code>SQLiteImpl</code></td>
+              <td><code>alembic/ddl/sqlite.py:43</code></td>
+              <td><code>False</code></td>
+            </tr>
+            <tr>
+              <td><code>OracleImpl</code></td>
+              <td><code>alembic/ddl/oracle.py:37</code></td>
+              <td><code>False</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The default is <code>False</code>, so a third-party dialect that says
+        nothing is assumed non-transactional — a conservative default, and the
+        right one.
+      </p>
+
+      <div class="aside note">
+        <span class="label">A claim about the backend, not a universal truth</span>
+        <p>
+          <code>PostgresqlImpl.transactional_ddl = True</code> is a
+          <em>generalisation</em>.
+          <a href="0001-ddl-inside-a-transaction.html">Lesson 1</a> established
+          that PostgreSQL has
+          statements which cannot run inside a transaction block at all — which
+          is precisely why Alembic also ships
+          <code>autocommit_block()</code>, a context manager for stepping outside
+          the run-wide transaction to issue a
+          <code>CREATE INDEX CONCURRENTLY</code>.
+        </p>
+        <p>
+          Using it means that portion of your migration has no rollback, and
+          leaves behind exactly the invalid index lesson 2 described.
+        </p>
+      </div>
+
+      <h2>What the documentation promises, and what it does not</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A “Logical” transaction means that the operation may or may not
+            correspond to a real database transaction. If the target database
+            supports transactional DDL (or
+            <code>EnvironmentContext.configure.transactional_ddl</code> is true),
+            the <code>EnvironmentContext.configure.transaction_per_migration</code>
+            flag is not set, and the migration is against a real database
+            connection (as opposed to using “offline” <code>--sql</code> mode), a
+            real transaction will be started.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>MigrationContext.begin_transaction</code> docstring,
+          <code>alembic/runtime/migration.py:392-401</code> (1.14.1).
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Note what it does not say</span>
+        <p>
+          Nothing in the published API promises that the version row is written
+          <em>after</em> the body, or inside the same scope. That is
+          <strong>behaviour of this tree</strong>, established by reading it.
+        </p>
+        <p>
+          It is entirely load-bearing —
+          <a href="0016-concurrent-deploys.html">lesson 16</a> shows the whole
+          concurrency
+          story turns on this ordering — and it is undocumented. That combination
+          is worth noticing whenever you find it.
+        </p>
+      </div>
+
+      <h2>Why the ordering matters</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Same code, two outcomes, decided entirely by the backend.
+          </caption>
+          <thead>
+            <tr>
+              <th>Backend</th>
+              <th>DDL and version write are…</th>
+              <th>A failure leaves</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PostgreSQL, MSSQL</td>
+              <td>In one real transaction</td>
+              <td>
+                Nothing. Both roll back together — the schema and the version
+                row stay consistent
+              </td>
+            </tr>
+            <tr>
+              <td>MySQL, SQLite, Oracle</td>
+              <td>
+                Not in any transaction — the DDL committed itself on the way past
+              </td>
+              <td>
+                A changed schema and a version row that does not describe it.
+                Repair is manual
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          With Alembic’s defaults on PostgreSQL, what is the unit of rollback for
+          <code>alembic upgrade head</code> across ten revisions?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              One revision script, plus the version row it writes
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The entire run, all ten scripts and their stamps
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One statement, since each commits on its own merit
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Nothing at all, because the DDL commits outside control
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          With <code>transaction_per_migration</code> at its default of
+          <code>False</code>, the <em>outer</em> call in <code>env.py</code>
+          opens the real transaction and every per-step call returns
+          <code>nullcontext()</code>. So one transaction wraps the whole command.
+          The first answer describes what you get by setting that flag to
+          <code>True</code> — a real option, just not the default.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Where is the <code>alembic_version</code> write relative to your
+          <code>upgrade()</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Before it, so a crash never leaves stale versions
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              After it, inside the same block, and not configurable
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              After it, in a separate transaction that always commits
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              After it, but only when no outer transaction exists
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>step.migration_fn(**kw)</code> then
+          <code>head_maintainer.update_to_step(step)</code>, both inside one
+          <code>with self.begin_transaction(...)</code>. The last answer
+          describes Alembic’s <em>older</em> behaviour, which the source comment
+          at lines 625–629 explicitly records as having been removed in favour of
+          always stamping.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        Alembic runs “the revisions the database has not run”. Computing that set
+        requires a graph — and once two people can add revisions independently,
+        that graph has branches, merges and more than one end. What a merge
+        actually <em>is</em>, in the source, is far simpler than the ceremony
+        around it suggests:
+        <a href="0011-branches-merges-and-heads.html">lesson 11</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            The source itself. Install it —
+            <code
+              >uv pip install --target ./alembic-src "alembic==1.14.1"
+              "SQLAlchemy==2.0.36"</code
+            >
+            — and read <code>alembic/runtime/migration.py</code> from
+            <code>run_migrations</code> at line 592 to the end of
+            <code>HeadMaintainer</code>. It is about 250 lines and it is the most
+            consequential file in the package. Everything in lessons 10 and 16 is
+            in it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good thing to work through together: what
+          would break if the version write came <em>before</em> the migration
+          body instead of after? The answer differs by backend, and reasoning it
+          out is the best preparation for lesson 16 you can do.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The truth table is the thing to retain, not the line numbers. Before
+            lesson 11, try to state what
+            <code>transaction_per_migration=True</code> changes, and name the one
+            backend family where the flag makes no difference at all. The truth
+            table and the six dialect values are tabulated in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0009-what-alembic-is.html">9. What Alembic is</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0011-branches-merges-and-heads.html"
+              >11. Branches, merges and heads</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>13. How op.add_column() becomes SQL — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0013</span>
+        <h1>How <code>op.add_column()</code> becomes SQL</h1>
+        <p class="lesson-mission">
+          Follow one operation from your revision file to the wire. Alembic
+          writes two strings; SQLAlchemy writes the rest. Knowing which is which
+          tells you where to look when the emitted SQL is not what you expected.
+        </p>
+      </header>
+
+      <p class="lead">
+        <code>op.add_column("orders", sa.Column("shipped_at", sa.DateTime()))</code>
+        produces <code>ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMP
+        WITHOUT TIME ZONE</code>. Between those two things are nine hops across
+        six files, and the interesting discovery is how little of the final
+        string Alembic is responsible for.
+      </p>
+
+      <h2>The chain</h2>
+
+      <figure>
+        <div class="figure-body">
+          <div class="code">
+            <div class="code-meta">
+              <span class="code-language">Text</span>
+              <span class="code-illustrative">Written for this lesson, from the 1.14.1 tree</span>
+            </div>
+            <pre><code>alembic.op.add_column(...)                    alembic/op.py          (module proxy)
+ → Operations.add_column(...)                 alembic/operations/base.py:192 (exec'd)
+  → AddColumnOp.add_column(...)               alembic/operations/ops.py
+   → Operations.invoke(op)                    alembic/operations/base.py:438-441  ← dialect dispatch
+    → toimpl.add_column                       alembic/operations/toimpl.py:172-197
+     → DefaultImpl.add_column                 alembic/ddl/impl.py:368-374
+      → base.AddColumn construct              alembic/ddl/base.py:151-159
+       → DefaultImpl._exec                    alembic/ddl/impl.py:204-232  ← online/offline fork
+        → @compiles visit_add_column          alembic/ddl/base.py:188-193
+         → add_column() helper                alembic/ddl/base.py:327-336
+          → compiler.get_column_specification(column)   ← SQLAlchemy boundary</code></pre>
+          </div>
+        </div>
+        <figcaption>
+          Nine hops. Four of them deserve comment; the rest are plumbing.
+        </figcaption>
+      </figure>
+
+      <h2>1. <code>alembic.op</code> is generated at import time</h2>
+
+      <p>The module you import is this, in its entirety:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/op.py, complete file (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">from .operations.base import Operations
+
+# create proxy functions for
+# each method on the Operations class.
+Operations.create_module_class_proxy(globals(), locals())</code></pre>
+      </div>
+
+      <p>
+        Every public method of <code>Operations</code> gets a proxy installed
+        into the module namespace at import. And
+        <code>Operations.add_column</code> is <em>itself</em> generated:
+        <code>@Operations.register_operation("add_column")</code> builds the
+        method source as a string and <code>exec</code>s it
+        (<code>base.py:192</code>), rewriting the op class’s
+        <code>(cls, operations)</code> signature into <code>(self)</code>.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Two familiar annoyances, explained</span>
+        <p>
+          <strong>Why the type stubs live in a separate file.</strong> Because
+          the real methods do not exist until runtime, the static signatures and
+          documentation live in <code>alembic/op.pyi</code> — a 50 KB stub file
+          maintained alongside the generator. That is what your editor is reading.
+        </p>
+        <p>
+          <strong>Why calling <code>op.add_column</code> outside a migration
+          raises a <code>NameError</code> about a proxy.</strong> The proxy
+          exists, but it has no <code>Operations</code> instance bound to it
+          until a migration is running.
+        </p>
+      </div>
+
+      <h2>2. The first dialect-aware dispatch is <code>invoke</code></h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/operations/base.py:438-441 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">fn = self._to_impl.dispatch(
+    operation, self.migration_context.impl.__dialect__
+)
+return fn(self, operation)</code></pre>
+      </div>
+
+      <p>
+        This looks up <code>(op_class, dialect_name)</code> and falls back to
+        <code>(op_class, "default")</code>. For <code>AddColumnOp</code>
+        <strong>no dialect registers an override</strong>, so every backend —
+        PostgreSQL, MySQL, SQLite, Oracle, MSSQL — lands on the same
+        <code>toimpl.add_column</code>.
+      </p>
+
+      <h2>3. One <code>op.add_column()</code> can emit several statements</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/operations/toimpl.py:172-197, abridged (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">if column.table is not None:
+    column = _copy(column)
+
+t = operations.schema_obj.table(table_name, column, schema=schema)
+operations.impl.add_column(table_name, column, schema=schema, **kw)
+
+for constraint in t.constraints:
+    if not isinstance(constraint, sa_schema.PrimaryKeyConstraint):
+        operations.impl.add_constraint(constraint)
+for index in t.indexes:
+    operations.impl.create_index(index)</code></pre>
+      </div>
+
+      <p>
+        It fabricates a throwaway <code>Table</code> to host the column so that
+        SQLAlchemy derives the implied constraints, emits the
+        <code>ALTER TABLE … ADD COLUMN</code>, and then emits
+        <strong>each non-primary-key constraint as its own
+        <code>ALTER TABLE … ADD CONSTRAINT</code></strong>, each index as its own
+        <code>CREATE INDEX</code>, and — on a dialect with out-of-line comments —
+        a separate <code>COMMENT ON COLUMN</code>.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">This matters for lesson 3’s batching rule</span>
+        <p>
+          A single <code>op.add_column()</code> with a unique constraint and an
+          index on it is <strong>three separate statements</strong>, each taking
+          its own lock in sequence — not one <code>ALTER TABLE</code> with
+          several subcommands.
+        </p>
+        <p>
+          So the “strictest lock of the batch” rule from
+          <a href="0003-lock-modes.html">lesson 3</a> does not apply
+          here: you get three lock acquisitions rather than one, which under
+          <code>lock_timeout</code> means three chances to fail and three chances
+          to queue. Worth knowing before you assume the tool batches for you.
+        </p>
+        <p>
+          The <code>_copy</code> on the first line is defensive: the
+          <code>Column</code> is copied if it is already bound to a
+          <code>Table</code>, so your model object is not mutated by generating a
+          migration against it.
+        </p>
+      </div>
+
+      <h2>4. PostgreSQL does not override <code>AddColumn</code> at all</h2>
+
+      <p>
+        <code>alembic/ddl/postgresql.py</code> has exactly four
+        <code>@compiles</code> registrations —
+        <code>RenameTable</code>, <code>PostgresqlColumnType</code>,
+        <code>ColumnComment</code> and <code>IdentityColumnDefault</code> — and
+        <code>AddColumn</code> is not among them. Nor does any dialect override
+        <code>DefaultImpl.add_column</code>. So the hand-off is a single line:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/base.py:328 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">text = "ADD COLUMN %s" % compiler.get_column_specification(column, **kw)</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The division of labour, exactly</span>
+        <p>
+          <strong>Alembic writes the strings <code>"ALTER TABLE"</code> and
+          <code>"ADD COLUMN"</code>.</strong>
+        </p>
+        <p>
+          Everything about the column — its quoted name, its type,
+          <code>DEFAULT</code>, <code>NOT NULL</code>, <code>GENERATED</code>,
+          identity — is written by <strong>SQLAlchemy’s
+          <code>DDLCompiler</code></strong>, and on PostgreSQL by
+          <code>PGDDLCompiler.get_column_specification</code>.
+        </p>
+        <p>
+          That is where <code>SERIAL</code> / <code>BIGSERIAL</code> /
+          <code>SMALLSERIAL</code> are produced — and it requires
+          <code>column.table._autoincrement_column</code>, which is
+          <em>exactly</em> why the throwaway <code>Table</code> in
+          <code>toimpl.add_column</code> has to exist.
+        </p>
+      </div>
+
+      <p>
+        The generalisation is worth holding onto, because it tells you where to
+        debug: <strong><code>op.add_column()</code> is dialect-neutral all the way
+        down inside Alembic, and its PostgreSQL-specific text comes from
+        SQLAlchemy.</strong> If the column definition is wrong, the bug is not in
+        Alembic.
+      </p>
+
+      <p>
+        <code>op.alter_column()</code> is the opposite — there Alembic
+        <em>does</em> branch per dialect, which is how
+        <code>postgresql_using=</code> threads a <code>USING</code> clause into
+        <code>ALTER COLUMN … TYPE</code>. The two operations are worth
+        contrasting precisely because they sit on opposite sides of this line.
+      </p>
+
+      <h2>The fork at the bottom</h2>
+
+      <p>
+        Finally, every statement — this one and all the others — passes through
+        one <code>if</code> in <code>DefaultImpl._exec</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/impl.py:212-232, abridged (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">if self.as_sql:
+    if multiparams is not None or params:
+        raise TypeError("SQL parameters not allowed with as_sql")
+    ...
+    compiled = construct.compile(dialect=self.dialect, **compile_kw)
+    self.static_output(
+        str(compiled).replace("\t", "    ").strip()
+        + self.command_terminator
+    )
+    return None</code></pre>
+      </div>
+
+      <p>
+        Offline compiles the construct against the configured dialect and writes
+        the text plus a terminator to the output buffer, returning
+        <code>None</code>. Online hands the construct to
+        <code>Connection.execute</code>. That <code>return None</code> is small
+        and it has consequences all over the package —
+        <a href="0014-offline-mode-is-a-compiler.html">lesson 14</a> is about
+        them.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Who writes the type and <code>NOT NULL</code> in the emitted
+          <code>ADD COLUMN</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Alembic’s PostgreSQL dialect module, in a compiles hook
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              SQLAlchemy’s own DDL compiler, via its column specification
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Alembic’s default impl, in its add_column method body
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The operation object itself, when the revision loads
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Alembic contributes the literal strings <code>"ALTER TABLE"</code> and
+          <code>"ADD COLUMN"</code>; the entire column specification comes from
+          <code>compiler.get_column_specification(column)</code>. PostgreSQL
+          registers only four <code>@compiles</code> hooks and
+          <code>AddColumn</code> is not one of them — which is why an unexpected
+          column definition is a SQLAlchemy question, not an Alembic one.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          How many statements does one <code>op.add_column()</code> emit?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Always one, since it maps onto a single statement
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              One, plus one for each implied constraint and index
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One, with every implied constraint added as a subcommand
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Two, being the column addition and a comment statement
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>toimpl.add_column</code> loops over the throwaway table’s
+          constraints and indexes, emitting each separately — plus a
+          <code>COMMENT ON COLUMN</code> where the dialect needs one. The third
+          answer is the tempting one, and getting it wrong costs you: separate
+          statements mean separate lock acquisitions rather than one batched
+          <code>ALTER TABLE</code>.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        That <code>return None</code> in the offline branch looks like an
+        implementation detail. It is load-bearing: it is why a
+        <code>--sql</code> script can contain statements that would fail, and why
+        every rowcount-based safety check in Alembic is inert under it.
+        <a href="0014-offline-mode-is-a-compiler.html">Lesson 14</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <code>alembic/ddl/base.py</code> in the 1.14.1 tree — it is short,
+            and it is where Alembic’s own DDL constructs and their
+            <code>@compiles</code> hooks all live. Read
+            <code>visit_add_column</code> and the
+            <code>add_column()</code> helper together, then look at
+            <code>alembic/ddl/postgresql.py</code> and count the four
+            <code>@compiles</code> lines yourself. Seeing how small the
+            dialect-specific surface is changes how you debug generated SQL.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good follow-up: ask it to trace
+          <code>op.alter_column()</code> the same way, and compare. It branches
+          per dialect where <code>add_column</code> does not, and seeing the two
+          side by side is the clearest way to understand what “dialect support”
+          means in this codebase.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Do not memorise the chain — it is lookup material and it lives in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>.
+            Retain two things: Alembic writes two strings and SQLAlchemy writes
+            the rest, and one <code>op</code> call can be several statements.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0012-what-autogenerate-cannot-see.html"
+              >12. What autogenerate cannot see</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0014-offline-mode-is-a-compiler.html"
+              >14. Offline mode is a compiler</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

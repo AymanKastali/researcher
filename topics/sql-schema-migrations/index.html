@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SQL Schema Migrations and How Alembic Implements Them</title>
+    <link rel="stylesheet" href="../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Topic</span>
+        <h1>SQL Schema Migrations and How Alembic Implements Them</h1>
+        <p class="page-blurb">
+          What the database actually does when a migration runs — which lock,
+          which rewrite, what a failure leaves behind — and then how one tool
+          implements all of it, including the three places its guarantees run
+          out.
+        </p>
+      </header>
+
+      <p class="lead">
+        Seventeen lessons, built to be spaced over days rather than read in one
+        sitting. Lessons 1–8 are the database and never mention a tool; 9–17 are
+        Alembic 1.14.1, introduced from zero. The five reference documents at the
+        bottom are the ones built to be returned to.
+      </p>
+
+      <h2>Part one — what the database does</h2>
+
+      <ul class="index-list">
+        <li>
+          <span class="index-number">0001</span>
+          <a class="index-title" href="lessons/0001-ddl-inside-a-transaction.html"
+            >DDL inside a transaction</a
+          >
+          <p class="index-summary">
+            The property every safe migration rests on, established the only way
+            the manual allows — negatively. Plus the first lesson in sourcing:
+            what to do when the sentence you want does not exist.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0002</span>
+          <a
+            class="index-title"
+            href="lessons/0002-what-a-half-failed-migration-leaves.html"
+            >What a half-failed migration leaves</a
+          >
+          <p class="index-summary">
+            Nothing, an index that charges rent while doing no work, or a schema
+            you repair by hand. Includes why MySQL’s atomic DDL is not
+            transactional DDL, in MySQL’s own words.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0003</span>
+          <a class="index-title" href="lessons/0003-lock-modes.html">Lock modes</a>
+          <p class="index-summary">
+            One sentence dissolves the subject: a lock mode is nothing but the
+            set of modes it conflicts with. After this, every later lesson is
+            arithmetic.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0004</span>
+          <a class="index-title" href="lessons/0004-the-lock-and-rewrite-table.html"
+            >The lock and rewrite table</a
+          >
+          <p class="index-summary">
+            Two independent costs — which lock, and how much work under it — and
+            the three rows where everyone’s intuition is wrong. One cell is
+            honestly marked undocumented.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0005</span>
+          <a class="index-title" href="lessons/0005-the-convoy.html">The convoy</a>
+          <p class="index-summary">
+            Why a one-second <code>ALTER TABLE</code> takes the site down instead
+            of delaying one statement — and what to do when the most important
+            fact about your database has no sentence in your database’s manual.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0006</span>
+          <a class="index-title" href="lessons/0006-not-valid-and-validate.html"
+            ><code>NOT VALID</code> and <code>VALIDATE</code></a
+          >
+          <p class="index-summary">
+            Splitting one long lock into a short lock plus a long weak one. The
+            documented pattern, why it is sound rather than a trick, and the
+            four-step <code>SET NOT NULL</code> recipe the manual never
+            assembles.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0007</span>
+          <a class="index-title" href="lessons/0007-concurrent-index-builds.html"
+            >Concurrent index builds</a
+          >
+          <p class="index-summary">
+            The other way to move work out from under a strong lock, the one
+            recipe PostgreSQL blesses outright, and the waiting clause that
+            stalls a build silently and indefinitely.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0008</span>
+          <a class="index-title" href="lessons/0008-expand-and-contract.html"
+            >Expand and contract</a
+          >
+          <p class="index-summary">
+            The move when there is no safe form of the operation — and the first
+            thing here with no vendor source at all, so also a lesson in teaching
+            responsibly when the manuals are silent.
+          </p>
+        </li>
+      </ul>
+
+      <h2>Part two — what the tool does</h2>
+
+      <ul class="index-list">
+        <li>
+          <span class="index-number">0009</span>
+          <a class="index-title" href="lessons/0009-what-alembic-is.html"
+            >What Alembic is</a
+          >
+          <p class="index-summary">
+            Orientation from zero: a revision file, a pointer, and a table with
+            one column. Four ideas, and everything after is a consequence of
+            them.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0010</span>
+          <a
+            class="index-title"
+            href="lessons/0010-where-the-version-write-sits.html"
+            >Where the version write sits</a
+          >
+          <p class="index-summary">
+            One <code>with</code> block answers it, one boolean equality decides
+            the transaction boundary, and the pairing is why a failed deploy is
+            recoverable on PostgreSQL and not on MySQL.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0011</span>
+          <a
+            class="index-title"
+            href="lessons/0011-branches-merges-and-heads.html"
+            >Branches, merges and heads</a
+          >
+          <p class="index-summary">
+            A merge revision is a tuple. That is the whole definition — after
+            which branch labels, multiple heads and
+            <code>upgrade head</code> reduce to set arithmetic.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0012</span>
+          <a
+            class="index-title"
+            href="lessons/0012-what-autogenerate-cannot-see.html"
+            >What autogenerate cannot see</a
+          >
+          <p class="index-summary">
+            Not a list of limitations — a proof. Nine functions are the entire
+            detection surface, and three <code>for</code> loops show why a column
+            rename can never be detected.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0013</span>
+          <a
+            class="index-title"
+            href="lessons/0013-how-op-add-column-becomes-sql.html"
+            >How <code>op.add_column()</code> becomes SQL</a
+          >
+          <p class="index-summary">
+            Nine hops from your revision file to the wire. Alembic writes two
+            strings; SQLAlchemy writes the rest — which tells you where to look
+            when the emitted SQL surprises you.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0014</span>
+          <a
+            class="index-title"
+            href="lessons/0014-offline-mode-is-a-compiler.html"
+            >Offline mode is a compiler</a
+          >
+          <p class="index-summary">
+            <code>--sql</code> renders a migration; it does not run it. Pedantic
+            until you see a data migration produce a plausible, wrong script and
+            hand it to a DBA.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0015</span>
+          <a class="index-title" href="lessons/0015-batch-mode.html">Batch mode</a>
+          <p class="index-summary">
+            Why SQLite’s <code>ALTER TABLE</code> is weak — SQLite’s own answer
+            is better than “it just is” — and what the move-and-copy workaround
+            silently drops on the way.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0016</span>
+          <a class="index-title" href="lessons/0016-concurrent-deploys.html"
+            >Concurrent deploys</a
+          >
+          <p class="index-summary">
+            What does Alembic do when two instances migrate at once? Nothing.
+            Establishing that properly — as an absence, with a control group — is
+            the whole lesson.
+          </p>
+        </li>
+        <li>
+          <span class="index-number">0017</span>
+          <a class="index-title" href="lessons/0017-reading-the-evidence.html"
+            >Reading the evidence</a
+          >
+          <p class="index-summary">
+            Sixteen lessons rested on four grades of evidence. This one makes the
+            grading the object of study, because it is the part that survives
+            PostgreSQL 17 and Alembic 1.20.
+          </p>
+        </li>
+      </ul>
+
+      <h2>Reference</h2>
+
+      <p>
+        Compressed for lookup rather than reading. These are what the lessons are
+        for.
+      </p>
+
+      <ul class="index-list">
+        <li>
+          <a class="index-title" href="reference/lock-and-rewrite-ledger.html"
+            >Lock and rewrite ledger</a
+          >
+          <p class="index-summary">
+            The conflict matrix, every operation by lock and by work, the
+            statements that cannot run in a transaction block, how to find an
+            invalid index, and the two timeouts.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/safe-migration-recipes.html"
+            >Safe migration recipes</a
+          >
+          <p class="index-summary">
+            Eight step sequences, each annotated with the lock it takes and the
+            sentence in the manual that makes it legal — plus what has no safe
+            form at all.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/alembic-internals-map.html"
+            >Alembic internals map</a
+          >
+          <p class="index-summary">
+            Where each behaviour lives in the source, by file and line, for
+            1.14.1 — transaction boundary, dialects, revision graph,
+            comparators, dispatch chain, offline and batch.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/glossary.html">Glossary</a>
+          <p class="index-summary">
+            Every term this topic uses, the aliases to avoid, and the manual each
+            definition is quoted from — including the four grades of evidence.
+          </p>
+        </li>
+        <li>
+          <a class="index-title" href="reference/unverified-claims.html"
+            >Unverified claims</a
+          >
+          <p class="index-summary">
+            The seven things resting on something weaker than a vendor sentence,
+            the two arguments from absence with their searches shown, and what
+            nobody publishes at all.
+          </p>
+        </li>
+      </ul>
+
+      <h2>How to study this</h2>
+
+      <div class="aside insight">
+        <span class="label">Storage strength, not fluency</span>
+        <p>
+          The goal is retention in a year, not comprehension today. That means
+          leaving gaps between lessons, and — before opening the next one —
+          trying to state the previous one’s argument out loud from memory. The
+          recall attempt is the learning; re-reading only feels like it.
+        </p>
+        <p>
+          The natural long pauses are <strong>after lesson 5</strong>, which is
+          the hinge of the first half, and <strong>after lesson 8</strong>, where
+          the subject changes from a database to a tool.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">If you only keep four things</span>
+        <p>
+          Lesson 4’s three surprising rows; lesson 5’s three actors; lesson 6’s
+          four steps; and lesson 16’s one sentence on what the compare-and-swap
+          does and does not catch. Whatever you cannot reproduce a week later is
+          what to re-read — and only that.
+        </p>
+      </div>
+
+      <p>
+        The mission, the sources and the working notes live beside this page as
+        <code>MISSION.md</code>, <code>RESOURCES.md</code>,
+        <code>GLOSSARY.md</code> and <code>NOTES.md</code>.
+      </p>
+
+      <p class="small-print">
+        Built from primary sources: the PostgreSQL 16 manual, the MySQL 8.0
+        reference manual, the SQLite documentation, and Alembic 1.14.1 with
+        SQLAlchemy 2.0.36 read on disk. Alembic’s own documentation is quoted
+        with the caveat that no 1.14 build is published. Maintainer statements
+        and practitioner writing are labelled as such wherever they appear.
+        <a href="../../index.html">Back to all topics</a>.
+      </p>
+    </main>
+  </body>
+</html>

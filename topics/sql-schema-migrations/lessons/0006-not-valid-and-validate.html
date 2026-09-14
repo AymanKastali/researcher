@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>6. NOT VALID and VALIDATE — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0006</span>
+        <h1><code>NOT VALID</code> and <code>VALIDATE</code></h1>
+        <p class="lesson-mission">
+          Splitting one long lock into a short lock plus a long weak one. The
+          documented pattern, the reason it is sound, and the recipe the manual
+          never quite assembles for you.
+        </p>
+      </header>
+
+      <p class="lead">
+        Adding a constraint has to check that existing rows satisfy it, and that
+        check is a full scan under a strong lock — the exact combination lesson 5
+        showed is lethal. PostgreSQL’s answer is to separate the two things the
+        single statement was doing, and the reasoning behind it is quoted in
+        full below because it is the clearest paragraph on the whole
+        <code>ALTER TABLE</code> page.
+      </p>
+
+      <h2>The pattern, as documented</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Scanning a large table to verify a new foreign key or check
+            constraint can take a long time, and other updates to the table are
+            locked out until the ALTER TABLE ADD CONSTRAINT command is committed.
+            The main purpose of the NOT VALID constraint option is to reduce the
+            impact of adding a constraint on concurrent updates. With NOT VALID,
+            the ADD CONSTRAINT command does not scan the table and can be
+            committed immediately. After that, a VALIDATE CONSTRAINT command can
+            be issued to verify that existing rows satisfy the constraint.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code>, Notes</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Now the part that explains why this is sound rather than merely
+        convenient. Read it twice — it is the load-bearing sentence:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The validation step does not need to lock out concurrent updates,
+            since it knows that other transactions will be enforcing the
+            constraint for rows that they insert or update; only pre-existing
+            rows need to be checked. Hence, validation acquires only a SHARE
+            UPDATE EXCLUSIVE lock on the table being altered. (If the constraint
+            is a foreign key then a ROW SHARE lock is also required on the table
+            referenced by the constraint.)
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Why the second step can afford a weak lock</span>
+        <p>
+          Once the constraint exists — even unvalidated — it is
+          <strong>already being enforced against every new write</strong>. So the
+          set of rows that could possibly violate it is frozen at the moment of
+          the <code>ADD CONSTRAINT</code>, and it can only shrink.
+        </p>
+        <p>
+          The validation scan is therefore checking a closed set, and needs no
+          protection from concurrent writers. That is the entire argument, and it
+          is why the pattern is a genuine result rather than a trick.
+        </p>
+      </div>
+
+      <h2>What each step actually costs</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            One expensive statement becomes two cheap ones — but not in the way
+            most people assume.
+          </caption>
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Lock</th>
+              <th>Duration</th>
+              <th>Blocks</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ADD CONSTRAINT … CHECK … NOT VALID</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>Instant — no scan</td>
+              <td>Everything, for a moment</td>
+            </tr>
+            <tr>
+              <td><code>ADD CONSTRAINT … FOREIGN KEY … NOT VALID</code></td>
+              <td><code>SHARE ROW EXCLUSIVE</code>, both tables</td>
+              <td>Instant — no scan</td>
+              <td>Writes, for a moment</td>
+            </tr>
+            <tr>
+              <td><code>VALIDATE CONSTRAINT</code></td>
+              <td><code>SHARE UPDATE EXCLUSIVE</code></td>
+              <td>Long — full scan</td>
+              <td>Nothing you care about</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The misconception this lesson exists to kill</span>
+        <p>
+          <code>NOT VALID</code> removes the <strong>scan</strong>, not the
+          <strong>lock</strong>. <code>ADD CHECK … NOT VALID</code> still takes
+          <code>ACCESS EXCLUSIVE</code> — the strongest lock there is.
+        </p>
+        <p>
+          It is safe because the lock is held <em>briefly</em>. And because
+          lesson 5 showed that a brief lock you have to <em>wait</em> for is
+          still an outage, <code>lock_timeout</code> around step one is
+          <strong>mandatory, not optional</strong>. Step two barely needs it.
+        </p>
+      </div>
+
+      <h2>The second use, which is easy to miss</h2>
+
+      <p>
+        The same paragraph ends with a purpose that has nothing to do with
+        concurrency:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            In addition to improving concurrency, it can be useful to use NOT
+            VALID and VALIDATE CONSTRAINT in cases where the table is known to
+            contain pre-existing violations. Once the constraint is in place, no
+            new violations can be inserted, and the existing problems can be
+            corrected at leisure until VALIDATE CONSTRAINT finally succeeds.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <p>
+        <code>NOT VALID</code> is the <em>sanctioned</em> way to adopt a
+        constraint over dirty data. It freezes the violation set at the moment of
+        the <code>ALTER</code> and lets you clean up behind it, with the
+        guarantee that the mess cannot grow while you work. Most people meet this
+        option as a performance trick and never learn it is also a data-quality
+        tool.
+      </p>
+
+      <h2>The recipe the manual never assembles</h2>
+
+      <p>
+        <code>SET NOT NULL</code> is the operation people most want to make safe,
+        and PostgreSQL documents every piece of the answer — on three different
+        parts of the same page, without ever putting them together. Here are the
+        pieces:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            SET NOT NULL may only be applied to a column provided none of the
+            records in the table contain a NULL value for the column. Ordinarily
+            this is checked during the ALTER TABLE by scanning the entire table;
+            however, if a valid CHECK constraint exists (and is not dropped in
+            the same command) which proves no NULL can exist, then the table scan
+            is skipped.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <p>
+        Put that beside the two quotations above, and the sequence assembles
+        itself:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">-- Step 1. Instant. ACCESS EXCLUSIVE, held momentarily -- needs lock_timeout.
+ALTER TABLE orders
+  ADD CONSTRAINT orders_shipped_at_not_null
+  CHECK (shipped_at IS NOT NULL) NOT VALID;
+
+-- Step 2. Long. SHARE UPDATE EXCLUSIVE -- reads and writes carry on.
+ALTER TABLE orders VALIDATE CONSTRAINT orders_shipped_at_not_null;
+
+-- Step 3. Instant. The scan is SKIPPED, because a valid CHECK proves no NULL.
+ALTER TABLE orders ALTER COLUMN shipped_at SET NOT NULL;
+
+-- Step 4. Optional. The CHECK is now redundant with the NOT NULL.
+ALTER TABLE orders DROP CONSTRAINT orders_shipped_at_not_null;</code></pre>
+      </div>
+
+      <p>
+        Four statements, and the only long one runs under a lock that blocks
+        nothing. Compare the naive version — a single
+        <code>SET NOT NULL</code> that scans the whole table under
+        <code>ACCESS EXCLUSIVE</code>, with the whole application queued behind
+        it.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Two details that will bite you</span>
+        <p>
+          <strong>Step 3 is not optional and not cosmetic.</strong> A
+          <code>CHECK (col IS NOT NULL)</code> is not a <code>NOT NULL</code>
+          constraint: the column is still nullable as far as the catalog, the
+          planner, and every tool that reflects your schema is concerned. Stopping
+          at step 2 leaves you with the enforcement but not the declaration.
+        </p>
+        <p>
+          <strong>“and is not dropped in the same command”</strong> — the
+          parenthesis in the quotation is doing real work. Batching step 3 and
+          step 4 into one <code>ALTER TABLE</code> defeats the optimisation and
+          you get the full scan back, under <code>ACCESS EXCLUSIVE</code>. Run
+          them separately.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does <code>NOT VALID</code> change about
+          <code>ADD CONSTRAINT … CHECK</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It weakens the lock the statement needs to acquire
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It skips the scan, leaving the lock held momentarily
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It defers all enforcement until the validation step runs
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It allows new rows to violate the constraint briefly
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The lock is unchanged — <code>ACCESS EXCLUSIVE</code>, the same as any
+          <code>ADD CHECK</code>. What goes away is the verification scan, so the
+          lock is held for an instant. And enforcement is <em>immediate</em>: the
+          constraint applies to every new insert and update from the moment it
+          exists, which is precisely why the later validation can use a weak
+          lock.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can <code>VALIDATE CONSTRAINT</code> run under a weak lock?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It samples the rows rather than reading every single one
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              New writes are already enforced, so only old rows matter
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It runs in the background and retries on any conflict
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It reads a snapshot and so ignores all concurrent changes
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The manual’s own reasoning: “it knows that other transactions will be
+          enforcing the constraint for rows that they insert or update; only
+          pre-existing rows need to be checked”. The set of possible violators is
+          closed at the moment of the <code>ADD CONSTRAINT</code> and can only
+          shrink, so the scan needs no protection from writers. It is a full scan,
+          not a sample, and it is synchronous.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        The two-step pattern gets scans out from under strong locks. Index
+        creation has the same problem and a different answer — one with a much
+        larger set of operational traps attached.
+        <a href="0007-concurrent-index-builds.html">Lesson 7</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/sql-altertable.html"
+              >PostgreSQL 16, <code>ALTER TABLE</code></a
+            >
+            — read the <code>ADD table_constraint</code>,
+            <code>VALIDATE CONSTRAINT</code> and
+            <code>SET NOT NULL</code> subform descriptions in sequence, then the
+            Notes. Watching the four-step recipe assemble from three widely
+            separated paragraphs is the actual lesson; recipes you assemble
+            yourself are the ones you can regenerate later.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Good challenge to set it: ask what goes
+          wrong if you run the four steps in one transaction, or if you merge
+          steps 3 and 4 into a single <code>ALTER TABLE</code>. Both have real
+          answers that follow from things you already know, and working them out
+          beats being told.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            The four-step sequence is the single most reusable thing in this
+            topic. Do not re-read it — tomorrow, write it out from memory and
+            then check, including which lock each step takes. That one retrieval
+            is worth more than three readings. Then check yourself against the
+            written-out version in the
+            <a href="../reference/safe-migration-recipes.html"
+              >safe migration recipes</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0005-the-convoy.html">5. The convoy</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0007-concurrent-index-builds.html"
+              >7. Concurrent index builds</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

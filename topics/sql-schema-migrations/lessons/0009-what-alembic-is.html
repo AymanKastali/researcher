@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>9. What Alembic is — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0009</span>
+        <h1>What Alembic is</h1>
+        <p class="lesson-mission">
+          Orientation, from zero: a revision file, a pointer, and a table with
+          one column. Four ideas, and everything in lessons 10–16 is a
+          consequence of them.
+        </p>
+      </header>
+
+      <p class="lead">
+        The second half of this topic takes one tool apart. Before that can be
+        interesting, the tool has to exist for you — so this lesson establishes
+        the four things Alembic is made of and nothing else. If you have written
+        migrations before, it is five minutes. If you have not, it is the lesson
+        the rest depends on.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Alembic provides for the creation, management, and invocation of
+            <em>change management</em> scripts for a relational database, using
+            SQLAlchemy as the underlying engine.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/tutorial.html"
+            >Alembic documentation, Tutorial</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">A caveat that applies to every Alembic quote in this topic</span>
+        <p>
+          There is <strong>no published Alembic 1.14 documentation</strong>.
+          <code>/en/rel_1_14/</code> is not published and
+          <code>/en/release-1.14.0/</code> returns HTTP 404.
+        </p>
+        <p>
+          Every documentation quotation in lessons 9–16 is therefore from the
+          <em>current</em> published docs, checked against
+          <strong>1.14.1 source read on disk</strong>. Where the two disagree —
+          and they do, in five specific places — these lessons prefer the source
+          and say so at the time.
+          <a href="0017-reading-the-evidence.html">Lesson 17</a> collects the
+          disagreements.
+        </p>
+      </div>
+
+      <h2>1. A revision is a file with two functions</h2>
+
+      <p>
+        Alembic generates migration scripts from a template. This is the real
+        template shipped in 1.14.1 — not a paraphrase:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/templates/generic/script.py.mako (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    ${downgrades if downgrades else "pass"}</code></pre>
+      </div>
+
+      <p>
+        Filled in, a real migration file is unremarkable — which is the point.
+        It is a Python module with two functions and four module-level
+        variables:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-python">"""add shipped_at to orders
+
+Revision ID: 4f2c1a9b8e30
+Revises: 7d81b0c5a112
+Create Date: 2026-09-14 11:02:41.883617
+
+"""
+from alembic import op
+import sqlalchemy as sa
+
+revision: str = "4f2c1a9b8e30"
+down_revision: Union[str, None] = "7d81b0c5a112"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.add_column("orders", sa.Column("shipped_at", sa.DateTime(timezone=True)))
+
+
+def downgrade() -> None:
+    op.drop_column("orders", "shipped_at")</code></pre>
+      </div>
+
+      <p>
+        The identifier is not meaningful — it is twelve hex characters,
+        <code>uuid.uuid4().hex[-12:]</code>
+        (<code>alembic/util/langhelpers.py:232-233</code>). And it may not
+        contain <code>@</code>, <code>-</code> or <code>+</code>, because those
+        three characters are reserved for an addressing syntax you will meet in
+        <a href="0011-branches-merges-and-heads.html">lesson 11</a>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/script/revision.py:47-48 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">_relative_destination = re.compile(r"(?:(.+?)@)?(\w+)?((?:\+|-)\d+)")
+_revision_illegal_chars = ["@", "-", "+"]</code></pre>
+      </div>
+
+      <h2>2. <code>down_revision</code> is the whole ordering mechanism</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            This is how Alembic knows the correct order in which to apply
+            migrations. When we create the next revision, the new file’s
+            <code>down_revision</code> identifier would point to this one.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/tutorial.html"
+            >Alembic documentation, Tutorial</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">A linked list, pointing backwards</span>
+        <p>
+          Each file names its predecessor. There is no ordering file, no
+          sequence number, no timestamp that decides anything — the order is
+          <em>reconstructed</em> from the pointers every time Alembic runs.
+        </p>
+        <p>
+          A <code>down_revision</code> of <code>None</code> marks the first file,
+          the <strong>base</strong>. A revision nothing points down to is a
+          <strong>head</strong>. Those two words are the vocabulary of the whole
+          second half.
+        </p>
+      </div>
+
+      <p>
+        A chain of four revisions, then, is just four files pointing backwards:
+      </p>
+
+      <figure>
+        <div class="figure-body">
+          <div class="code">
+            <div class="code-meta">
+              <span class="code-language">Text</span>
+              <span class="code-illustrative">Written for this lesson</span>
+            </div>
+            <pre><code>  base            7d81b0c5a112     4f2c1a9b8e30     9c03ee41d7ab
+   |                   |                |                |
+  (None) &lt;---------- down_rev &lt;------ down_rev &lt;------ down_rev
+                                                          |
+                                                        head</code></pre>
+          </div>
+        </div>
+        <figcaption>
+          Four revisions. Alembic walks the <code>down_revision</code> pointers
+          to build this graph on every run.
+        </figcaption>
+      </figure>
+
+      <h2>3. <code>alembic_version</code> records where the database is</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Alembic first checked if the database had a table called
+            <code>alembic_version</code>, and if not, created it. It looks in
+            this table for the current version, if any.
+          </p>
+        </blockquote>
+        <figcaption>Alembic documentation, Tutorial.</figcaption>
+      </figure>
+
+      <p>
+        The structure is four lines of source. In 1.14.1 it moved behind a
+        dialect hook, <code>DefaultImpl.version_table_impl</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/impl.py:161-172 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">vt = Table(
+    version_table,
+    MetaData(),
+    Column("version_num", String(32), nullable=False),
+    schema=version_table_schema,
+)
+if version_table_pk:
+    vt.append_constraint(
+        PrimaryKeyConstraint(
+            "version_num", name=f"{version_table}_pkc"
+        )
+    )</code></pre>
+      </div>
+
+      <p>So on PostgreSQL the table Alembic creates for you is exactly this:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson, from the source above</span>
+        </div>
+        <pre><code class="language-sql">CREATE TABLE alembic_version (
+    version_num VARCHAR(32) NOT NULL,
+    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+)</code></pre>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Two details worth carrying forward</span>
+        <p>
+          <strong>The row count is not always one.</strong> It is the number of
+          current heads — one row per unmerged branch. That is why the column is
+          not declared unique-to-one-row, and why
+          <code>get_current_revision()</code> raises rather than guess when there
+          is more than one.
+        </p>
+        <p>
+          <strong>The width is not a contract.</strong> The column
+          <em>name</em> is — the hook’s own docstring requires a replacement
+          table to contain “at least a single string-holding column named
+          <code>version_num</code>”. But <code>32</code> is a bare literal with
+          no named constant anywhere in the package, and generated ids use only
+          12 of those characters.
+        </p>
+      </div>
+
+      <h2>4. <code>upgrade</code> runs the ones that have not run</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The <code>alembic upgrade</code> command will run upgrade operations,
+            proceeding from the current database revision, in this example
+            <code>None</code>, to the given target revision.
+          </p>
+        </blockquote>
+        <figcaption>Alembic documentation, Tutorial.</figcaption>
+      </figure>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>The commands referred to in the rest of this topic.</caption>
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>alembic upgrade head</code></td>
+              <td>Run every revision the database has not yet run</td>
+            </tr>
+            <tr>
+              <td><code>alembic downgrade -1</code></td>
+              <td>Reverse one revision, using its <code>downgrade()</code></td>
+            </tr>
+            <tr>
+              <td><code>alembic revision -m "…"</code></td>
+              <td>Write a new empty revision file from the template above</td>
+            </tr>
+            <tr>
+              <td><code>alembic revision --autogenerate</code></td>
+              <td>
+                Write one with the body filled in by comparing your models to the
+                database —
+                <a href="0012-what-autogenerate-cannot-see.html">lesson 12</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>alembic upgrade head --sql</code></td>
+              <td>
+                Print the SQL instead of running it —
+                <a href="0014-offline-mode-is-a-compiler.html">lesson 14</a>
+              </td>
+            </tr>
+            <tr>
+              <td><code>alembic current</code>, <code>alembic history</code></td>
+              <td>Report where the database is, and what exists</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>That is the whole model</h2>
+
+      <p>
+        Files that point backwards, a table holding where you are, and a command
+        that runs the difference. Everything from here on is a question about the
+        gaps in that sentence — <em>which</em> difference,
+        <em>in what transaction</em>, and <em>what happens when two processes
+        compute the same difference at once</em>.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          How does Alembic determine the order to apply migrations in?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              By the creation timestamp recorded in each file header
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              By following each file’s own pointer to its predecessor
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              By the filename prefix that numbers them in sequence
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              By the order in which version rows were inserted
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>down_revision</code> is the entire mechanism — the graph is
+          rebuilt from the pointers on every run. The header timestamp is a
+          comment; filenames carry a slug rather than a sequence; and
+          <code>alembic_version</code> holds only where the database currently
+          is, not a history. This is why two people can add revisions on separate
+          branches and produce two heads rather than a conflict.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          How many rows can <code>alembic_version</code> hold?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Exactly one, enforced by the table’s own primary key
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              One for each head, so several when branches exist
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One for each revision that has ever been applied
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              One for each revision file currently present on disk
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The table holds the current heads — one row per unmerged branch. The
+          primary key is on <code>version_num</code>, which prevents duplicate
+          values rather than multiple rows. It is not a history: applied
+          revisions leave no trace once superseded, which is exactly why
+          <code>downgrade</code> needs the files rather than the table.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        “It looks in this table for the current version” — and when does it
+        <em>write</em> to it? Before your migration body or after? Inside the
+        same transaction or outside it? The answer is not configurable, not
+        documented, and decides what a failed deploy leaves behind.
+        <a href="0010-where-the-version-write-sits.html">Lesson 10</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/tutorial.html"
+              >Alembic documentation, Tutorial</a
+            >
+            — work through it end to end, ideally against a throwaway SQLite or
+            PostgreSQL database. It is the one place in this topic where
+            <em>doing</em> beats reading: generate two revisions, run
+            <code>upgrade head</code>, then look inside
+            <code>alembic_version</code> yourself. Fifteen minutes, and lessons
+            10–16 will land differently.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. If you do run the tutorial, bring back
+          anything that surprised you — especially anything about
+          <code>env.py</code>, which this topic mentions repeatedly as “the place
+          you put things” without ever fully explaining it. It is worth a
+          conversation of its own.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This lesson is orientation, not argument, so it does not need
+            spacing — go on to lesson 10 in the same sitting if you have the
+            appetite. But do not skip the four words that carry the rest:
+            <strong>revision, <code>down_revision</code>, head, base</strong> —
+            all four are defined in the
+            <a href="../reference/glossary.html">glossary</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0008-expand-and-contract.html">8. Expand and contract</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0010-where-the-version-write-sits.html"
+              >10. Where the version write sits</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

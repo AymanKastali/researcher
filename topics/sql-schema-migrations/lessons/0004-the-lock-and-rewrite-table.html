@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>4. The lock and rewrite table — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0004</span>
+        <h1>The lock and rewrite table</h1>
+        <p class="lesson-mission">
+          Two independent costs — which lock, and how much work under it — and
+          the three rows where everyone’s intuition is wrong. This is the table
+          you will come back to.
+        </p>
+      </header>
+
+      <p class="lead">
+        Every <code>ALTER TABLE</code> subform has two properties that decide
+        whether it is safe, and they are independent of each other. The lock
+        decides <em>who waits</em>. The work — rewrite, scan, or neither —
+        decides <em>how long they wait</em>. A statement can hold the strongest
+        lock in the system and be perfectly safe because it holds it for a
+        millisecond, and it is the pairing, never either half alone, that tells
+        you what will happen.
+      </p>
+
+      <div class="definition">
+        <span class="term">The three grades of work</span>
+        <p>
+          <strong>Metadata-only</strong> — the catalog changes, no row is
+          touched. Duration independent of table size.
+        </p>
+        <p>
+          <strong>Scan</strong> — every row is read to verify something, but
+          nothing is written. “Adding a CHECK or NOT NULL constraint requires
+          scanning the table to verify that existing rows meet the constraint,
+          but does not require a table rewrite.”
+        </p>
+        <p>
+          <strong>Rewrite</strong> — the entire table and all its indexes are
+          written out again. The expensive one, and — unlike a scan — there is no
+          option anywhere that removes it.
+        </p>
+        <p class="attribution">
+          Quotation from PostgreSQL 16,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code>, Notes</a
+          >.
+        </p>
+      </div>
+
+      <h2>The table</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            PostgreSQL 16 operations by lock and by work. Where the reference
+            page names no lock, the answer is
+            <code>ACCESS EXCLUSIVE</code> by the Description rule from lesson 3.
+          </caption>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Lock</th>
+              <th>Rewrites?</th>
+              <th>Scans?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ADD COLUMN</code>, no default</td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>ADD COLUMN … DEFAULT &lt;non-volatile&gt;</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>ADD COLUMN … DEFAULT &lt;volatile&gt;</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td><strong>Yes</strong></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>SET NOT NULL</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>Yes, unless a valid <code>CHECK</code> proves it</td>
+            </tr>
+            <tr>
+              <td><code>ALTER COLUMN … TYPE</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>Yes, unless binary coercible</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>ADD CHECK</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>ADD CHECK … NOT VALID</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td><strong>No</strong></td>
+            </tr>
+            <tr>
+              <td><code>ADD FOREIGN KEY</code></td>
+              <td><strong><code>SHARE ROW EXCLUSIVE</code></strong>, both tables</td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>ADD FOREIGN KEY … NOT VALID</code></td>
+              <td><code>SHARE ROW EXCLUSIVE</code>, both tables</td>
+              <td>No</td>
+              <td><strong>No</strong></td>
+            </tr>
+            <tr>
+              <td><code>VALIDATE CONSTRAINT</code></td>
+              <td>
+                <strong><code>SHARE UPDATE EXCLUSIVE</code></strong>
+                (+ <code>ROW SHARE</code> on the referenced table for an FK)
+              </td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>CREATE INDEX</code></td>
+              <td><code>SHARE</code></td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>CREATE INDEX CONCURRENTLY</code></td>
+              <td><code>SHARE UPDATE EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>Twice</td>
+            </tr>
+            <tr>
+              <td><code>DROP INDEX</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>—</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td>
+                <code>ADD COLUMN</code> with identity or generated-stored
+              </td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td colspan="2"><strong>Not documented</strong> — see below</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">One cell is honestly empty</span>
+        <p>
+          PostgreSQL 16 does not state whether <code>ADD COLUMN</code> with an
+          identity or <code>GENERATED … STORED</code> specification rewrites the
+          table. The <code>ALTER TABLE</code> page’s rewrite discussion covers
+          volatile defaults and type changes and stops there.
+        </p>
+        <p>
+          The cell is marked undocumented rather than guessed. If you need the
+          answer, test it on a copy — and treat any blog post that states it
+          confidently as unsourced until it shows you the sentence.
+        </p>
+      </div>
+
+      <h2>The three rows that surprise people</h2>
+
+      <h3>1. A default does not mean a rewrite — and the criterion is broader than “constant”</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When a column is added with ADD COLUMN and a non-volatile DEFAULT is
+            specified, the default is evaluated at the time of the statement and
+            the result stored in the table’s metadata. That value will be used
+            for the column for all existing rows. If no DEFAULT is specified,
+            NULL is used. In neither case is a rewrite of the table required.
+          </p>
+          <p>
+            Adding a column with a volatile DEFAULT or changing the type of an
+            existing column will require the entire table and its indexes to be
+            rewritten.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code>, Notes</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">The word is “non-volatile”, not “constant”</span>
+        <p>
+          Any <code>IMMUTABLE</code> or <code>STABLE</code> expression qualifies
+          for the fast path — not only a literal. The PostgreSQL tutorial says
+          “constant default value”, which is <em>narrower</em> than what the
+          reference page promises.
+        </p>
+        <p>
+          When two pages of the same manual disagree in precision, the reference
+          page is the one to trust. This fast path arrived in PostgreSQL 11; on
+          10 and earlier, every default rewrote.
+        </p>
+      </div>
+
+      <p>
+        So <code>ADD COLUMN status text DEFAULT 'pending'</code> is
+        metadata-only, and so is a default calling an <code>IMMUTABLE</code>
+        function. <code>ADD COLUMN created_at timestamptz DEFAULT now()</code> —
+        <code>now()</code> being <code>STABLE</code>, not volatile — also takes
+        the fast path. <code>DEFAULT random()</code> does not: it rewrites,
+        because each row must get a different value.
+      </p>
+
+      <h3>2. <code>ADD FOREIGN KEY</code> takes a weaker lock, on a table you did not name</h3>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Although most forms of ADD table_constraint require an ACCESS
+            EXCLUSIVE lock, ADD FOREIGN KEY requires only a SHARE ROW EXCLUSIVE
+            lock. Note that ADD FOREIGN KEY also acquires a SHARE ROW EXCLUSIVE
+            lock on the referenced table, in addition to the lock on the table on
+            which the constraint is declared.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <p>
+        Two facts in one paragraph, and the second is the one that bites. Run the
+        lock through lesson 3’s table: <code>SHARE ROW EXCLUSIVE</code> permits
+        reads and blocks every <code>INSERT</code>, <code>UPDATE</code> and
+        <code>DELETE</code> — <strong>on both tables</strong>.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">The shape of the surprise</span>
+        <p>
+          Adding a foreign key to a small child table blocks writes to the
+          <strong>large parent table</strong> you never mentioned in the
+          statement. Your migration touches
+          <code>order_line_items</code>; your outage is on <code>orders</code>.
+        </p>
+        <p>
+          And it is self-exclusive, so two foreign keys pointing at the same
+          parent serialise against each other — two “small” migrations deployed
+          together take twice as long as either alone.
+        </p>
+      </div>
+
+      <h3>3. <code>NOT VALID</code> removes the scan, not the lock</h3>
+
+      <p>
+        Look at the table again.
+        <code>ADD FOREIGN KEY … NOT VALID</code> takes
+        <code>SHARE ROW EXCLUSIVE</code> — but that is because
+        <em>every</em> <code>ADD FOREIGN KEY</code> does, valid or not.
+        <code>ADD CHECK … NOT VALID</code> still takes
+        <code>ACCESS EXCLUSIVE</code>: the strongest lock in the system.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">Why it is safe anyway, and why that matters</span>
+        <p>
+          <code>ADD CHECK … NOT VALID</code> is safe because the lock is held
+          <strong>briefly</strong> — no scan happens under it — and
+          <em>not</em> because the lock is weak.
+        </p>
+        <p>
+          That distinction is not pedantry. It decides whether
+          <code>lock_timeout</code> is optional or mandatory around the
+          statement, because a lock you only need for a millisecond is still a
+          lock you might wait an hour to get.
+          <a href="0005-the-convoy.html">Lesson 5</a> is about that hour.
+        </p>
+      </div>
+
+      <h2>MySQL exposes the same decisions as a matrix</h2>
+
+      <p>
+        Worth one look, because seeing another vendor decompose the same problem
+        differently sharpens what PostgreSQL’s two properties actually are. MySQL
+        publishes five columns per operation:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Selected rows from MySQL 8.0’s Online DDL matrix. An asterisk marks a
+            footnoted condition in the original.
+          </caption>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Instant</th>
+              <th>In Place</th>
+              <th>Rebuilds Table</th>
+              <th>Permits Concurrent DML</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Adding a column</td>
+              <td>Yes*</td>
+              <td>Yes</td>
+              <td>No*</td>
+              <td>Yes*</td>
+            </tr>
+            <tr>
+              <td>Renaming a column</td>
+              <td>Yes*</td>
+              <td>Yes</td>
+              <td>No</td>
+              <td>Yes*</td>
+            </tr>
+            <tr>
+              <td><strong>Changing the column data type</strong></td>
+              <td><strong>No</strong></td>
+              <td><strong>No</strong></td>
+              <td><strong>Yes</strong></td>
+              <td><strong>No</strong></td>
+            </tr>
+            <tr>
+              <td>Extending VARCHAR column size</td>
+              <td>No</td>
+              <td>Yes</td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Creating or adding a secondary index</td>
+              <td>No</td>
+              <td>Yes</td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td>Adding a foreign key constraint</td>
+              <td>No</td>
+              <td>Yes*</td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        Source:
+        <a
+          class="citation"
+          href="https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-operations.html"
+          >MySQL 8.0, 17.12.1 Online DDL Operations</a
+        >.
+      </p>
+
+      <p>
+        Changing a column’s data type is the only common column operation that is
+        negative in every column — MySQL’s equivalent of PostgreSQL’s
+        <code>ACCESS EXCLUSIVE</code> rewrite. Note the asymmetry, though:
+        PostgreSQL can skip the rewrite when the new type is binary coercible,
+        while MySQL documents no such exception beyond the narrow “Extending
+        VARCHAR column size” row.
+      </p>
+
+      <p>
+        One asterisk carries real weight, and it is a different <em>kind</em> of
+        safety than it looks:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The INPLACE algorithm is supported when foreign_key_checks is
+            disabled. Otherwise, only the COPY algorithm is supported.
+          </p>
+        </blockquote>
+        <figcaption>Same page, footnote to the foreign-key row.</figcaption>
+      </figure>
+
+      <p>
+        MySQL buys onlineness by <strong>skipping</strong> the verification.
+        PostgreSQL’s <code>NOT VALID</code> <strong>defers</strong> it. Those are
+        different safety properties wearing similar-looking table rows, and the
+        difference is the whole subject of
+        <a href="0006-not-valid-and-validate.html">lesson 6</a>.
+      </p>
+
+      <div class="aside note">
+        <span class="label">The one thing MySQL has that PostgreSQL does not</span>
+        <p>
+          “Specifying an ALGORITHM clause requires the operation to use the
+          specified algorithm for clauses and storage engines that support it, or
+          fail with an error otherwise.”
+          <a class="citation" href="https://dev.mysql.com/doc/refman/8.0/en/alter-table.html"
+            >15.1.9 <code>ALTER TABLE</code></a
+          >
+        </p>
+        <p>
+          <code>ALGORITHM=INPLACE</code> and <code>LOCK=NONE</code> are
+          <strong>assertions, not requests</strong>: they turn a silent downgrade
+          into a loud failure. PostgreSQL has nothing at statement level that
+          does this. You approximate it with <code>lock_timeout</code> and
+          <code>NOWAIT</code>, which is a strictly weaker tool — it bounds the
+          waiting, not the work.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which of these rewrites a large PostgreSQL 16 table?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Adding a column whose default is a literal string
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Adding a column whose default is a volatile function
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Adding a CHECK constraint that is marked NOT VALID
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Adding a foreign key that references another large table
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          A volatile default such as <code>gen_random_uuid()</code> needs a
+          distinct value per row, so the table must be rewritten. A non-volatile
+          default — a literal, or any <code>IMMUTABLE</code> or
+          <code>STABLE</code> expression — is evaluated once and stored in
+          metadata. The two constraint additions scan or skip the scan; neither
+          rewrites, because “adding a CHECK or NOT NULL constraint […] does not
+          require a table rewrite”.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You add a foreign key from a small table to a huge one. What is
+          blocked?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Reads and writes on the small table you are altering
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Writes to both of the tables, including the referenced one
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Writes to the small table named in the statement only
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Nothing, since foreign keys take a weak lock on both
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>ADD FOREIGN KEY</code> takes <code>SHARE ROW EXCLUSIVE</code> on
+          the altered table <em>and</em> on the referenced table. That mode
+          conflicts with <code>ROW EXCLUSIVE</code>, so writes block on both;
+          it does not conflict with <code>ACCESS SHARE</code>, so reads continue.
+          The weak-lock fact in the last answer is real but incomplete — weak is
+          not the same as harmless.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        The table says <code>ADD CHECK … NOT VALID</code> holds
+        <code>ACCESS EXCLUSIVE</code> for a millisecond. That sounds free. It is
+        not, and the reason is the single most consequential fact in this topic —
+        and the one PostgreSQL refuses to write down.
+        <a href="0005-the-convoy.html">Lesson 5</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/sql-altertable.html"
+              >PostgreSQL 16, <code>ALTER TABLE</code></a
+            >
+            — read the <strong>Notes</strong> section in full. It is short, it is
+            where every rewrite rule in this lesson comes from, and reading it
+            once yourself is the difference between having this table and being
+            able to regenerate it. Then check one subform of your choice against
+            the row above.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Bring it a real <code>ALTER TABLE</code>
+          and ask it to place the statement in this table — lock, rewrite, scan —
+          and to name the sentence in the manual that puts it there. If it cannot
+          name a sentence, that is the answer being marked undocumented, which is
+          a legitimate outcome here.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is a reference-shaped lesson, and rereading tables does not
+            build retention. Instead: tomorrow, before you open lesson 5, write
+            down from memory the three rows that surprise people and what is
+            surprising about each. That retrieval is worth more than a second
+            read of the table. The table itself is lookup material and lives in
+            the
+            <a href="../reference/lock-and-rewrite-ledger.html"
+              >lock and rewrite ledger</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0003-lock-modes.html">3. Lock modes</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0005-the-convoy.html">5. The convoy</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/quiz.js"></script>
+  </body>
+</html>

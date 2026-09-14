@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Unverified claims — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Unverified claims</h1>
+        <p class="page-blurb">
+          The seven things in this topic that rest on something weaker than a
+          vendor sentence, plus the questions nobody answers at all. Collected so
+          the gaps are countable.
+        </p>
+      </header>
+
+      <p class="lead">
+        Everything else in this topic carries a quotation. These do not, and each
+        is flagged in place as well as here. If a future version of these lessons
+        quietly upgrades one of them to a confident assertion, that is a
+        regression.
+      </p>
+
+      <h2>The seven</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What is claimed, what it actually rests on, and where.
+          </caption>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Claim</th>
+              <th>What it rests on</th>
+              <th>Lesson</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>PostgreSQL DDL is transactional</td>
+              <td>
+                <strong>Inference.</strong> No affirmative sentence exists. The
+                manual defines a transaction block without carving DDL out, then
+                enumerates across a dozen pages the statements that cannot run
+                inside one — an enumeration that would be pointless otherwise
+              </td>
+              <td><a href="../lessons/0001-ddl-inside-a-transaction.html">1</a></td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>
+                What a failed statement leaves the session in
+              </td>
+              <td>
+                <strong>A server error message, not documentation.</strong>
+                <code
+                  >current transaction is aborted, commands ignored until end of
+                  transaction block</code
+                >
+                appears on no reference page. The nearest documented description
+                is in the wire-protocol chapter
+              </td>
+              <td>
+                <a href="../lessons/0002-what-a-half-failed-migration-leaves.html">2</a>
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>
+                <strong>The lock-queue convoy</strong> — a waiting
+                <code>ACCESS EXCLUSIVE</code> request blocks readers behind it
+              </td>
+              <td>
+                <strong>Cited by analogy from MySQL.</strong> The single most
+                consequential operational fact in the first half, and PostgreSQL
+                never states it. MySQL documents the equivalent metadata-lock
+                behaviour with a three-session worked example
+              </td>
+              <td><a href="../lessons/0005-the-convoy.html">5</a></td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>
+                Whether <code>ADD COLUMN</code> with identity or
+                generated-stored rewrites
+              </td>
+              <td>
+                <strong>Undocumented.</strong> PostgreSQL 16’s rewrite discussion
+                covers volatile defaults and type changes and stops. The ledger
+                marks the cell empty rather than guessing
+              </td>
+              <td><a href="../lessons/0004-the-lock-and-rewrite-table.html">4</a></td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>Expand/contract as a pattern</td>
+              <td>
+                <strong>Practitioner writing.</strong> No vendor manual names or
+                endorses it. Its <em>mechanics</em> are grounded — every step is
+                a documented safe operation — but the pattern has no vendor owner
+              </td>
+              <td><a href="../lessons/0008-expand-and-contract.html">8</a></td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>Every Alembic documentation quotation in this topic</td>
+              <td>
+                <strong>From a newer release.</strong> There is no published
+                Alembic 1.14 documentation, so all quotations are from the
+                current docs, checked against 1.14.1 source. Six disagreements
+                recorded below
+              </td>
+              <td><a href="../lessons/0009-what-alembic-is.html">9</a>–<a href="../lessons/0016-concurrent-deploys.html">16</a></td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>
+                “Run migrations as a separate step, before rolling out
+                instances”
+              </td>
+              <td>
+                <strong>One maintainer comment.</strong> Not in Alembic’s
+                documentation (proved by exhaustive search), not in SQLAlchemy’s
+                or PostgreSQL’s. A discussion-tracker reply dated 7 March 2024 is
+                its entire first-party basis
+              </td>
+              <td><a href="../lessons/0016-concurrent-deploys.html">16</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The two arguments from absence, and how they were made</h2>
+
+      <p>
+        Claims 3 and 7 are claims that a source says <em>nothing</em>. That is
+        sound only if the search is exhaustive and a control group hits.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Run against the live search index, 14 September 2026 (169,521 bytes, HTTP 200)</span>
+        </div>
+        <pre><code>https://alembic.sqlalchemy.org/en/latest/searchindex.js
+
+advisori      0        (control group, same index:)
+concurr       0          batch        3
+mutex         0          sqlite       3
+lock          0          stamp        3
+kubernet      0          offlin       2
+deploy        1</code></pre>
+      </div>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Shell</span>
+          <span class="code-illustrative">Run against the installed 1.14.1 tree, 14 September 2026</span>
+        </div>
+        <pre><code class="language-bash">$ grep -rniE "advisory|for_update|for update|lock" alembic/ | wc -l
+35
+$ grep -rniE "advisory|for_update|for update|lock" alembic/ | grep -viE "block" | wc -l
+0</code></pre>
+      </div>
+
+      <p class="small-print">
+        All 35 hits are the English word <em>block</em>. The right-hand control
+        column in the first block is what makes the five zeroes meaningful — five
+        zeroes alone are equally consistent with a broken search.
+      </p>
+
+      <h2>Documentation/source disagreements on Alembic 1.14.1</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The source is preferred in every case, and the disagreement is stated
+            in the lesson where it arises.
+          </caption>
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Documentation</th>
+              <th>1.14.1 source</th>
+              <th>Kind</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CHECK-constraint autogenerate</td>
+              <td>Listed as detectable</td>
+              <td>
+                <code>grep CheckConstraint compare.py</code> → <strong>0</strong>
+              </td>
+              <td>Version gap (added 1.19.0)</td>
+            </tr>
+            <tr>
+              <td>Unnamed CHECK in batch mode</td>
+              <td>“As of 1.20, it emits a warning”</td>
+              <td>A bare <code>pass</code>, silent</td>
+              <td>Version gap</td>
+            </tr>
+            <tr>
+              <td><code>alembic current --check-heads</code></td>
+              <td>Documented in the cookbook</td>
+              <td>Does not exist</td>
+              <td>Version gap (added 1.17.1)</td>
+            </tr>
+            <tr>
+              <td>Batch temp table name</td>
+              <td><code>_alembic_batch_temp</code></td>
+              <td>
+                <code>_alembic_tmp_&lt;tablename&gt;</code>, truncated to 50
+              </td>
+              <td><strong>Error</strong></td>
+            </tr>
+            <tr>
+              <td><code>get_bind()</code> offline</td>
+              <td>
+                “In a SQL script context, this value is <code>None</code>. [TODO:
+                verify this]”
+              </td>
+              <td>A <code>MockConnection</code>, never <code>None</code></td>
+              <td><strong>Error</strong>, self-flagged</td>
+            </tr>
+            <tr>
+              <td>
+                <code>batch_alter_table</code> docstring on CHECK constraints
+              </td>
+              <td>Pre-1.7 text: “will currently not copy CHECK constraints”</td>
+              <td>Named CHECK constraints <em>are</em> copied</td>
+              <td><strong>Stale docstring</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>What nobody publishes at all</h2>
+
+      <div class="aside warning">
+        <span class="label">Timings</span>
+        <p>
+          <strong>No primary source gives one.</strong> How long a rewrite, a
+          scan, or a concurrent index build takes on a table of a given size is
+          documented by no vendor.
+        </p>
+        <p>
+          No number appears anywhere in this topic, and none should be added. The
+          honest answer to “how long will this migration take?” is: it depends on
+          your hardware and your table, nobody has published a model, and the way
+          to find out is to restore a copy and run it.
+        </p>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Deployment mechanics</span>
+        <p>
+          Kubernetes init containers, Job-before-Deployment ordering, Helm
+          pre-install hooks, and the rest of the folklore around running
+          migrations in a pipeline are <strong>unverified practitioner
+          consensus</strong>. No first-party source for any of it was found, and
+          none is named here rather than cite one that was not read.
+        </p>
+        <p>
+          The same applies to the specific advisory-lock <code>env.py</code>
+          recipes circulating on issue #633: those are <em>user</em> comments, not
+          covered by Alembic’s test suite, and the maintainer explicitly declined
+          to endorse them. One commenter there reports that advisory locking did
+          not fully prevent concurrent-upgrade errors in their testing; that
+          claim was not reproduced and is not repeated as fact.
+        </p>
+      </div>
+
+      <h2>How to re-check any of this</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Shell</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-bash"># Pin the version and read it -- every source claim in this topic came from here.
+uv pip install --target ./alembic-src "alembic==1.14.1" "SQLAlchemy==2.0.36"
+grep -n '__version__' alembic-src/alembic/__init__.py
+
+# Detection surface.
+grep -rn 'comparators.dispatch_for' alembic-src/alembic/
+
+# Absence -- always with a control group.
+grep -rniE "advisory|for_update|lock" alembic-src/alembic/ | grep -viE "block" | wc -l
+
+# A PostgreSQL claim, against the version you actually run:
+#   /docs/16/sql-altertype.html   vs   /docs/11/sql-altertype.html</code></pre>
+      </div>
+
+      <p class="small-print">
+        Companion to
+        <a href="../lessons/0017-reading-the-evidence.html">lesson 17</a>, which
+        teaches the grading this page applies.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

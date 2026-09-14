@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>1. DDL inside a transaction — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0001</span>
+        <h1>DDL inside a transaction</h1>
+        <p class="lesson-mission">
+          The property every safe migration rests on, established the only way
+          the manual allows — negatively. Plus the first lesson in sourcing:
+          what to do when the sentence you want to quote does not exist.
+        </p>
+      </header>
+
+      <p class="lead">
+        Start with a negative result, because it shapes everything after it.
+        “PostgreSQL has transactional DDL” is the first thing anyone says about
+        migrations on PostgreSQL, and it is true. It is also
+        <strong>not a sentence you can quote</strong>. The PostgreSQL 16 manual
+        never affirmatively states it. Learning why, and what you can legitimately
+        say instead, is worth more than the fact itself.
+      </p>
+
+      <h2>What the manual actually gives you</h2>
+
+      <p>
+        Two things, neither of which mentions DDL. First, the definition of a
+        transaction block, which carves nothing out:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            BEGIN initiates a transaction block, that is, all statements after a
+            BEGIN command will be executed in a single transaction until an
+            explicit COMMIT or ROLLBACK is given.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-begin.html"
+            ><code>BEGIN</code>, Description</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>And second, the autocommit half, stated plainly in the tutorial:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            PostgreSQL actually treats every SQL statement as being executed
+            within a transaction. If you do not issue a BEGIN command, then each
+            individual statement has an implicit BEGIN and (if successful) COMMIT
+            wrapped around it.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/16/tutorial-transactions.html"
+            >3.4. Transactions</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        “All statements.” “Every SQL statement.” No exception is announced for
+        <code>CREATE TABLE</code> or <code>ALTER TABLE</code>. That is the whole
+        of the positive evidence, and on its own it is thin — an absence of
+        exclusion is not an inclusion.
+      </p>
+
+      <h2>The property is established by its exceptions</h2>
+
+      <p>
+        What the manual does instead is enumerate, across a dozen separate
+        reference pages, the specific statements that <em>cannot</em> run inside
+        a transaction block. Each sentence below is from that statement’s own
+        page.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Statements PostgreSQL 16 documents as forbidden inside a transaction
+            block. Each restriction is quoted from that statement’s own
+            reference page, linked in the first column.
+          </caption>
+          <thead>
+            <tr>
+              <th>Statement</th>
+              <th>Documented restriction</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-createindex.html"
+                  ><code>CREATE INDEX CONCURRENTLY</code></a
+                >
+              </td>
+              <td>
+                “a regular CREATE INDEX command can be performed within a
+                transaction block, but CREATE INDEX CONCURRENTLY cannot”
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-dropindex.html"
+                  ><code>DROP INDEX CONCURRENTLY</code></a
+                >
+              </td>
+              <td>
+                “regular DROP INDEX commands can be performed within a
+                transaction block, but DROP INDEX CONCURRENTLY cannot”
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-reindex.html"
+                  ><code>REINDEX CONCURRENTLY</code></a
+                >
+              </td>
+              <td>
+                “a regular REINDEX TABLE or REINDEX INDEX command can be
+                performed within a transaction block, but REINDEX CONCURRENTLY
+                cannot”
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-createdatabase.html"
+                  ><code>CREATE DATABASE</code></a
+                >
+              </td>
+              <td>“CREATE DATABASE cannot be executed inside a transaction block.”</td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-createtablespace.html"
+                  ><code>CREATE TABLESPACE</code></a
+                >
+              </td>
+              <td>
+                “CREATE TABLESPACE cannot be executed inside a transaction
+                block.”
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-vacuum.html"
+                  ><code>VACUUM</code></a
+                >
+              </td>
+              <td>“VACUUM cannot be executed inside a transaction block.”</td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-altersystem.html"
+                  ><code>ALTER SYSTEM</code></a
+                >
+              </td>
+              <td>
+                “since this command acts directly on the file system and cannot
+                be rolled back, it is not allowed inside a transaction block or
+                function”
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <a
+                  class="citation"
+                  href="https://www.postgresql.org/docs/16/sql-altertable.html"
+                  ><code>ALTER TABLE … DETACH PARTITION CONCURRENTLY</code></a
+                >
+              </td>
+              <td>“CONCURRENTLY cannot be run in a transaction block”</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The inference, stated as one</span>
+        <p>
+          That enumeration would be <strong>pointless</strong> if DDL in general
+          were not transactional. You do not carefully list the exceptions to a
+          rule that does not exist.
+        </p>
+        <p>
+          So the inference is safe — and it is still an inference. The honest
+          form of the claim is: <em>“PostgreSQL documents which statements cannot
+          run in a transaction block, and</em> <code>ALTER TABLE</code> <em>is not
+          among them.”</em> That sentence you can defend line by line.
+        </p>
+      </div>
+
+      <p>
+        Notice what the exceptions have in common. Every one of them either acts
+        outside the database’s own storage (<code>CREATE DATABASE</code>,
+        <code>CREATE TABLESPACE</code>, <code>ALTER SYSTEM</code> writing to the
+        file system) or deliberately drops out of transactional protection in
+        order to avoid blocking other sessions — which is what
+        <code>CONCURRENTLY</code> means in every one of the four places it
+        appears. That second group is the one you will actually meet, and
+        <a href="0002-what-a-half-failed-migration-leaves.html">lesson 2</a> is
+        about what it costs.
+      </p>
+
+      <h2>One entry that is no longer on the list</h2>
+
+      <p>
+        Migration folklore still says you cannot add a value to an enum type
+        inside a transaction. On PostgreSQL 16 you can. The restriction that
+        survives is much narrower:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If ALTER TYPE ... ADD VALUE (the form that adds a new value to an
+            enum type) is executed inside a transaction block, the new value
+            cannot be used until after the transaction has been committed.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertype.html"
+            ><code>ALTER TYPE</code>, Notes</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Same vendor, same page, pinned to PostgreSQL 11 — and this is what
+        dating a change in behaviour looks like, because one page alone cannot
+        show one:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            ALTER TYPE ... ADD VALUE (the form that adds a new value to an enum
+            type) cannot be executed inside a transaction block.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 11 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/11/sql-altertype.html"
+            ><code>ALTER TYPE</code>, Notes</a
+          >. The prohibition was relaxed in PostgreSQL 12.
+        </figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Advice outlives the thing it described</span>
+        <p>
+          Tooling and blog posts written against the PostgreSQL 11 wording are
+          still in wide circulation, and they read as confidently now as they did
+          when they were right. The defence is not scepticism, it is the habit of
+          checking the version-pinned page:
+          <code>/docs/16/</code> and <code>/docs/11/</code> are the same URL with
+          one number changed.
+        </p>
+      </div>
+
+      <h2>Transactional does not mean MVCC-clean</h2>
+
+      <p>
+        One more thing to know before trusting a rewrite inside a transaction.
+        Transactionality gets you rollback; it does not get you the isolation
+        you might assume comes with it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Some DDL commands, currently only TRUNCATE and the table-rewriting
+            forms of ALTER TABLE, are not MVCC-safe. This means that after the
+            truncation or rewrite commits, the table will appear empty to
+            concurrent transactions, if they are using a snapshot taken before
+            the DDL command committed.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/mvcc-caveats.html"
+            >13.6. Caveats</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The same paragraph explains why this is usually invisible — a transaction
+        that has already touched the table holds a lock that blocks the DDL
+        outright, so it never gets to observe the inconsistency — and why it is
+        not <em>always</em> invisible: the inconsistency shows up between the
+        rewritten table and other tables. Hold onto the phrase
+        <strong>“the table-rewriting forms of ALTER TABLE”</strong>. Which
+        subforms those are is the subject of
+        <a href="0004-the-lock-and-rewrite-table.html">lesson 4</a>, and it is the
+        most useful list in this topic.
+      </p>
+
+      <h2>What this buys a migration</h2>
+
+      <p>
+        The payoff is composition. On a transactional backend you can put five
+        schema changes in one transaction and know that either all five land or
+        none do — so a migration that fails on the fourth statement leaves a
+        database that looks exactly as it did before it started.
+      </p>
+
+      <p>
+        That guarantee is the reason migrations on PostgreSQL feel safe, and it
+        is worth noticing now that it is a <em>property of the engine</em>, not
+        of any migration tool. No tool can give it to you on a backend that does
+        not have it, and
+        <a href="0002-what-a-half-failed-migration-leaves.html">lesson 2</a>
+        shows what happens on a backend that does not.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          How does the PostgreSQL 16 manual establish that DDL is transactional?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A sentence on the ALTER TABLE reference page states it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It never says so; the enumerated exception list implies it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The BEGIN page names DDL among the statements it covers
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A note in the MVCC chapter guarantees it for ALTER
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          There is no affirmative sentence anywhere. The property is established
+          negatively: <code>BEGIN</code> is defined over “all statements” without
+          carving DDL out, and a dozen reference pages then enumerate the
+          specific statements that cannot run inside a transaction block — an
+          enumeration that would be pointless if the general rule did not hold.
+          The MVCC chapter says the opposite of the fourth answer: it is where
+          the caveat lives.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          On PostgreSQL 16, what happens to <code>ALTER TYPE … ADD VALUE</code>
+          inside a transaction?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It is rejected outright, exactly as it was before
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It runs, but the value is unusable until commit
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It runs, and the value is usable straight afterwards
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It runs, but is silently rolled back on commit
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The prohibition was relaxed in PostgreSQL 12; what survives is the
+          narrower restriction that “the new value cannot be used until after the
+          transaction has been committed”. The first answer is the PostgreSQL 11
+          wording, which is still what most circulating advice says — which is
+          the point of teaching the two pages side by side.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        If a migration inside a transaction either lands completely or not at
+        all, then a failure leaves nothing behind — which sounds like the end of
+        the story. It is not, for two reasons: the statements on the exception
+        list above are not protected by any transaction, and not every database
+        works this way at all.
+        <a href="0002-what-a-half-failed-migration-leaves.html">Lesson 2</a> is
+        about the mess.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/tutorial-transactions.html"
+              >PostgreSQL 16, 3.4. Transactions</a
+            >
+            — two pages, and the clearest statement of the implicit-transaction
+            model you will find. Then skim
+            <a class="citation" href="https://www.postgresql.org/docs/16/sql-begin.html"
+              ><code>BEGIN</code></a
+            >
+            with one question in mind: notice that it never mentions DDL, and
+            notice that you now know why that silence is the evidence rather than
+            a gap.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. The argument in this lesson is an inference
+          rather than a quotation, which makes it exactly the kind of claim worth
+          attacking — try to construct a reading of the manual in which DDL is
+          <em>not</em> transactional and see what breaks. If you find a
+          PostgreSQL page that states the property outright, that is a genuine
+          correction and worth bringing back.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Before opening lesson 2, close this page and try to say out loud what
+            the two halves of the argument are — what <code>BEGIN</code> gives
+            you, and what the exception list gives you. Getting it half right and
+            then checking is worth more than reading this page again now. The
+            list itself is lookup material and lives in the
+            <a href="../reference/lock-and-rewrite-ledger.html"
+              >lock and rewrite ledger</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Index</span>
+            <a href="../index.html">All lessons in this topic</a>
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0002-what-a-half-failed-migration-leaves.html"
+              >2. What a half-failed migration leaves</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/quiz.js"></script>
+  </body>
+</html>

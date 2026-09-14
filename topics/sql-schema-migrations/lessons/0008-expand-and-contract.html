@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>8. Expand and contract — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0008</span>
+        <h1>Expand and contract</h1>
+        <p class="lesson-mission">
+          The move you make when there is no safe form of the operation. Also the
+          first thing in this topic with <em>no vendor source at all</em> — so
+          this lesson is partly about how to teach something responsibly when the
+          manuals are silent.
+        </p>
+      </header>
+
+      <p class="lead">
+        Lessons 6 and 7 both moved work out from under a strong lock. Some
+        operations offer no such move. A table rewrite cannot be made cheap — no
+        option anywhere removes it. A column rename is instant and cheap, and
+        still breaks every running instance of your application the moment it
+        commits. For these, the only remaining play is
+        <strong>not to perform the operation</strong>.
+      </p>
+
+      <h2>First, the sourcing, because it is unusual</h2>
+
+      <div class="aside warning">
+        <span class="label">No vendor documents this pattern</span>
+        <p>
+          Searched across every PostgreSQL 16 and MySQL 8.0 page consulted for
+          this topic: <strong>zero hits</strong> for expand/contract, “parallel
+          change”, or any equivalent rolling-upgrade schema language. No vendor
+          documents, names, or endorses it.
+        </p>
+        <p>
+          What the manuals supply are its <em>primitives</em> — every one of
+          which you have already met, each individually vendor-sourced:
+          <code>NOT VALID</code> / <code>VALIDATE CONSTRAINT</code>,
+          <code>CREATE INDEX CONCURRENTLY</code> plus
+          <code>ADD table_constraint_using_index</code>, and the
+          non-volatile-default fast path. The closest thing to vendor endorsement
+          of a multi-step technique is the Note quoted in lesson 7, and it covers
+          one constraint, not a protocol.
+        </p>
+      </div>
+
+      <p>
+        The pattern does have an attributable owner, and it is a practitioner
+        source — held to a different evidential standard than everything in
+        lessons 1–7, and labelled as such every time it appears:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Parallel change, also known as expand and contract, is a pattern to
+            implement backward-incompatible changes to an interface in a safe
+            manner, by breaking the change into three distinct phases: expand,
+            migrate, and contract.
+          </p>
+        </blockquote>
+        <figcaption>
+          Danilo Sato,
+          <a class="citation" href="https://martinfowler.com/bliki/ParallelChange.html"
+            ><em>Parallel Change</em></a
+          >, martinfowler.com, 13 May 2014.
+          <strong>Practitioner writing, not a specification.</strong>
+        </figcaption>
+      </figure>
+
+      <div class="aside note">
+        <span class="label">Get the provenance right</span>
+        <p>
+          The article’s own acknowledgements: the technique “was first documented
+          as a refactoring strategy by Joshua Kerievsky in 2006 and presented in
+          his talk <em>The Limited Red Society</em> presented at the Lean
+          Software and Systems Conference in 2010.”
+        </p>
+        <p>
+          So the chain is <strong>Kerievsky (2006) → named and written up by
+          Sato (2014)</strong>. Not Martin Fowler, whose site hosts it — an
+          attribution mistake made constantly, and an easy one to avoid.
+        </p>
+      </div>
+
+      <h2>The three phases, in the source’s words</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Sato’s three phases, quoted, with what each means for a schema.
+          </caption>
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>The definition</th>
+              <th>In a database</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Expand</strong></td>
+              <td>
+                “In the expand phase you augment the interface to support both
+                the old and the new versions.”
+              </td>
+              <td>Add the new column. Write to both.</td>
+            </tr>
+            <tr>
+              <td><strong>Migrate</strong></td>
+              <td>
+                “During the migrate phase you update all clients using the old
+                version to the new version.”
+              </td>
+              <td>Backfill in batches. Move reads across.</td>
+            </tr>
+            <tr>
+              <td><strong>Contract</strong></td>
+              <td>
+                “Once all usages have been migrated to the new version, you
+                perform the contract phase to remove the old version.”
+              </td>
+              <td>Stop writing the old column. Drop it.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>The database application is explicit in the same article:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Database refactoring: this is a key component to evolutionary
+            database design. Most database refactorings follow the parallel
+            change pattern, where the migrate phase is the transition period
+            between the original and the new schema, until all database access
+            code has been updated to work with the new schema.
+          </p>
+        </blockquote>
+        <figcaption>Sato, as above.</figcaption>
+      </figure>
+
+      <h2>Why the pattern has to exist</h2>
+
+      <div class="aside insight">
+        <span class="label">The argument, in terms of lessons 1–7</span>
+        <p>
+          Every operation in lesson 4’s table that is <em>safe</em> is safe
+          because it is metadata-only or takes a weak lock. The ones that are
+          unsafe — rewrites, and scans under
+          <code>ACCESS EXCLUSIVE</code> — <strong>cannot be made safe by running
+          them more carefully</strong>.
+        </p>
+        <p>
+          So the only way to avoid an unsafe operation is not to perform it: you
+          reach the target schema through a sequence of individually-safe steps.
+          The price is a period during which both shapes are live and the
+          application must tolerate both.
+        </p>
+      </div>
+
+      <p>
+        Renaming a column is the canonical example, and it is worth being precise
+        about <em>why</em>. The rename is not expensive — it is a catalog change.
+        The problem is that no database offers a rename that is also
+        <strong>compatible</strong>: at the instant it commits, every running
+        application instance holding the old name starts failing. It is a
+        deployment problem wearing a migration costume.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">-- Instead of: ALTER TABLE users RENAME COLUMN email TO email_address;
+--
+-- Deploy 1 -- EXPAND
+ALTER TABLE users ADD COLUMN email_address text;   -- metadata-only, no default
+-- ...then ship application code that writes BOTH columns and reads the old one.
+
+-- Deploy 2 -- MIGRATE
+-- Backfill in bounded batches, so no single statement holds a long lock:
+--   UPDATE users SET email_address = email
+--    WHERE id IN (SELECT id FROM users WHERE email_address IS NULL LIMIT 1000);
+-- ...then ship application code that reads the NEW column.
+
+-- Deploy 3 -- CONTRACT
+-- Ship application code that no longer writes the old column, then:
+ALTER TABLE users DROP COLUMN email;               -- ACCESS EXCLUSIVE, instant</code></pre>
+      </div>
+
+      <p>
+        Five operations, each individually cheap, spread across
+        <strong>at least three deploys</strong>. That count is the real cost of
+        the pattern, and it is why it is reached for deliberately rather than by
+        default. Notice also that the middle deploy contains no DDL at all — the
+        backfill is ordinary DML, and it is batched for exactly the reason lesson
+        5 gave: a single enormous <code>UPDATE</code> is a long-held lock by
+        another name.
+      </p>
+
+      <h2>The half that gets skipped</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If the contract phase is not executed you might end up in a worse
+            state than you started, therefore you need discipline to finish the
+            transition successfully.
+          </p>
+        </blockquote>
+        <figcaption>Sato, as above.</figcaption>
+      </figure>
+
+      <p>
+        This is the failure mode in practice, and it is worth stating baldly: a
+        half-finished expand/contract leaves you with two columns, dual-write
+        code that nobody dares delete, and a schema that is harder to reason
+        about than the one you started with. The first two deploys are
+        interesting work and the third is not, so the third is the one that stays
+        in the backlog. The pattern is three phases; two phases is not a partial
+        success.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why is expand/contract needed for a column rename, which is instant?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a rename rewrites the table and all its indexes
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because running application code breaks at the moment it commits
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a rename holds an exclusive lock for some time
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a rename cannot be rolled back inside a transaction
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The rename is cheap — a catalog change — and on PostgreSQL it rolls
+          back like any other DDL. The incompatibility is the problem: every
+          deployed instance still using the old name fails at the instant of
+          commit. Expand/contract is a response to a <em>deployment</em>
+          constraint, which is why it is the one technique here with no vendor
+          source: it is not about the database.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What kind of source is expand/contract, and who is it attributable to?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A documented vendor pattern, described by the manuals
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              A practitioner pattern, named by Sato after Kerievsky
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A published standard pattern, maintained by Martin Fowler
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              An industry best practice, with no identified author
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          No vendor manual names it. It is practitioner writing with a clear
+          chain: first documented by Joshua Kerievsky in 2006, named and written
+          up by Danilo Sato in 2014 on martinfowler.com. Attributing it to Fowler
+          — the site’s owner rather than the article’s author — is the common
+          error, and “no single known author” is exactly the vagueness this topic
+          exists to refuse.
+        </p>
+      </div>
+
+      <h2>End of the first half</h2>
+
+      <p>
+        That is the database. You can now read an operation and predict what it
+        does, move work out from under strong locks two different ways, and
+        recognise the case where neither move exists. None of it mentioned a
+        migration tool, because none of it depends on one.
+      </p>
+
+      <p>
+        <a href="0009-what-alembic-is.html">Lesson 9</a> starts the second half:
+        what a tool built on top of all this actually does, where its guarantees
+        come from, and — the more interesting question — where they stop.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://martinfowler.com/bliki/ParallelChange.html"
+              >Danilo Sato, <em>Parallel Change</em></a
+            >
+            — it is one page and takes five minutes. Read it as an interface
+            pattern rather than a database one, because that is how it is
+            written: the database is one application among several, and seeing
+            the general form makes the schema case obvious rather than
+            memorable.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A genuinely useful exercise: name a schema
+          change you would want to make and work out the expand/contract sequence
+          for it together, deploy by deploy — then ask which individual steps are
+          safe by lesson 4’s table and which need a
+          <code>lock_timeout</code>. Doing it for a change you actually care
+          about is worth far more than reading the rename example again.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This closes the database half, so take a real break here before
+            lesson 9 — the second half is a different subject and benefits from a
+            clean start. Before you begin it, try to list lesson 4’s three
+            surprising rows, lesson 5’s three actors, and lesson 6’s four steps.
+            That is the whole first half in three retrievals — and every step
+            sequence behind them is in the
+            <a href="../reference/safe-migration-recipes.html"
+              >safe migration recipes</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0007-concurrent-index-builds.html"
+              >7. Concurrent index builds</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0009-what-alembic-is.html">9. What Alembic is</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

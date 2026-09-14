@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glossary — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Glossary</h1>
+        <p class="page-blurb">
+          The vocabulary of changing a schema safely. Where a term has a quoted
+          definition in a vendor manual, that quotation is the authority and the
+          entry here is its compression.
+        </p>
+      </header>
+
+      <p class="small-print">
+        Canonical source: <code>GLOSSARY.md</code> in this topic. The two are
+        kept in step; this page is the readable rendering.
+      </p>
+
+      <h2>What the engine guarantees</h2>
+
+      <div class="definition">
+        <span class="term">DDL</span>
+        <p>
+          Data Definition Language — the statements that change the schema rather
+          than the rows. The distinction matters here only because engines treat
+          DDL and DML differently inside a transaction.
+        </p>
+        <span class="attribution">Avoid: schema statement, structural query.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">transaction block</span>
+        <p>
+          What <code>BEGIN</code> opens: “all statements after a BEGIN command
+          will be executed in a single transaction until an explicit COMMIT or
+          ROLLBACK is given”. Without one, every statement gets its own implicit
+          <code>BEGIN</code>/<code>COMMIT</code>.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-begin.html"
+            >PostgreSQL 16, <code>BEGIN</code></a
+          >. Avoid: transaction scope, the transaction.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">transactional DDL</span>
+        <p>
+          The property that DDL participates in a transaction block, so several
+          schema changes commit or roll back together. PostgreSQL has it;
+          <strong>PostgreSQL never says so</strong>. The property is established
+          by the enumeration of statements that <em>cannot</em> run inside a
+          transaction block.
+        </p>
+        <span class="attribution">
+          Avoid: rollback-able DDL, safe DDL, transactional schema.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">atomic DDL</span>
+        <p>
+          MySQL 8.0’s crash atomicity for <em>one</em> statement: dictionary
+          update, engine work and binary-log write “either committed […] or […]
+          rolled back, even if the server halts during the operation”. Explicitly
+          <strong>not</strong> transactional DDL, in MySQL’s own Note. InnoDB
+          only.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://dev.mysql.com/doc/refman/8.0/en/atomic-ddl.html"
+            >MySQL 8.0 §15.1.1</a
+          >. Avoid: transactional DDL (the manual’s own warning), atomic
+          migration.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">implicit commit</span>
+        <p>
+          MySQL’s behaviour whereby a DDL statement “implicitly end[s] any
+          transaction that is active in the current session, as if you had done a
+          COMMIT before executing the statement”. The mechanical reason two MySQL
+          DDL statements cannot be rolled back together.
+        </p>
+        <span class="attribution">Avoid: autocommit (different thing), silent commit.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">MVCC-unsafe DDL</span>
+        <p>
+          <code>TRUNCATE</code> and the table-rewriting forms of
+          <code>ALTER TABLE</code>, which after committing make the table “appear
+          empty to concurrent transactions, if they are using a snapshot taken
+          before the DDL command committed”.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/mvcc-caveats.html"
+            >PostgreSQL 16 §13.6</a
+          >. Avoid: unsafe DDL, non-transactional ALTER.
+        </span>
+      </div>
+
+      <h2>The physical work</h2>
+
+      <div class="definition">
+        <span class="term">table rewrite</span>
+        <p>
+          Rewriting the entire table and all its indexes into new files.
+          Triggered by a volatile <code>DEFAULT</code> on
+          <code>ADD COLUMN</code> and by a type change that is not binary
+          coercible. The expensive outcome, and the one that
+          <strong>cannot be made safe by care</strong>.
+        </p>
+        <span class="attribution">Avoid: table copy, full ALTER, repack.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">table scan</span>
+        <p>
+          Reading every row to verify something, without rewriting. What
+          <code>ADD CHECK</code> and <code>SET NOT NULL</code> do. Cheaper than a
+          rewrite, still long — and the thing <code>NOT VALID</code> removes.
+        </p>
+        <span class="attribution">Avoid: full scan, validation pass, check.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">metadata-only change</span>
+        <p>
+          A change recorded in the catalog with no row touched.
+          <code>ADD COLUMN</code> with no default or a non-volatile one. Still
+          takes <code>ACCESS EXCLUSIVE</code>, but holds it briefly.
+        </p>
+        <span class="attribution">Avoid: instant change, free change, cheap ALTER.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">binary coercible</span>
+        <p>
+          The relation between two types that lets
+          <code>ALTER COLUMN … TYPE</code> skip the rewrite, because the stored
+          representation need not change.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code></a
+          >. Avoid: compatible type, same-size type.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">non-volatile default</span>
+        <p>
+          An <code>IMMUTABLE</code> or <code>STABLE</code> default expression,
+          whose value is “evaluated at the time of the statement and the result
+          stored in the table’s metadata”. The criterion for the no-rewrite fast
+          path — <strong>broader than “a constant”</strong>, which is the
+          tutorial’s looser word. Arrived in PostgreSQL 11.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code></a
+          >. Avoid: constant default, static default, literal default.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">invalid index</span>
+        <p>
+          The index left behind when <code>CREATE INDEX CONCURRENTLY</code>
+          fails: “ignored for querying purposes […] however it will still consume
+          update overhead”. If unique, it also goes on rejecting duplicates.
+          Reported by <code>psql \d</code> as <code>INVALID</code> and by
+          <code>pg_index.indisvalid</code> as false.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-createindex.html"
+            ><code>CREATE INDEX</code></a
+          >. Avoid: broken index, partial index (different thing), failed index.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">online DDL</span>
+        <p>
+          MySQL’s name for operations that permit concurrent DML, exposed as a
+          five-column matrix per operation. <strong>“Online” does not mean
+          lock-free</strong>: <code>LOCK=NONE</code> governs the execution phase,
+          not the brief exclusive metadata lock at commit.
+        </p>
+        <span class="attribution">Avoid: zero-downtime DDL, non-blocking ALTER.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>ALGORITHM</code> / <code>LOCK</code> clause</span>
+        <p>
+          MySQL’s statement-level <strong>assertions</strong>: naming one
+          “requires the operation to use the specified algorithm […] or fail with
+          an error otherwise”. They turn a silent downgrade into a loud failure.
+          PostgreSQL has no equivalent.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://dev.mysql.com/doc/refman/8.0/en/alter-table.html"
+            >MySQL 8.0 §15.1.9</a
+          >. Avoid: hint, option, preference.
+        </span>
+      </div>
+
+      <h2>Locks</h2>
+
+      <div class="definition">
+        <span class="term">lock mode</span>
+        <p>
+          A named member of the conflict table. “The only real difference between
+          one lock mode and another is the set of lock modes with which each
+          conflicts” — so a mode means nothing except who it excludes.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+            >PostgreSQL 16 §13.3.1</a
+          >. Avoid: lock level, lock strength, lock type.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>ACCESS EXCLUSIVE</code></span>
+        <p>
+          Conflicts with every mode; “guarantees that the holder is the only
+          transaction accessing the table in any way”. The default for
+          <code>ALTER TABLE</code> subforms — the page states the default, so
+          silence is not ambiguity. <strong>The only mode that blocks a plain
+          <code>SELECT</code>.</strong>
+        </p>
+        <span class="attribution">Avoid: exclusive lock, write lock, table lock.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>SHARE ROW EXCLUSIVE</code></span>
+        <p>
+          Conflicts with <code>ROW EXCLUSIVE</code> and above; “protects a table
+          against concurrent data changes, and is self-exclusive”. Permits reads,
+          blocks every write. What <code>ADD FOREIGN KEY</code> takes —
+          <strong>on both tables</strong>.
+        </p>
+        <span class="attribution">
+          Avoid: row lock (it is table-level), write-blocking lock.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>SHARE UPDATE EXCLUSIVE</code></span>
+        <p>
+          Conflicts with schema changes and <code>VACUUM</code>, not with reads
+          or writes. What <code>VALIDATE CONSTRAINT</code> and
+          <code>CREATE INDEX CONCURRENTLY</code> take. The mode that makes the
+          two-step patterns worth doing.
+        </p>
+        <span class="attribution">Avoid: weak lock, light lock, concurrent lock.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">lock queue convoy</span>
+        <p>
+          A waiting <code>ACCESS EXCLUSIVE</code> request blocking the requests
+          queued behind it, so <code>SELECT</code>s stall behind DDL that is
+          itself stalled. <strong>PostgreSQL never documents this.</strong> MySQL
+          states the equivalent outright: “a pending exclusive metadata lock
+          requested by an online DDL operation blocks subsequent transactions on
+          the table.”
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-performance.html"
+            >MySQL 8.0 §17.12.2</a
+          >. Avoid: lock storm, pile-up — and never cite PostgreSQL for it.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>lock_timeout</code></span>
+        <p>
+          “Abort any statement that waits longer than the specified amount of
+          time while attempting to acquire a lock […] The time limit applies
+          <strong>separately to each lock acquisition attempt</strong>.” The
+          per-attempt scoping means it does not bound a multi-relation statement.
+        </p>
+        <span class="attribution">
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/16/runtime-config-client.html"
+            >PostgreSQL 16 §20.11.2</a
+          >. Avoid: statement timeout (a different setting that pre-empts this
+          one).
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">advisory lock</span>
+        <p>
+          A lock “that ha[s] application-defined meanings […] because the system
+          does not enforce their use”. The mechanism you must supply yourself to
+          serialise two migration runs — preferably the <code>_xact_</code> form,
+          which a transaction pooler will not break.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+            >PostgreSQL 16 §13.3.5</a
+          >. Avoid: application lock, mutex, named lock.
+        </span>
+      </div>
+
+      <h2>The two-step patterns</h2>
+
+      <div class="definition">
+        <span class="term"><code>NOT VALID</code></span>
+        <p>
+          The option that makes <code>ADD CONSTRAINT</code> skip its verification
+          scan and commit immediately. <strong>It removes the scan, not the
+          lock</strong> — <code>ADD CHECK … NOT VALID</code> still takes
+          <code>ACCESS EXCLUSIVE</code>. It is safe because the lock is held
+          <em>briefly</em>.
+        </p>
+        <span class="attribution">
+          Avoid: deferred constraint (different thing), unvalidated constraint.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>VALIDATE CONSTRAINT</code></span>
+        <p>
+          The second step, verifying pre-existing rows under only
+          <code>SHARE UPDATE EXCLUSIVE</code>, because “it knows that other
+          transactions will be enforcing the constraint for rows that they insert
+          or update”.
+        </p>
+        <span class="attribution">Avoid: validation, checking, confirming.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">expand/contract</span>
+        <p>
+          Reaching a target schema through individually-safe steps, at the cost
+          of a period where both shapes are live. “A pattern to implement
+          backward-incompatible changes to an interface in a safe manner, by
+          breaking the change into three distinct phases: expand, migrate, and
+          contract.” <strong>No vendor manual names or endorses it.</strong>
+        </p>
+        <span class="attribution">
+          Danilo Sato,
+          <a class="citation" href="https://martinfowler.com/bliki/ParallelChange.html"
+            ><em>Parallel Change</em></a
+          >, 2014, crediting Kerievsky (2006). Avoid: zero-downtime migration,
+          blue-green schema, safe rename.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">contract phase</span>
+        <p>
+          The deletion at the end, and the half practitioners skip: “If the
+          contract phase is not executed you might end up in a worse state than
+          you started, therefore you need discipline to finish the transition
+          successfully.”
+        </p>
+        <span class="attribution">Sato, as above. Avoid: cleanup, tidy-up, phase three.</span>
+      </div>
+
+      <h2>Alembic’s model</h2>
+
+      <div class="definition">
+        <span class="term">revision</span>
+        <p>
+          One migration script, identified by a generated id, containing
+          <code>upgrade()</code> and <code>downgrade()</code>. Ids may not
+          contain <code>@</code>, <code>-</code> or <code>+</code> — those are
+          reserved for the addressing syntax.
+        </p>
+        <span class="attribution">Avoid: migration file, version, changeset.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>down_revision</code></span>
+        <p>
+          The pointer to the revision that must run before this one. “This is how
+          Alembic knows the correct order in which to apply migrations.” A
+          <code>down_revision</code> of <code>None</code> marks a base.
+        </p>
+        <span class="attribution">
+          <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/tutorial.html"
+            >Alembic Tutorial</a
+          >. Avoid: parent, previous, predecessor.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">head</span>
+        <p>
+          A revision nothing points down to — the end of a line. Plural when
+          branches are unmerged, which is why <code>alembic_version</code> may
+          hold more than one row.
+        </p>
+        <span class="attribution">Avoid: latest, tip, current.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">merge point</span>
+        <p>
+          A revision whose <code>down_revision</code> is a tuple of length ≥ 2.
+          There is no merge type and no merge flag:
+          <code>return len(self._versioned_down_revisions) &gt; 1</code>. That is
+          the entire definition.
+        </p>
+        <span class="attribution">
+          <code>alembic/script/revision.py:1702</code> (1.14.1). Avoid: merge
+          migration, join, merge commit.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>depends_on</code> / dependencies</span>
+        <p>
+          Revisions that must run before this one <strong>without</strong> being
+          its lineage. They order the run; they do not define ancestry, do not
+          make a revision a merge point, and never collapse rows in
+          <code>alembic_version</code>.
+        </p>
+        <span class="attribution">Avoid: treating dependencies as parents, soft down_revision.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term"><code>alembic_version</code></span>
+        <p>
+          The one-column table holding the current head or heads.
+          <code>version_num VARCHAR(32) NOT NULL</code>, primary key
+          <code>&lt;table&gt;_pkc</code>. The column name is a documented
+          contract; <strong>the width 32 is a bare literal</strong> with no named
+          constant.
+        </p>
+        <span class="attribution">
+          <code>alembic/ddl/impl.py:161-172</code> (1.14.1). Avoid: migration log,
+          schema_version.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">compare-and-swap</span>
+        <p>
+          <code
+            >UPDATE alembic_version SET version_num='&lt;to&gt;' WHERE
+            version_num='&lt;from&gt;'</code
+          >, followed by a rowcount assertion that exactly one row matched. The
+          whole of Alembic’s concurrency control — and it runs
+          <strong>after</strong> the DDL.
+        </p>
+        <span class="attribution">Avoid: lock, guard, mutex — it is none of those.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">autogenerate</span>
+        <p>
+          Comparing model metadata against a reflected database and emitting
+          operations for the difference. Its detection surface is exactly nine
+          comparator functions in one file, so anything outside them is invisible
+          by construction.
+        </p>
+        <span class="attribution">Avoid: diffing, schema sync, introspection.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">comparator</span>
+        <p>
+          A function registered on the autogenerate dispatcher for
+          <code>schema</code>, <code>table</code> or <code>column</code>. Nine
+          exist in 1.14.1, and <strong>no dialect registers one</strong> — which
+          is why the detection surface is the same on every backend.
+        </p>
+        <span class="attribution">Avoid: detector, checker, rule.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">offline mode</span>
+        <p>
+          <code>--sql</code>: the statement is compiled against the configured
+          dialect and written to a buffer, never executed. A
+          <strong>compiler, not an executor</strong> — it can tell you a
+          migration renders, never that it works.
+        </p>
+        <span class="attribution">Avoid: dry run, preview, SQL export.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">batch mode</span>
+        <p>
+          The move-and-copy wrapper giving SQLite the <code>ALTER TABLE</code>
+          forms it lacks: create new → copy → drop old → rename new into old.
+          Exists because SQLite stores its schema as the original
+          <code>CREATE</code> statement text.
+        </p>
+        <span class="attribution">Avoid: table recreate, SQLite mode, workaround.</span>
+      </div>
+
+      <h2>The grades of evidence</h2>
+
+      <div class="definition">
+        <span class="term">documented guarantee</span>
+        <p>
+          A claim quoted from a vendor manual for a named version. The only grade
+          that may be stated without qualification — and even then, only for that
+          version.
+        </p>
+        <span class="attribution">Avoid: the docs say, officially, canonically.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">source-code fact</span>
+        <p>
+          A claim read from Alembic 1.14.1 or SQLAlchemy 2.0.36 on disk because
+          the documentation is silent or wrong. Weaker: it describes one released
+          version and may change without a release note.
+        </p>
+        <span class="attribution">Avoid: internally, under the hood, actually.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">maintainer statement</span>
+        <p>
+          A first-party comment on the project’s own tracker. Authoritative about
+          <em>intent</em>, carrying no versioned guarantee, and not covered by
+          any test.
+        </p>
+        <span class="attribution">Avoid: the maintainers say, officially supported.</span>
+      </div>
+
+      <div class="definition">
+        <span class="term">practitioner pattern</span>
+        <p>
+          A named technique with an attributable author and no vendor owner.
+          Expand/contract is the only one this topic teaches, and it is labelled
+          every time.
+        </p>
+        <span class="attribution">
+          Avoid: best practice, the standard approach, industry standard.
+        </span>
+      </div>
+
+      <div class="definition">
+        <span class="term">argument from absence</span>
+        <p>
+          A claim that a source says nothing, established by exhaustive search
+          with a working control group. Sound only when the search is
+          <em>shown</em>.
+        </p>
+        <span class="attribution">
+          Avoid: there’s nothing about it, undocumented (without showing the
+          search).
+        </span>
+      </div>
+
+      <h2>Notes on usage</h2>
+
+      <div class="aside note">
+        <span class="label">Distinctions worth keeping</span>
+        <ul>
+          <li>
+            <strong>Say “rewrite” or “scan”, never “slow”.</strong> A scan can be
+            removed with <code>NOT VALID</code>; a rewrite cannot be removed at
+            all.
+          </li>
+          <li>
+            <strong>Never say <code>NOT VALID</code> “avoids the lock”.</strong>
+            It avoids the scan.
+          </li>
+          <li>
+            <strong>Say “blocks writes on both tables”</strong> about
+            <code>ADD FOREIGN KEY</code>.
+          </li>
+          <li>
+            <strong>Never cite PostgreSQL for the convoy.</strong> Cite MySQL and
+            say it is an analogy.
+          </li>
+          <li>
+            <strong>Distinguish “atomic” from “transactional”.</strong> MySQL’s
+            own manual puts it in a Note box.
+          </li>
+          <li>
+            <strong>Say “compare-and-swap”, not “lock”</strong>, about
+            <code>alembic_version</code>.
+          </li>
+          <li>
+            <strong>A migration that “passed in <code>--sql</code> mode” has been
+            compiled, not tested.</strong>
+          </li>
+        </ul>
+      </div>
+
+      <p class="small-print">
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+  </body>
+</html>

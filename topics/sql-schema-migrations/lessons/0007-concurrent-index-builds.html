@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7. Concurrent index builds — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0007</span>
+        <h1>Concurrent index builds</h1>
+        <p class="lesson-mission">
+          The other way to move work out from under a strong lock — and the one
+          place in the PostgreSQL manual that blesses a multi-step recipe
+          outright. Plus the waiting clause that quietly stalls the whole thing.
+        </p>
+      </header>
+
+      <p class="lead">
+        A plain <code>CREATE INDEX</code> takes <code>SHARE</code>, which blocks
+        every write for as long as the build takes. <code>CONCURRENTLY</code>
+        trades that for <code>SHARE UPDATE EXCLUSIVE</code> — blocking nothing —
+        and the manual is unusually candid about what the trade costs.
+      </p>
+
+      <h2>What you get</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When this option is used, PostgreSQL will build the index without
+            taking any locks that prevent concurrent inserts, updates, or deletes
+            on the table; whereas a standard index build locks out writes (but
+            not reads) on the table until it’s done.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-createindex.html"
+            ><code>CREATE INDEX</code>, “Building Indexes Concurrently”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>What it costs, stated just as plainly</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            When this option is used, PostgreSQL must perform two scans of the
+            table, and in addition it must wait for all existing transactions
+            that could potentially modify or use the index to terminate. Thus
+            this method requires more total work than a standard index build and
+            takes significantly longer to complete. However, since it allows
+            normal operations to continue while the index is built, this method
+            is useful for adding new indexes in a production environment.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The operational trap is in the middle clause</span>
+        <p>
+          “it must wait for all existing transactions that could potentially
+          modify or use the index to terminate.”
+        </p>
+        <p>
+          A concurrent build <strong>cannot finish while any long-running
+          transaction that predates it is still open</strong>. One forgotten
+          <code>idle in transaction</code> session stalls the build
+          indefinitely — and unlike lesson 5’s convoy, this stall is silent:
+          nothing is blocked, nothing errors, the build simply never completes.
+        </p>
+        <p>
+          Worse, it does not end at completion. The manual: “in the worst case,
+          it cannot be used as long as transactions exist that predate the start
+          of the index build.” A finished index that no query plan will touch.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Concurrency restriction, narrower than usually quoted</span>
+        <p>
+          “Regular index builds permit other regular index builds on the same
+          table to occur simultaneously, but only one concurrent index build can
+          occur on a table at a time.”
+        </p>
+        <p>
+          Two <em>regular</em> builds on one table may run together. Two
+          <em>concurrent</em> builds may not. The restriction people repeat —
+          “only one index build per table” — is wrong in the direction that costs
+          you time.
+        </p>
+      </div>
+
+      <p>
+        And recall lesson 2: because
+        <code>CREATE INDEX CONCURRENTLY</code> cannot run inside a transaction
+        block, a failure leaves an invalid index behind — maintained by every
+        writer, used by no query, and still enforcing uniqueness if it was
+        unique. That is the price of stepping outside transactional protection,
+        and it is why every concurrent build needs a follow-up check rather than
+        just a success exit code.
+      </p>
+
+      <h2>The one recipe PostgreSQL blesses</h2>
+
+      <p>
+        The <code>ALTER TABLE</code> page contains something it contains nowhere
+        else: an explicit endorsement of a multi-step technique, with the
+        motivation stated in the same breath.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Adding a constraint using an existing index can be helpful in
+            situations where a new constraint needs to be added without blocking
+            table updates for a long time. To do that, create the index using
+            CREATE INDEX CONCURRENTLY, and then install it as an official
+            constraint using this syntax.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code>, <code>ADD table_constraint_using_index</code></a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">-- Step 1. Long, and blocks nothing. Cannot run inside a transaction block.
+CREATE UNIQUE INDEX CONCURRENTLY orders_reference_key ON orders (reference);
+
+-- Check it actually succeeded before going on -- a failure here is silent.
+--   SELECT indisvalid FROM pg_index WHERE indexrelid = 'orders_reference_key'::regclass;
+
+-- Step 2. Instant. Adopts the existing index instead of building a new one.
+ALTER TABLE orders
+  ADD CONSTRAINT orders_reference_key UNIQUE USING INDEX orders_reference_key;</code></pre>
+      </div>
+
+      <p>
+        The manual attaches restrictions that make the technique sound, and they
+        are worth knowing before you reach for it: the index must be b-tree, in
+        the default sort order, not on expressions, not partial, and not
+        partitioned.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">The same shape as lesson 6</span>
+        <p>
+          Notice this is structurally identical to
+          <code>NOT VALID</code> → <code>VALIDATE</code>: <strong>do the long
+          work under a weak lock, then do the instant catalog change under a
+          strong one.</strong>
+        </p>
+        <p>
+          That is the general form of every safe migration in PostgreSQL, and
+          once you see it you will recognise it everywhere. There are only ever
+          two moves — remove the work from under the lock, or avoid the operation
+          entirely. <a href="0008-expand-and-contract.html">Lesson 8</a> is the
+          second move.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A <code>CREATE INDEX CONCURRENTLY</code> has been running for hours on
+          a small table. Most likely cause?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Another regular index build is running on that table
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              An old transaction predating the build is still open
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The second of its two table scans keeps restarting
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The index is waiting to be marked valid afterwards
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The build “must wait for all existing transactions that could
+          potentially modify or use the index to terminate”. On a small table the
+          scans are quick, so a build measured in hours is almost always waiting
+          on someone’s forgotten open transaction —
+          <code>idle_in_transaction_session_timeout</code> is the systemic fix.
+          A regular build would not block it: only another <em>concurrent</em>
+          build on the same table would.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why build the index first and adopt it as a constraint second?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a constraint cannot be created concurrently at all
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because the lengthy scanning happens under a weaker lock
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because adopting an index avoids the whole uniqueness check
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the index is validated lazily by later queries
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Same shape as lesson 6: the scan moves under
+          <code>SHARE UPDATE EXCLUSIVE</code>, leaving only an instant catalog
+          change under the strong lock. Nothing is skipped — the uniqueness is
+          fully checked during the concurrent build — and nothing is deferred to
+          query time. The first answer states the motivation backwards: it is
+          true that <code>ADD CONSTRAINT</code> has no
+          <code>CONCURRENTLY</code> form, but the recipe is what you do
+          <em>about</em> that, not why it helps.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        Every technique so far moves work out from under a lock. But some
+        operations have no safe form at all — a rewrite cannot be made cheap, and
+        a rename cannot be made compatible. For those the only remaining move is
+        not to perform the operation.
+        <a href="0008-expand-and-contract.html">Lesson 8</a> is the last lesson
+        before the tool.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/sql-createindex.html"
+              >PostgreSQL 16, <code>CREATE INDEX</code> — “Building Indexes
+              Concurrently”</a
+            >
+            — the return visit promised in lesson 2, now with the lock vocabulary
+            to read all of it. Pay attention to the paragraphs on what happens
+            between the two scans; they explain <em>why</em> the wait for
+            predating transactions is unavoidable rather than a shortcoming.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking: how would you detect a
+          stalled concurrent build, as opposed to a slow one? The answer draws on
+          <code>pg_locks</code>, <code>pg_stat_activity</code> and
+          <code>pg_index.indisvalid</code> together, and assembling it is a
+          better exercise than reading it.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Lessons 6 and 7 are two instances of one pattern. Before lesson 8,
+            try to state that pattern in a single sentence without naming either
+            operation. If you can, you have the transferable part; if you cannot,
+            re-read the insight box above and nothing else. Both step sequences
+            are written out in the
+            <a href="../reference/safe-migration-recipes.html"
+              >safe migration recipes</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0006-not-valid-and-validate.html"
+              >6. <code>NOT VALID</code> and <code>VALIDATE</code></a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0008-expand-and-contract.html">8. Expand and contract</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

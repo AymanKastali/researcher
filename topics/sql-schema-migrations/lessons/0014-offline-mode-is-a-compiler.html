@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>14. Offline mode is a compiler — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0014</span>
+        <h1>Offline mode is a compiler</h1>
+        <p class="lesson-mission">
+          <code>--sql</code> renders your migration; it does not run it. The
+          distinction sounds pedantic until you see what a data migration does
+          under it — which is to produce a plausible, wrong script and hand it to
+          a DBA.
+        </p>
+      </header>
+
+      <p class="lead">
+        Offline mode has a clear documented purpose and a clear implementation:
+        one branch, quoted in lesson 13. What it does not have is an enumerated
+        list of what breaks under it — and the failure mode is nastier than the
+        documentation’s one sentence implies.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            A major capability of Alembic is to generate migrations as SQL
+            scripts, instead of running them against the database - this is also
+            referred to as offline mode. This is a critical feature when working
+            in large organizations where access to DDL is restricted, and SQL
+            scripts must be handed off to DBAs.
+          </p>
+        </blockquote>
+        <figcaption>
+          <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/offline.html"
+            >Alembic documentation, “Generating SQL Scripts (a.k.a. ‘Offline
+            Mode’)”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>Two consequences of one branch</h2>
+
+      <p>
+        Lesson 13 ended at the fork in <code>DefaultImpl._exec</code>:
+        <code>compiled = construct.compile(dialect=self.dialect, …)</code>, write
+        the text, <code>return None</code>. Two things follow, and both matter
+        more than the feature’s documentation suggests.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">1. The statement is compiled, never executed</span>
+        <p>
+          A construct that <em>compiles</em> cleanly but would fail at runtime
+          produces a clean-looking script.
+        </p>
+        <p>
+          <strong>Offline mode cannot tell you that a migration works. It can
+          only tell you that it renders.</strong> A migration that “passed in
+          <code>--sql</code> mode” has been compiled, not tested — and describing
+          it as checked implies an execution that never happened.
+        </p>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">2. <code>_exec</code> returns <code>None</code> offline</span>
+        <p>
+          Every rowcount-based safety check in Alembic is therefore inert under
+          <code>--sql</code>. In
+          <a href="0016-concurrent-deploys.html">lesson 16</a> this turns out to
+          disable the only concurrency guard the tool has.
+        </p>
+      </div>
+
+      <h2>The connection is not real either</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/runtime/migration.py:152-157 and 666-672 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">if as_sql:
+    self.connection = cast(
+        Optional["Connection"], self._stdout_connection(connection)
+    )
+    assert self.connection is not None
+    self._in_external_transaction = False
+
+# ...and:
+
+def _stdout_connection(
+    self, connection: Optional[Connection]
+) -> MockConnection:
+    def dump(construct, *multiparams, **params):
+        self.impl._exec(construct)
+
+    return MockEngineStrategy.MockConnection(self.dialect, dump)</code></pre>
+      </div>
+
+      <p>
+        A SQLAlchemy <code>MockConnection</code> whose <code>dump</code> callable
+        has no <code>return</code> statement. Everything you execute through it
+        returns <code>None</code>.
+      </p>
+
+      <h2>What actually breaks, and the trap in how it breaks</h2>
+
+      <p>The documentation’s entire statement of offline limitations is one paragraph:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The challenge of SQL script generation is that the scripts we
+            generate can’t rely upon any client/server database access. This
+            means a migration script that pulls some rows into memory via a
+            SELECT statement will not work in <code>--sql</code> mode.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <p>
+        “Will not work” undersells it. Consider a data migration that reads —
+        <code>op.get_bind().execute(select(...)).fetchall()</code>. It fails with
+        <code>AttributeError: 'NoneType' object has no attribute 'fetchall'</code>,
+        because <code>execute()</code> returned <code>None</code>. Fine: a loud
+        failure.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">But the <code>SELECT</code> is still in the script</span>
+        <p>
+          The <code>SELECT</code> is <strong>written into the output</strong>,
+          compiled and terminated like any DDL statement — because that is what
+          <code>_exec</code> does with everything it is handed.
+        </p>
+        <p>
+          So the handoff script you give the DBA contains a stray
+          <code>SELECT</code> that does nothing, sitting between statements that
+          do. <strong>The script looks plausible and is wrong.</strong> If the
+          Python failed after that line, the script is also incomplete — and
+          nothing in it says so.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Source disagrees with documentation</span>
+        <p>
+          <code>Operations.get_bind</code> documents the opposite, and the author
+          flagged their own doubt in the docstring —
+          <code>alembic/operations/base.py:528-538</code>:
+        </p>
+        <p>
+          <em>“In a SQL script context, this value is <code>None</code>. [TODO:
+          verify this]”</em>
+        </p>
+        <p>
+          It is not <code>None</code>; it is a <code>MockConnection</code>.
+          Prefer the source. The practical consequence is that the natural
+          defensive idiom
+          <code>if op.get_bind() is not None:</code> <strong>guards
+          nothing</strong> offline — it is always true.
+          <code>MigrationContext.bind</code> has the accurate wording: “this bind
+          will be a ‘mock’ connection handler that cannot return results and is
+          only appropriate for a very limited subset of commands.”
+        </p>
+      </div>
+
+      <h2>Four things that are refused outright</h2>
+
+      <p>Better than silent mangling, and worth recognising by their messages:</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Hard refusals in offline mode, with the source location of each.
+          </caption>
+          <thead>
+            <tr>
+              <th>Attempted</th>
+              <th>Error</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>revision --autogenerate --sql</code></td>
+              <td>
+                <code>Using --sql with --autogenerate does not make any sense</code>
+              </td>
+              <td><code>command.py:208</code></td>
+            </tr>
+            <tr>
+              <td>Autogenerate reached programmatically</td>
+              <td>
+                <code
+                  >autogenerate can't use as_sql=True as it prevents querying the
+                  database for schema information</code
+                >
+              </td>
+              <td><code>autogenerate/api.py:345</code></td>
+            </tr>
+            <tr>
+              <td><code>upgrade --sql --purge</code></td>
+              <td><code>Can't use --purge with --sql mode</code></td>
+              <td><code>migration.py:597</code></td>
+            </tr>
+            <tr>
+              <td>Any bound parameter</td>
+              <td>
+                <code>SQL parameters not allowed with as_sql</code>
+                (<code>TypeError</code>)
+              </td>
+              <td><code>impl.py:215</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        That last one is why <code>op.bulk_insert()</code> takes a different
+        branch offline: it inlines each row as a literal, one
+        <code>INSERT</code> per row, rather than issuing one executemany.
+      </p>
+
+      <h2>Correcting a widely-held belief about the start revision</h2>
+
+      <p>
+        It is commonly said that <code>upgrade --sql</code> requires an explicit
+        start revision. It does not. Docs and source agree, and both disagree
+        with the folklore.
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Notice that our migration script started at the base - this is the
+            default when using offline mode, as no database connection is present
+            and there’s no <code>alembic_version</code> table to read from.
+          </p>
+          <p>
+            One way to provide a starting version in offline mode is to provide a
+            range to the command line. This is accomplished by providing the
+            “version” in <code>start:end</code> syntax […] The
+            <code>start:end</code> syntax is only allowed in offline mode; in
+            “online” mode, the <code>alembic_version</code> table is always used
+            to get at the current version.
+          </p>
+        </blockquote>
+        <figcaption>
+          Alembic documentation, “Offline Mode”, under “Getting the Start
+          Version”.
+        </figcaption>
+      </figure>
+
+      <p>
+        In <code>command.py::upgrade</code>, <code>starting_rev</code> simply
+        defaults to <code>None</code> and nothing raises when it stays there.
+        <code>downgrade</code> is the one that insists:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/command.py:430-439 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">starting_rev = None
+if ":" in revision:
+    if not sql:
+        raise util.CommandError("Range revision not allowed")
+    starting_rev, revision = revision.split(":", 2)
+elif sql:
+    raise util.CommandError(
+        "downgrade with --sql requires &lt;fromrev&gt;:&lt;torev&gt;"
+    )</code></pre>
+      </div>
+
+      <p>
+        So: <code>upgrade --sql</code> defaults to <code>base</code>;
+        <code>downgrade --sql</code> hard-requires
+        <code>&lt;from&gt;:&lt;to&gt;</code>; and a range passed
+        <em>without</em> <code>--sql</code> raises
+        <code>Range revision not allowed</code> from either command.
+      </p>
+
+      <h2>What the version table does in a handoff script</h2>
+
+      <p>
+        Reading these four behaviours precisely tells you what the DBA will
+        actually receive:
+      </p>
+
+      <ul>
+        <li>
+          <code>_ensure_version_table()</code> is <strong>skipped
+          entirely</strong> — the guard at line 605 is
+          <code>if not self.as_sql and not heads and not dont_mutate:</code>.
+        </li>
+        <li>
+          Instead, <code>CREATE TABLE alembic_version</code> is emitted
+          <strong>inline at the first step</strong>, but only when the maintainer
+          has no heads yet. Pass a <code>start:end</code> range and no
+          <code>CREATE TABLE</code> appears — correct, since the DBA’s database
+          already has one.
+        </li>
+        <li>
+          <code>DROP TABLE alembic_version</code> is emitted when the script ends
+          with no heads, i.e. a full downgrade to base.
+        </li>
+        <li>
+          Offline gets a <code>-- Running &lt;step&gt;</code> comment per
+          migration. Online does not.
+        </li>
+      </ul>
+
+      <h2>The transaction wrapper is the backend’s, not Alembic’s</h2>
+
+      <p>The documented contract promises literal <code>BEGIN</code>/<code>COMMIT</code>:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If <code>is_offline_mode()</code> is <code>True</code>, returns a
+            context manager that will invoke the
+            <code>DefaultImpl.emit_begin()</code> and
+            <code>DefaultImpl.emit_commit()</code> methods, which will produce
+            the string directives <code>BEGIN</code> and <code>COMMIT</code> on
+            the output stream, as rendered by the target backend (e.g. SQL Server
+            would emit <code>BEGIN TRANSACTION</code>).
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>EnvironmentContext.begin_transaction</code> docstring,
+          <code>alembic/runtime/environment.py:990-1013</code> (1.14.1).
+        </figcaption>
+      </figure>
+
+      <p>
+        But read the <em>first</em> clause of the same docstring — “If
+        <code>is_transactional_ddl()</code> is <code>False</code>, returns a ‘do
+        nothing’ context manager” — and then
+        <a href="0010-where-the-version-write-sits.html">lesson 10</a>’s truth
+        table. On a
+        backend with <code>transactional_ddl = False</code>, the offline branch
+        returns <code>nullcontext()</code> and
+        <strong>no <code>BEGIN</code> or <code>COMMIT</code> is emitted at
+        all</strong>.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            What an offline script is wrapped in, by dialect. Read from the
+            1.14.1 tree.
+          </caption>
+          <thead>
+            <tr>
+              <th>Dialect</th>
+              <th><code>transactional_ddl</code></th>
+              <th>Terminator</th>
+              <th>Batch separator</th>
+              <th>Offline wrapper</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>default</td>
+              <td><code>False</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td>none</td>
+            </tr>
+            <tr>
+              <td>postgresql</td>
+              <td><code>True</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td><code>BEGIN;</code> … <code>COMMIT;</code></td>
+            </tr>
+            <tr>
+              <td>mssql</td>
+              <td><code>True</code></td>
+              <td><code>";"</code></td>
+              <td><code>"GO"</code></td>
+              <td><code>BEGIN TRANSACTION;</code> … <code>COMMIT;</code> + <code>GO</code></td>
+            </tr>
+            <tr>
+              <td>mysql</td>
+              <td><code>False</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td><strong>none</strong></td>
+            </tr>
+            <tr>
+              <td>sqlite</td>
+              <td><code>False</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td><strong>none</strong></td>
+            </tr>
+            <tr>
+              <td>oracle</td>
+              <td><code>False</code></td>
+              <td><code>""</code></td>
+              <td><code>"/"</code></td>
+              <td><strong>none</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Two entries carry their reasons in the source</span>
+        <p>
+          SQLite’s: <em>“SQLite supports transactional DDL, but pysqlite does
+          not: see: http://bugs.python.org/issue10740”</em>
+          (<code>alembic/ddl/sqlite.py:43-46</code>). The flag is about the
+          driver, not the engine.
+        </p>
+        <p>
+          Oracle’s <code>command_terminator = ""</code> with
+          <code>batch_separator = "/"</code> is the SQL*Plus convention:
+          statements get no trailing semicolon and a <code>/</code> line after
+          each.
+        </p>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The practical reading</span>
+        <p>
+          <strong>An offline script’s transactional semantics are the target
+          backend’s, not Alembic’s.</strong>
+        </p>
+        <p>
+          Handing a DBA a PostgreSQL script means handing them something that
+          rolls back as a unit. Handing them a MySQL script does not — and
+          nothing in the script says so.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A data migration doing a <code>SELECT</code> is run with
+          <code>--sql</code>. What do you get?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A clean error, and no output script written at all
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              An error, and a script with a useless SELECT inside
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A script where the SELECT has been silently left out
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A script that runs the SELECT against a real database
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>execute()</code> returns <code>None</code>, so
+          <code>.fetchall()</code> raises — but <code>_exec</code> has already
+          compiled and written the <code>SELECT</code> to the output buffer,
+          because it does that with everything. You get a partial script
+          containing a statement that does nothing, and it looks like a valid
+          handoff.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Does <code>alembic upgrade --sql</code> require a start revision?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Yes, and omitting one will raise a clear command error
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              No, it defaults to base; downgrade is what requires it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              No, and it reads the current version from the database
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Yes, because there is no version table to read from
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>starting_rev</code> defaults to <code>None</code> in
+          <code>command.py::upgrade</code> and nothing raises. It is
+          <code>downgrade</code> that hard-requires
+          <code>&lt;from&gt;:&lt;to&gt;</code> under <code>--sql</code>. And the
+          third answer is impossible by construction — there is no connection to
+          read anything from, which is the whole premise of offline mode.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        Offline mode has no database to query. There is one Alembic feature whose
+        entire method depends on reflecting the existing table — so the two are
+        mutually exclusive by construction, and the feature exists for a reason
+        SQLite itself explains better than anyone.
+        <a href="0015-batch-mode.html">Lesson 15</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/offline.html"
+              >Alembic documentation, “Generating SQL Scripts (a.k.a. ‘Offline
+              Mode’)”</a
+            >
+            — short, and worth reading with one question held in mind: what does
+            this page <em>not</em> tell you? It is a good demonstration that
+            complete-looking documentation can leave the most dangerous
+            behaviour unstated.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Genuinely useful to work through: if you
+          had to hand a DBA a script you could vouch for, what would you do
+          <em>in addition</em> to <code>--sql</code>? The answer involves a real
+          database somewhere, and constructing it is a better exercise than
+          reading a recommendation.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            One sentence to retain: <strong>offline mode tells you a migration
+            renders, never that it works</strong>. Everything else in this lesson
+            is detail you can look up, and most of it lives in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0013-how-op-add-column-becomes-sql.html"
+              >13. How <code>op.add_column()</code> becomes SQL</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0015-batch-mode.html">15. Batch mode</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

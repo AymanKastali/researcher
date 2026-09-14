@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Alembic internals map — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Alembic internals map</h1>
+        <p class="page-blurb">
+          Where each behaviour lives in the source, by file and line. Alembic
+          <strong>1.14.1</strong> with SQLAlchemy <strong>2.0.36</strong>.
+        </p>
+      </header>
+
+      <div class="aside warning">
+        <span class="label">Version-pinned, and that matters</span>
+        <p>
+          Every line number below refers to a tree installed with
+          <code
+            >uv pip install --target ./alembic-src "alembic==1.14.1"
+            "SQLAlchemy==2.0.36"</code
+          >, verified by <code>alembic/__init__.py</code>:
+          <code>__version__ = "1.14.1"</code>.
+        </p>
+        <p>
+          These are <strong>source-code facts</strong>, not documented
+          guarantees. They describe one release and may change without a release
+          note. On a different version, re-check before relying on anything here.
+        </p>
+      </div>
+
+      <h2>Transaction boundary</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Behaviour</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                Migration body then version write, in one <code>with</code> block
+              </td>
+              <td><code>runtime/migration.py:612-630</code></td>
+            </tr>
+            <tr>
+              <td>Body call — your <code>upgrade()</code></td>
+              <td><code>runtime/migration.py:623</code></td>
+            </tr>
+            <tr>
+              <td>Version write</td>
+              <td><code>runtime/migration.py:630</code></td>
+            </tr>
+            <tr>
+              <td>The boolean equality that decides the boundary</td>
+              <td><code>runtime/migration.py:416-419</code></td>
+            </tr>
+            <tr>
+              <td>External-transaction escape hatch</td>
+              <td><code>runtime/migration.py:413-414</code></td>
+            </tr>
+            <tr>
+              <td>Offline branch returns <code>nullcontext()</code></td>
+              <td><code>runtime/migration.py:425-429</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            <code>transaction_now</code> on a transactional-DDL backend. Exactly
+            one level opens a real transaction.
+          </caption>
+          <thead>
+            <tr>
+              <th><code>transaction_per_migration</code></th>
+              <th>Outer call (<code>env.py</code>)</th>
+              <th>Per-step call</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>False</code> (default)</td>
+              <td><strong>Real transaction</strong> — wraps the whole run</td>
+              <td><code>nullcontext()</code></td>
+            </tr>
+            <tr>
+              <td><code>True</code></td>
+              <td><code>nullcontext()</code></td>
+              <td><strong>Real transaction</strong> — one per revision</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Dialects</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            <code>transactional_ddl</code>, terminators, and what an offline
+            script is wrapped in.
+          </caption>
+          <thead>
+            <tr>
+              <th>Impl</th>
+              <th>file:line</th>
+              <th><code>transactional_ddl</code></th>
+              <th>Terminator</th>
+              <th>Batch sep.</th>
+              <th>Offline wrapper</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>DefaultImpl</code></td>
+              <td><code>ddl/impl.py:97</code></td>
+              <td><code>False</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td>none</td>
+            </tr>
+            <tr>
+              <td><code>PostgresqlImpl</code></td>
+              <td><code>ddl/postgresql.py:81</code></td>
+              <td><strong><code>True</code></strong></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td><code>BEGIN;</code> … <code>COMMIT;</code></td>
+            </tr>
+            <tr>
+              <td><code>MSSQLImpl</code></td>
+              <td><code>ddl/mssql.py:53</code></td>
+              <td><strong><code>True</code></strong></td>
+              <td><code>";"</code></td>
+              <td><code>"GO"</code></td>
+              <td><code>BEGIN TRANSACTION;</code> … <code>COMMIT;</code> + <code>GO</code></td>
+            </tr>
+            <tr>
+              <td><code>MySQLImpl</code></td>
+              <td><code>ddl/mysql.py:44</code></td>
+              <td><code>False</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td><strong>none</strong></td>
+            </tr>
+            <tr>
+              <td><code>SQLiteImpl</code></td>
+              <td><code>ddl/sqlite.py:43</code></td>
+              <td><code>False</code></td>
+              <td><code>";"</code></td>
+              <td>—</td>
+              <td><strong>none</strong></td>
+            </tr>
+            <tr>
+              <td><code>OracleImpl</code></td>
+              <td><code>ddl/oracle.py:37</code></td>
+              <td><code>False</code></td>
+              <td><code>""</code></td>
+              <td><code>"/"</code></td>
+              <td><strong>none</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        SQLite’s reason is in the source: “SQLite supports transactional DDL, but
+        pysqlite does not: see: http://bugs.python.org/issue10740”
+        (<code>ddl/sqlite.py:43-46</code>). An offline script’s transactional
+        semantics are the <em>backend’s</em>, not Alembic’s.
+      </p>
+
+      <h2>The version table</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Fact</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <code>version_num VARCHAR(32) NOT NULL</code>, PK named
+                <code>&lt;table&gt;_pkc</code>
+              </td>
+              <td><code>ddl/impl.py:161-172</code></td>
+            </tr>
+            <tr>
+              <td>
+                Column name is a documented contract; <strong>32 is a bare
+                literal</strong> with no named constant
+              </td>
+              <td><code>ddl/impl.py:164</code></td>
+            </tr>
+            <tr>
+              <td>
+                Revision ids are <code>uuid.uuid4().hex[-12:]</code> — 12 of the
+                32 characters
+              </td>
+              <td><code>util/langhelpers.py:232-233</code></td>
+            </tr>
+            <tr>
+              <td>One row per head, not one row total</td>
+              <td><code>runtime/migration.py:496-504</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>checkfirst=True</code> create — a read-then-write race on a
+                virgin database
+              </td>
+              <td><code>runtime/migration.py:541-547</code></td>
+            </tr>
+            <tr>
+              <td>Opening read is a bare <code>SELECT</code>, no <code>FOR UPDATE</code></td>
+              <td><code>runtime/migration.py:533-539</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Concurrency — the compare-and-swap</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The two steps the check covers, and the three ways it is not in
+            effect.
+          </caption>
+          <thead>
+            <tr>
+              <th>Situation</th>
+              <th>Behaviour</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Loser’s <code>UPDATE</code> matches 0 rows</td>
+              <td>
+                <code
+                  >CommandError: Online migration expected to match one row when
+                  updating …; 0 found</code
+                >
+              </td>
+              <td><code>runtime/migration.py:806-817</code></td>
+            </tr>
+            <tr>
+              <td>Branch-delete step</td>
+              <td>Same check, “when deleting” wording</td>
+              <td><code>runtime/migration.py:769-790</code></td>
+            </tr>
+            <tr>
+              <td>Branch-create step (<code>INSERT</code>)</td>
+              <td><strong>No check at all</strong></td>
+              <td><code>runtime/migration.py:759-767</code></td>
+            </tr>
+            <tr>
+              <td>Offline (<code>--sql</code>)</td>
+              <td><strong>Disabled</strong> — <code>not self.context.as_sql</code></td>
+              <td><code>runtime/migration.py:807</code></td>
+            </tr>
+            <tr>
+              <td>Dialect without sane rowcount</td>
+              <td>Disabled</td>
+              <td><code>runtime/migration.py:808</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Alembic has no mutual exclusion of any kind</span>
+        <p>
+          <code
+            >grep -rniE "advisory|for_update|for update|lock" alembic/</code
+          >
+          → 35 hits. Excluding the English word “block” → <strong>0</strong>. The
+          published documentation search index returns 0 for
+          <code>advisori</code>, <code>concurr</code>, <code>mutex</code>,
+          <code>lock</code> and <code>kubernet</code>, against a control group
+          that hits.
+        </p>
+        <p>
+          The compare-and-swap runs <em>after</em> the DDL, so it catches the
+          bookkeeping race, never the DDL race. On PostgreSQL the loser’s error
+          rolls its DDL back; on MySQL, SQLite and Oracle it does not.
+        </p>
+      </div>
+
+      <h2>Revision graph</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Fact</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                Merge point ⇔ <code>len(_versioned_down_revisions) &gt; 1</code>
+              </td>
+              <td><code>script/revision.py:1698-1702</code></td>
+            </tr>
+            <tr>
+              <td>
+                The three “below me” properties —
+                <code>_versioned_</code> / <code>_all_</code> /
+                <code>_normalized_down_revisions</code>
+              </td>
+              <td><code>script/revision.py:1625-1645</code></td>
+            </tr>
+            <tr>
+              <td>
+                Heads computation: add all, then discard anything pointed at
+              </td>
+              <td><code>script/revision.py:220-249</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>revision_map[None] = revision_map[()] = None</code> — what
+                makes <code>"base"</code> resolvable
+              </td>
+              <td><code>script/revision.py:258</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>_relative_destination</code> regex and
+                <code>_revision_illegal_chars = ["@", "-", "+"]</code>
+              </td>
+              <td><code>script/revision.py:47-48</code></td>
+            </tr>
+            <tr>
+              <td>Symbol resolution (<code>head</code>, <code>heads</code>, <code>base</code>)</td>
+              <td><code>script/revision.py:748-786</code></td>
+            </tr>
+            <tr>
+              <td>Partial-id match floor: <code>len(x) &gt; 3</code></td>
+              <td><code>script/revision.py:631</code></td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Upgrade set = ancestors(target) − ancestors(current)</strong>
+              </td>
+              <td><code>script/revision.py:1508</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Two gotchas</span>
+        <p>
+          <strong>A missing <code>down_revision</code> target warns, then
+          raises.</strong> <code>util.warn(...)</code> at
+          <code>revision.py:240-245</code> falls straight through to
+          <code>map_[downrev]</code>, so you see a bare <code>KeyError</code>
+          instead of the message.
+        </p>
+        <p>
+          <strong><code>depends_on</code> is not lineage.</strong> It orders the
+          run; it does not make a merge point and never collapses rows in
+          <code>alembic_version</code>.
+        </p>
+      </div>
+
+      <h2>Autogenerate — the complete detection surface</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            All nine comparators, in
+            <code>autogenerate/compare.py</code>. No dialect registers one.
+          </caption>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Function</th>
+              <th>Line</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>schema</code></td><td><code>_autogen_for_tables</code></td><td>103</td></tr>
+            <tr><td><code>table</code></td><td><code>_compare_indexes_and_uniques</code></td><td>441</td></tr>
+            <tr><td><code>table</code></td><td><code>_compare_foreign_keys</code></td><td>1170</td></tr>
+            <tr><td><code>table</code></td><td><code>_compare_table_comment</code></td><td>1294</td></tr>
+            <tr><td><code>column</code></td><td><code>_compare_nullable</code></td><td>858</td></tr>
+            <tr><td><code>column</code></td><td><code>_setup_autoincrement</code></td><td>899</td></tr>
+            <tr><td><code>column</code></td><td><code>_compare_type</code></td><td>917</td></tr>
+            <tr><td><code>column</code></td><td><code>_compare_server_default</code></td><td>1054</td></tr>
+            <tr><td><code>column</code></td><td><code>_compare_column_comment</code></td><td>1142</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Behaviours worth remembering, with locations.</caption>
+          <thead>
+            <tr>
+              <th>Behaviour</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <strong>Renames are undetectable</strong> — three set operations
+                on names, no pairing pass
+              </td>
+              <td><code>autogenerate/compare.py:366-436</code></td>
+            </tr>
+            <tr>
+              <td>Downgrade is the mechanical reverse of the upgrade</td>
+              <td><code>autogenerate/compare.py:66</code></td>
+            </tr>
+            <tr>
+              <td>Default schema only unless <code>include_schemas=True</code></td>
+              <td><code>autogenerate/compare.py:91</code></td>
+            </tr>
+            <tr>
+              <td>Generic server-default compare is one string comparison</td>
+              <td><code>ddl/impl.py:600-607</code></td>
+            </tr>
+            <tr>
+              <td>PostgreSQL asks the server instead; exempts SERIAL PKs</td>
+              <td><code>ddl/postgresql.py:113-149</code></td>
+            </tr>
+            <tr>
+              <td>
+                Type synonyms suppress real differences by design
+              </td>
+              <td><code>ddl/impl.py:99</code>, <code>ddl/postgresql.py:82-84</code></td>
+            </tr>
+            <tr>
+              <td>One-sided column args deliberately ignored</td>
+              <td><code>ddl/impl.py:554-558</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>Skip</code> means “considered equal, no command generated”
+              </td>
+              <td><code>ddl/_autogen.py:68-73</code></td>
+            </tr>
+            <tr>
+              <td>
+                <strong>CHECK constraints: zero hits</strong> in
+                <code>compare.py</code> on 1.14.1
+              </td>
+              <td>— (added 1.19.0)</td>
+            </tr>
+            <tr>
+              <td>Views never reflected — <code>get_view_names</code> never called</td>
+              <td>— (zero occurrences in the package)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Operation dispatch</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Text</span>
+          <span class="code-illustrative">Written for this reference, from the 1.14.1 tree</span>
+        </div>
+        <pre><code>alembic.op.add_column(...)                    alembic/op.py          (module proxy)
+ → Operations.add_column(...)                 operations/base.py:192 (exec'd)
+  → AddColumnOp.add_column(...)               operations/ops.py
+   → Operations.invoke(op)                    operations/base.py:438-441  ← dialect dispatch
+    → toimpl.add_column                       operations/toimpl.py:172-197
+     → DefaultImpl.add_column                 ddl/impl.py:368-374
+      → base.AddColumn construct              ddl/base.py:151-159
+       → DefaultImpl._exec                    ddl/impl.py:204-232  ← online/offline fork
+        → @compiles visit_add_column          ddl/base.py:188-193
+         → add_column() helper                ddl/base.py:327-336
+          → compiler.get_column_specification(column)   ← SQLAlchemy boundary</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The division of labour</span>
+        <p>
+          Alembic writes the strings <code>"ALTER TABLE"</code> and
+          <code>"ADD COLUMN"</code>. <strong>SQLAlchemy writes everything about
+          the column</strong> — name, type, <code>DEFAULT</code>,
+          <code>NOT NULL</code>, <code>GENERATED</code>, identity,
+          <code>SERIAL</code>.
+        </p>
+        <p>
+          One <code>op.add_column()</code> can emit <strong>several
+          statements</strong>: the <code>ALTER TABLE</code>, one
+          <code>ADD CONSTRAINT</code> per non-PK constraint, one
+          <code>CREATE INDEX</code> per index, plus a
+          <code>COMMENT ON COLUMN</code> where needed. Separate statements mean
+          separate lock acquisitions.
+        </p>
+        <p>
+          PostgreSQL registers only four <code>@compiles</code> hooks —
+          <code>RenameTable</code>, <code>PostgresqlColumnType</code>,
+          <code>ColumnComment</code>, <code>IdentityColumnDefault</code> — and
+          <code>AddColumn</code> is not one. <code>op.alter_column()</code> is
+          the opposite: it branches per dialect.
+        </p>
+      </div>
+
+      <h2>Offline mode (<code>--sql</code>)</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Behaviour</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                The whole feature: compile, write, <code>return None</code>
+              </td>
+              <td><code>ddl/impl.py:213-232</code></td>
+            </tr>
+            <tr>
+              <td>
+                Connection is a <code>MockConnection</code> whose
+                <code>dump</code> has no <code>return</code>
+              </td>
+              <td><code>runtime/migration.py:152-157, 666-672</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>get_bind()</code> docstring says <code>None</code>;
+                <strong>it is not</strong> — so
+                <code>if op.get_bind() is not None:</code> guards nothing
+              </td>
+              <td><code>operations/base.py:528-538</code></td>
+            </tr>
+            <tr>
+              <td><code>_ensure_version_table()</code> skipped entirely</td>
+              <td><code>runtime/migration.py:605</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>CREATE TABLE alembic_version</code> emitted inline at the
+                first step, only when there are no heads yet
+              </td>
+              <td><code>runtime/migration.py:613-617</code></td>
+            </tr>
+            <tr>
+              <td><code>-- Running &lt;step&gt;</code> comment per migration</td>
+              <td><code>runtime/migration.py:619-622</code></td>
+            </tr>
+            <tr>
+              <td><code>upgrade --sql</code> defaults to <code>base</code></td>
+              <td><code>command.py:386-406</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>downgrade --sql</code> requires
+                <code>&lt;from&gt;:&lt;to&gt;</code>
+              </td>
+              <td><code>command.py:430-439</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Hard refusals in offline mode.</caption>
+          <thead>
+            <tr><th>Attempted</th><th>Error</th><th>Location</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>revision --autogenerate --sql</code></td>
+              <td><code>Using --sql with --autogenerate does not make any sense</code></td>
+              <td><code>command.py:208</code></td>
+            </tr>
+            <tr>
+              <td>Autogenerate via the API</td>
+              <td>
+                <code>autogenerate can't use as_sql=True as it prevents querying the database for schema information</code>
+              </td>
+              <td><code>autogenerate/api.py:345</code></td>
+            </tr>
+            <tr>
+              <td><code>upgrade --sql --purge</code></td>
+              <td><code>Can't use --purge with --sql mode</code></td>
+              <td><code>runtime/migration.py:597</code></td>
+            </tr>
+            <tr>
+              <td>Any bound parameter</td>
+              <td><code>SQL parameters not allowed with as_sql</code></td>
+              <td><code>ddl/impl.py:215</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Batch mode</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr><th>Behaviour</th><th>Location</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                Create new → copy → drop old → rename new into old (SQLite’s
+                documented safe ordering)
+              </td>
+              <td><code>operations/batch.py:443-480</code></td>
+            </tr>
+            <tr>
+              <td>
+                Temp name <code>_alembic_tmp_&lt;table&gt;</code>, truncated to 50
+                — <strong>docs say <code>_alembic_batch_temp</code></strong>
+              </td>
+              <td><code>operations/batch.py:244-245</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>recreate="auto"</code> rule, plus expression-default and
+                persisted-computed escalations
+              </td>
+              <td><code>ddl/sqlite.py:48-74</code></td>
+            </tr>
+            <tr>
+              <td>
+                Non-SQLite backends never auto-recreate
+              </td>
+              <td><code>ddl/impl.py:176-187</code></td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Unnamed reflected CHECK constraints silently
+                dropped</strong> (warning added in 1.20)
+              </td>
+              <td><code>operations/batch.py:267-275</code></td>
+            </tr>
+            <tr>
+              <td>
+                Any constraint covering a dropped column silently discarded
+              </td>
+              <td><code>operations/batch.py:345-346</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>create_table</code> / <code>drop_table</code> in a batch
+                block → <code>NotImplementedError</code>
+              </td>
+              <td><code>operations/batch.py:204, 207</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>rename_table</code> in a recreate batch →
+                <code>NotImplementedError("TODO")</code>
+              </td>
+              <td><code>operations/batch.py:717</code></td>
+            </tr>
+            <tr>
+              <td>
+                <code>drop_index</code> on a non-reflected index →
+                <code>ValueError("No such index: '%s'")</code>
+              </td>
+              <td><code>operations/batch.py:714</code></td>
+            </tr>
+            <tr>
+              <td>Batch + <code>--sql</code> refused unless <code>copy_from</code></td>
+              <td><code>operations/batch.py:127-140</code></td>
+            </tr>
+            <tr>
+              <td>
+                PostgreSQL frees constraint names before recreate; base hook is a
+                no-op
+              </td>
+              <td><code>ddl/postgresql.py:98-104</code></td>
+            </tr>
+            <tr>
+              <td>
+                No <code>PRAGMA foreign_keys</code> emitted anywhere — that step
+                is the operator’s
+              </td>
+              <td>— (zero occurrences in <code>ddl/sqlite.py</code>)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Documentation/source disagreements on 1.14.1</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Prefer the source. Three are version gaps, two are errors, and one
+            is a stale docstring.
+          </caption>
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Docs</th>
+              <th>1.14.1</th>
+              <th>Kind</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CHECK autogenerate</td>
+              <td>Listed as detectable</td>
+              <td>Does not exist</td>
+              <td>Version gap (1.19.0)</td>
+            </tr>
+            <tr>
+              <td>Unnamed CHECK in batch</td>
+              <td>“emits a warning”</td>
+              <td>Silent <code>pass</code></td>
+              <td>Version gap (1.20)</td>
+            </tr>
+            <tr>
+              <td><code>current --check-heads</code></td>
+              <td>In the cookbook</td>
+              <td>Does not exist</td>
+              <td>Version gap (1.17.1)</td>
+            </tr>
+            <tr>
+              <td>Batch temp name</td>
+              <td><code>_alembic_batch_temp</code></td>
+              <td><code>_alembic_tmp_&lt;table&gt;</code>[:50]</td>
+              <td><strong>Error</strong></td>
+            </tr>
+            <tr>
+              <td><code>get_bind()</code> offline</td>
+              <td><code>None</code> “[TODO: verify this]”</td>
+              <td><code>MockConnection</code></td>
+              <td><strong>Error</strong></td>
+            </tr>
+            <tr>
+              <td>
+                <code>batch_alter_table</code> docstring on named CHECK
+                constraints
+              </td>
+              <td>Pre-1.7 text: not copied</td>
+              <td>Named ones <em>are</em> copied</td>
+              <td><strong>Stale docstring</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        There is no published Alembic 1.14 documentation —
+        <code>/en/rel_1_14/</code> is not published and
+        <code>/en/release-1.14.0/</code> returns 404 — so every documentation
+        quotation in this topic is from the current docs, checked against 1.14.1
+        source. <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

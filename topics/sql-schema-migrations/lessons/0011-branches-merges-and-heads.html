@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>11. Branches, merges and heads — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0011</span>
+        <h1>Branches, merges and heads</h1>
+        <p class="lesson-mission">
+          A merge revision is a tuple. That is the entire definition, and once
+          you have it, branch labels, multiple heads and
+          <code>upgrade head</code> all reduce to set arithmetic on a graph.
+        </p>
+      </header>
+
+      <p class="lead">
+        Branching is where Alembic acquires a reputation for complexity. Most of
+        that reputation belongs to the vocabulary rather than the mechanism —
+        which is small enough to state in one property, one set difference, and
+        one distinction that the documentation makes and almost nobody notices.
+      </p>
+
+      <h2>A merge revision is a tuple</h2>
+
+      <p>
+        There is no merge type, no merge flag, no marker in the file. A
+        revision’s <code>down_revision</code> is normally a string; when it is a
+        tuple of two or more, the revision is a merge point:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/script/revision.py:1698-1702 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">@property
+def is_merge_point(self) -> bool:
+    """Return True if this :class:`.Script` is a merge point."""
+
+    return len(self._versioned_down_revisions) > 1</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">That is the whole definition</span>
+        <p>
+          <code>alembic merge</code> is not a special operation. It writes an
+          ordinary revision file whose <code>down_revision</code> happens to be a
+          tuple:
+        </p>
+        <p>
+          <code>down_revision = ("4f2c1a9b8e30", "9c03ee41d7ab")</code>
+        </p>
+        <p>
+          Everything that follows — the two heads collapsing into one, the
+          version table going from two rows to one — is a consequence of that
+          tuple, not of any merge machinery.
+        </p>
+      </div>
+
+      <h2>Three different meanings of “below me”</h2>
+
+      <p>
+        <a href="0009-what-alembic-is.html">Lesson 9</a>’s revision template
+        had a fourth variable you have not used yet:
+        <code>depends_on</code>. It sits alongside <code>down_revision</code>,
+        and the split between them is what makes the rest of the module legible:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Three properties on <code>Revision</code>,
+            <code>alembic/script/revision.py:1625-1645</code>. Each is used for
+            exactly one thing.
+          </caption>
+          <thead>
+            <tr>
+              <th>Property</th>
+              <th>Contents</th>
+              <th>Used for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_versioned_down_revisions</code></td>
+              <td><code>down_revision</code> only</td>
+              <td>The version table, and <code>is_merge_point</code></td>
+            </tr>
+            <tr>
+              <td><code>_all_down_revisions</code></td>
+              <td>
+                <code>down_revision</code> + all resolved dependencies
+              </td>
+              <td>Cycle detection</td>
+            </tr>
+            <tr>
+              <td><code>_normalized_down_revisions</code></td>
+              <td>
+                <code>down_revision</code> + dependencies not already implied by
+                an ancestor
+              </td>
+              <td>Traversal order</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">The consequence worth keeping</span>
+        <p>
+          A revision with one <code>down_revision</code> and three
+          <code>depends_on</code> entries is <strong>not a merge point</strong>
+          and never collapses rows in <code>alembic_version</code>.
+        </p>
+        <p>
+          <strong>Dependencies order the run; they do not define lineage.</strong>
+        </p>
+      </div>
+
+      <p>The source’s own docstring says exactly this:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>Additional revisions which this revision is dependent on.</p>
+          <p>
+            From a migration standpoint, these dependencies are added to the
+            down_revision to form the full iteration. However, the separation of
+            down_revision from “dependencies” is to assist in navigating a
+            history that contains many branches, typically a multi-root scenario.
+          </p>
+        </blockquote>
+        <figcaption>
+          <code>Revision.dependencies</code> docstring,
+          <code>alembic/script/revision.py:1565-1573</code> (1.14.1).
+        </figcaption>
+      </figure>
+
+      <h2>How heads are computed</h2>
+
+      <p>
+        <code>RevisionMap._revision_map</code> builds the whole graph in one pass.
+        The algorithm is optimistic-then-subtractive, which is a nice trick:
+        assume everything is a head, then take away everything that something
+        points at.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/script/revision.py:238-249 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">for rev in map_.values():
+    for downrev in rev._all_down_revisions:
+        if downrev not in map_:
+            util.warn(
+                "Revision %s referenced from %s is not present"
+                % (downrev, rev)
+            )
+        down_revision = map_[downrev]
+        down_revision.add_nextrev(rev)
+        if downrev in rev._versioned_down_revisions:
+            heads.discard(down_revision)
+        _real_heads.discard(down_revision)</code></pre>
+      </div>
+
+      <p>
+        The two <code>discard</code> lines are the distinction again, in
+        executable form. A pure <code>depends_on</code> link removes the target
+        from <code>_real_heads</code> but <strong>leaves it a versioned
+        head</strong> — because the second <code>discard</code> is unconditional
+        and the first is guarded.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">A wart worth recognising in the wild</span>
+        <p>
+          Look at the <code>if downrev not in map_</code> branch. It calls
+          <code>util.warn(...)</code> and then falls straight through to
+          <code>map_[downrev]</code> — which raises <code>KeyError</code> on the
+          very next line.
+        </p>
+        <p>
+          <strong>The warning never reaches you as a warning.</strong> If you
+          delete a revision file that another file still points at, what you get
+          is a bare <code>KeyError</code>, not the helpful message sitting right
+          there in the source.
+        </p>
+      </div>
+
+      <h2>Addressing: <code>head</code>, <code>heads</code>, and the rest</h2>
+
+      <p>
+        Lesson 9 noted that revision ids may not contain <code>@</code>,
+        <code>-</code> or <code>+</code>. Here is what those characters are
+        reserved <em>for</em>. <code>_resolve_revision_number</code> decodes the
+        symbols, and two details are easy to miss:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Symbolic targets, from
+            <code>alembic/script/revision.py:748-786</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>You write</th>
+              <th>It resolves to</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>base</code>, or nothing</td>
+              <td>The empty tuple — “before everything”</td>
+            </tr>
+            <tr>
+              <td><code>head</code></td>
+              <td>
+                The single head — raises <code>MultipleHeads</code> if there is
+                more than one
+              </td>
+            </tr>
+            <tr>
+              <td><code>heads</code></td>
+              <td>
+                <code>_real_heads</code> — <strong>dependency-aware</strong>
+              </td>
+            </tr>
+            <tr>
+              <td><code>mybranch@heads</code></td>
+              <td>
+                <code>filter_for_lineage(self.heads, …)</code> — the
+                <strong>versioned</strong> heads. An asymmetry, and undocumented
+              </td>
+            </tr>
+            <tr>
+              <td><code>mybranch@head</code></td>
+              <td>The one head on that labelled branch</td>
+            </tr>
+            <tr>
+              <td><code>abc123+2</code>, <code>head-1</code></td>
+              <td>
+                Relative offsets. The regex <em>requires</em> the offset —
+                absolute targets take a different path entirely
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Partial revision ids work, with a hard four-character floor —
+        <code>if x and len(x) &gt; 3 and x.startswith(resolved_id)</code>,
+        <code>revision.py:631</code>. Three characters will not match, and the
+        error tells you so.
+      </p>
+
+      <h2>Upgrade and downgrade are set arithmetic</h2>
+
+      <p>
+        After all that graph machinery, deciding what to run is one line:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/script/revision.py:1508 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">needs = required_node_set.difference(current_node_set)</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong>Upgrade set = ancestors(target) − ancestors(current).</strong>
+        </p>
+        <p>
+          Both sides are computed with
+          <code>_get_ancestor_nodes(..., include_dependencies=True)</code>
+          unioned with their targets. Downgrade is the mirror: collect the
+          descendants of the roots being dropped, then intersect with what is
+          currently active.
+        </p>
+      </div>
+
+      <p>
+        The resulting set is then topologically sorted. One detail explains an
+        otherwise baffling line elsewhere in the codebase: the sort yields
+        <em>newest-first</em>, so <code>ScriptDirectory._upgrade_revs</code>
+        reverses it, because an upgrade must run oldest-first.
+      </p>
+
+      <h2>The errors, and why they say what they say</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            The error hierarchy in <code>revision.py</code>. All are converted to
+            <code>util.CommandError</code> at the
+            <code>ScriptDirectory</code> boundary by
+            <code>_catch_revision_errors</code>.
+          </caption>
+          <thead>
+            <tr>
+              <th>Error</th>
+              <th>Means</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>MultipleHeads</code></td>
+              <td>
+                “Multiple heads are present for given argument” — you said
+                <code>head</code> and there are two. Merge, or say
+                <code>&lt;branchname&gt;@head</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>RangeNotAncestorError</code></td>
+              <td>
+                “Revision X is not an ancestor of revision Y” — you asked for a
+                range across unrelated lines
+              </td>
+            </tr>
+            <tr>
+              <td><code>ResolutionError</code></td>
+              <td>The identifier matched nothing, or matched ambiguously</td>
+            </tr>
+            <tr>
+              <td>
+                <code>CycleDetected</code>, <code>DependencyCycleDetected</code>,
+                <code>LoopDetected</code>
+              </td>
+              <td>
+                The pointers form a loop — detected using
+                <code>_all_down_revisions</code>, so dependencies count here
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        That conversion is where the familiar advice to use
+        <code>'&lt;branchname&gt;@head'</code> comes from — it is written into the
+        error text, not into the documentation you were reading when you hit it.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What makes a revision a merge point?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              A flag written into the file by alembic merge
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Its <code>down_revision</code> being a tuple of two or more
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Its listing of two or more entries under <code>depends_on</code>
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Two separate rows appearing in the version table now
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>return len(self._versioned_down_revisions) &gt; 1</code>, and
+          <code>_versioned_down_revisions</code> is <code>down_revision</code>
+          alone. Dependencies are explicitly excluded — that is the whole reason
+          the three “below me” properties exist. And two rows in the version
+          table are the <em>situation a merge resolves</em>, not what defines one.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          You add <code>depends_on</code> to a revision. What changes in
+          <code>alembic_version</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The two affected rows are collapsed down into one row
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Nothing — only the ordering of the run is affected
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              A row is added recording the dependency that was set
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The row for the dependency target is removed from it
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The version table follows <code>_versioned_down_revisions</code>, which
+          is <code>down_revision</code> only. In the heads loop, a pure
+          dependency link hits the unconditional
+          <code>_real_heads.discard(...)</code> but not the guarded
+          <code>heads.discard(...)</code> — so the target stays a versioned head
+          and keeps its row. Dependencies order the run and nothing else.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        You now know how Alembic decides <em>which</em> revisions to run. The
+        next question is where their contents come from when you do not write
+        them yourself — and what a machine comparing your models to your database
+        is structurally incapable of noticing.
+        <a href="0012-what-autogenerate-cannot-see.html">Lesson 12</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/branches.html"
+              >Alembic documentation, “Working with Branches”</a
+            >
+            — the one Alembic doc page that is genuinely worth reading end to
+            end. It works through creating a branch, labelling it, and merging
+            it, with the version table printed at each step. Read it knowing that
+            every diagram in it is a picture of a tuple.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth asking it to walk through: two
+          developers each add a revision off the same parent, and both merge to
+          main. What is in <code>alembic_version</code> before and after
+          <code>alembic merge</code>, and what would
+          <code>alembic upgrade head</code> do in between? Working the set
+          arithmetic on a concrete case is what makes this stick.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Two things to be able to produce from memory before moving on: the
+            one-line definition of a merge point, and the sentence
+            “upgrade set = ancestors(target) − ancestors(current)”. The rest of
+            this lesson is lookup material and belongs in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>,
+            not in your head.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0010-where-the-version-write-sits.html"
+              >10. Where the version write sits</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0012-what-autogenerate-cannot-see.html"
+              >12. What autogenerate cannot see</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

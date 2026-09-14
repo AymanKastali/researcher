@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>17. Reading the evidence — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0017</span>
+        <h1>Reading the evidence</h1>
+        <p class="lesson-mission">
+          Sixteen lessons rested on four different grades of evidence. This one
+          makes the grading itself the object of study — because it is the part
+          that survives PostgreSQL 17 and Alembic 1.20, and the rest is not.
+        </p>
+      </header>
+
+      <p class="lead">
+        Every claim in this topic carried a source, and those sources were not
+        equivalent. A sentence in the PostgreSQL manual and a comment on a GitHub
+        issue are both “first-party”, and believing them equally is a mistake. So
+        is refusing to use the weaker one. Here is the grading, the places this
+        topic had to use each grade, and the seven things that could not be
+        verified at all.
+      </p>
+
+      <h2>The four grades</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What each grade licenses you to say, and where it appeared.
+          </caption>
+          <thead>
+            <tr>
+              <th>Grade</th>
+              <th>What it is</th>
+              <th>What it licenses</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Documented guarantee</strong></td>
+              <td>
+                A sentence in a vendor manual for a named version — the
+                <code>ALTER TABLE</code> lock rule, the
+                <code>NOT VALID</code> rationale
+              </td>
+              <td>
+                Stating it flatly. But <em>only for that version</em>: the
+                <code>ALTER TYPE</code> pair in
+                <a href="0001-ddl-inside-a-transaction.html">lesson 1</a> is the
+                same page saying
+                opposite things four releases apart
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Source-code fact</strong></td>
+              <td>
+                A line read from Alembic 1.14.1 on disk — the truth table, the
+                nine comparators, the compare-and-swap
+              </td>
+              <td>
+                Stating what this release does. <strong>Not</strong> what the
+                project promises. It can change without a release note
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Maintainer statement</strong></td>
+              <td>
+                A first-party comment on the project’s own tracker — the two
+                Mike Bayer quotations in lesson 16
+              </td>
+              <td>
+                Describing <em>intent</em>. Carries no versioned guarantee and no
+                test coverage. Must be labelled every time
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Practitioner pattern</strong></td>
+              <td>
+                A named technique with an author and no vendor owner —
+                expand/contract
+              </td>
+              <td>
+                Naming the author and the date. Never “best practice”, never
+                “the standard approach”
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">A fifth move, used twice</span>
+        <p>
+          <strong>The argument from absence</strong> — establishing that a source
+          says <em>nothing</em>, by exhaustive search with a working control
+          group.
+        </p>
+        <p>
+          Used in <a href="0005-the-convoy.html">lesson 5</a> (PostgreSQL never
+          documents the convoy) and lesson 16
+          (Alembic’s documentation contains no concurrency material, its source
+          no locking primitive). It is sound only when the search is
+          <em>shown</em>, which is why both lessons print their counts rather
+          than summarising them. Five zeroes with no control group is not
+          evidence; it is a broken grep.
+        </p>
+      </div>
+
+      <h2>Where the documentation and the source disagreed</h2>
+
+      <p>
+        Six times in this topic, and each time the lesson preferred the source
+        and said so. Collected here because the <em>pattern</em> is more useful
+        than any individual case:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Documentation/source disagreements found in Alembic 1.14.1. Three
+            are version gaps, two are errors, and one is a stale docstring.
+          </caption>
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Documentation says</th>
+              <th>1.14.1 source says</th>
+              <th>Kind</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CHECK-constraint autogenerate</td>
+              <td>Listed under “can optionally detect”</td>
+              <td>
+                <code>grep CheckConstraint compare.py</code> → <strong>0</strong>
+              </td>
+              <td>Version gap (added 1.19.0)</td>
+            </tr>
+            <tr>
+              <td>Unnamed CHECK in batch mode</td>
+              <td>“As of 1.20, it emits a warning”</td>
+              <td>A bare <code>pass</code>, silent</td>
+              <td>Version gap</td>
+            </tr>
+            <tr>
+              <td><code>alembic current --check-heads</code></td>
+              <td>Documented in the cookbook</td>
+              <td>Does not exist</td>
+              <td>Version gap (added 1.17.1)</td>
+            </tr>
+            <tr>
+              <td>Batch temp table name</td>
+              <td><code>_alembic_batch_temp</code></td>
+              <td>
+                <code>_alembic_tmp_&lt;tablename&gt;</code>, truncated to 50
+              </td>
+              <td><strong>Error</strong></td>
+            </tr>
+            <tr>
+              <td><code>get_bind()</code> offline</td>
+              <td>
+                “In a SQL script context, this value is <code>None</code>. [TODO:
+                verify this]”
+              </td>
+              <td>A <code>MockConnection</code>, never <code>None</code></td>
+              <td><strong>Error</strong>, self-flagged</td>
+            </tr>
+            <tr>
+              <td><code>batch_alter_table</code> on CHECK constraints</td>
+              <td>
+                Pre-1.7 docstring text: “will currently not copy CHECK
+                constraints”
+              </td>
+              <td>
+                Named ones are copied, via <code>named_constraints</code>
+              </td>
+              <td><strong>Stale docstring</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Why three of six are version gaps</span>
+        <p>
+          There is <strong>no published Alembic 1.14 documentation</strong>:
+          <code>/en/rel_1_14/</code> is not published and
+          <code>/en/release-1.14.0/</code> returns 404. So every documentation
+          quotation in this topic came from the current docs, and three
+          “disagreements” are really the docs being correct about a release you
+          are not running.
+        </p>
+        <p>
+          That is worth internalising as a habit rather than a fact: when a
+          project’s documentation is unversioned or version-skewed, a
+          disagreement with the source is <em>more likely</em> to be a version gap
+          than an error — and the only way to tell is to read the source.
+        </p>
+      </div>
+
+      <h2>The seven things that could not be verified</h2>
+
+      <p>
+        Flagged in place throughout, and collected here so the gaps are
+        countable:
+      </p>
+
+      <ol>
+        <li>
+          <strong>PostgreSQL never states that DDL is transactional.</strong>
+          Established negatively in lesson 1, from the enumeration of statements
+          that cannot run inside a transaction block. The inference is safe. It
+          is still an inference.
+        </li>
+        <li>
+          <strong
+            ><code
+              >current transaction is aborted, commands ignored until end of
+              transaction block</code
+            >
+            is a server error message, not documentation.</strong
+          >
+          It describes the half-failed-migration behaviour exactly, and it is
+          emitted by the server rather than written by a technical writer. No
+          manual section states the rule it implies.
+        </li>
+        <li>
+          <strong>PostgreSQL never documents the lock-queue convoy.</strong> The
+          most consequential operational fact in the first half. Lesson 5 sources
+          it from MySQL’s manual and says plainly that it is a citation by
+          analogy.
+        </li>
+        <li>
+          <strong
+            >PostgreSQL 16 does not say whether <code>ADD COLUMN</code> with an
+            identity or generated-stored specification rewrites the
+            table.</strong
+          >
+          <a href="0004-the-lock-and-rewrite-table.html">Lesson 4</a>’s table
+          marks the cell undocumented rather than guessing.
+        </li>
+        <li>
+          <strong>Expand/contract appears in no vendor manual.</strong> Its
+          mechanics are grounded — every step it prescribes is one of the safe
+          operations in lesson 4 — but the pattern as a pattern has no vendor
+          owner.
+        </li>
+        <li>
+          <strong>There is no Alembic 1.14 documentation online.</strong> See the
+          table above.
+        </li>
+        <li>
+          <strong
+            >“Run migrations as a separate step, before rolling out application
+            instances” has no documented owner.</strong
+          >
+          Its only first-party support is one maintainer comment on a discussion
+          tracker, dated 7 March 2024. Everything beyond that — init containers,
+          Job ordering, Helm hooks — is unverified practitioner consensus, and
+          none of it is named here rather than cite something that was not read.
+        </li>
+      </ol>
+
+      <div class="aside warning">
+        <span class="label">And one thing nobody publishes</span>
+        <p>
+          <strong>No primary source gives timings.</strong> How long a rewrite
+          takes on a table of a given size is documented by no vendor, so no
+          number appears anywhere in this topic.
+        </p>
+        <p>
+          If you find yourself wanting one — and you will, when someone asks “how
+          long will this migration take?” — the honest answer is that it depends
+          on your hardware and your table, that nobody has published a model, and
+          that the way to find out is to restore a copy and run it.
+        </p>
+      </div>
+
+      <h2>How to check any of this yourself</h2>
+
+      <p>
+        The most transferable thing in this topic is not any fact in it. It is
+        that all of it is checkable, cheaply:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Shell</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-bash"># 1. Pin a version and read it. Every source claim here came from this.
+uv pip install --target ./alembic-src "alembic==1.14.1" "SQLAlchemy==2.0.36"
+grep -n '__version__' alembic-src/alembic/__init__.py
+
+# 2. Check a claim about detection surface.
+grep -rn 'comparators.dispatch_for' alembic-src/alembic/
+
+# 3. Check a claim about absence -- always with a control group.
+grep -rniE "advisory|for_update|lock" alembic-src/alembic/ | grep -viE "block" | wc -l
+
+# 4. Check a documentation claim against the version you actually run.
+#    PostgreSQL pages are the same URL with the version number changed:
+#      /docs/16/sql-altertype.html   vs   /docs/11/sql-altertype.html</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The habit, in one sentence</span>
+        <p>
+          <strong>When a claim matters, find the sentence — and when there is no
+          sentence, say so.</strong>
+        </p>
+        <p>
+          Most of what circulates about schema migrations is true, undated, and
+          unattributed. The three properties are independent, and only the first
+          one is the one people check.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What makes an argument from absence sound rather than lazy?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Searching several pages most likely to contain the term
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Searching exhaustively, with a control group that also hits
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Confirming that no maintainer has ever mentioned the term
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Checking that the feature is missing from the changelog
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Zeroes are equally consistent with a working search and a broken one —
+          only terms that <em>do</em> hit distinguish the cases. Lesson 16
+          searched the complete published index rather than selected pages, and
+          printed four control terms alongside the five zeroes. Without that
+          right-hand column the result would be worthless.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Alembic’s docs list a feature your installed version lacks. What is the
+          likeliest explanation?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The documentation contains a plain error about the feature
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The documentation describes a newer release than your own
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The feature was removed from a more recent release
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The feature needs a setting enabled in your environment
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Alembic publishes documentation only for the current release — there is
+          no 1.14 build at all — so any page you read describes a later version
+          than a pinned install. Three of this topic’s six disagreements were
+          exactly that, and each was identifiable because the docs carried an
+          “Added in version” marker. Genuine errors exist too, but they are the
+          rarer case.
+        </p>
+      </div>
+
+      <h2>You have finished the topic</h2>
+
+      <p>
+        Seventeen lessons: eight on what a database does under a migration, eight
+        on what one tool does on top of that, and this one on how to tell which
+        claims to trust. What you should be able to do now is on the
+        <code>MISSION.md</code> beside these lessons, and the
+        <a href="../index.html">reference documents</a> are what to come back to
+        rather than these pages.
+      </p>
+
+      <p>
+        The most durable thing here is the smallest: <strong>a lock is its
+        conflict set, a scan can be moved and a rewrite cannot, and a claim
+        without a sentence behind it is folklore no matter who is
+        repeating it.</strong>
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            Pick the one you will actually use. If you run PostgreSQL, it is the
+            <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+              ><code>ALTER TABLE</code> Notes section</a
+            >
+            — two pages, and the source of more of this topic than anything else.
+            If you run Alembic, it is
+            <code>alembic/runtime/migration.py</code> in a pinned install. Both
+            reward a second reading far more than any summary of them does.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher, and this is the point where that matters
+          most. Bring it a claim about migrations you have read somewhere — a
+          blog post, a linter rule, a team convention — and ask it to grade the
+          evidence: documented guarantee, source-code fact, maintainer statement,
+          practitioner pattern, or nothing. Doing that to three or four real
+          claims will teach you more than re-reading any lesson here.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Leave this a week, then come back and try to reconstruct, without
+            notes: lesson 4’s three surprising rows, lesson 5’s three actors,
+            lesson 6’s four steps, and lesson 16’s one-sentence summary of what
+            the compare-and-swap does and does not catch. Whatever you cannot
+            produce is what to re-read — and only that. What this topic could
+            not establish is listed in
+            <a href="../reference/unverified-claims.html">unverified claims</a>,
+            and the vocabulary it settled on is in the
+            <a href="../reference/glossary.html">glossary</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0016-concurrent-deploys.html">16. Concurrent deploys</a>
+          </li>
+          <li>
+            <span class="direction">Index</span>
+            <a href="../index.html">All lessons and reference documents</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

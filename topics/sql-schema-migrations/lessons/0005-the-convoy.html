@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>5. The convoy — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0005</span>
+        <h1>The convoy</h1>
+        <p class="lesson-mission">
+          Why a one-second <code>ALTER TABLE</code> takes the site down instead
+          of delaying one statement — and what to do when the most important
+          operational fact in your database has no sentence in your database’s
+          manual.
+        </p>
+      </header>
+
+      <p class="lead">
+        This is the shortest lesson in the topic and the one most worth keeping.
+        It contains one mechanism and one sourcing problem, and the sourcing
+        problem is not an aside — it is half the lesson.
+      </p>
+
+      <h2>The mechanism</h2>
+
+      <p>Three actors. Work through them in order.</p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            How a fast migration produces a slow outage.
+          </caption>
+          <thead>
+            <tr>
+              <th>Who</th>
+              <th>Does what</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A long-running transaction</td>
+              <td>
+                Read from the table an hour ago and never committed. Holds
+                <code>ACCESS SHARE</code>
+              </td>
+              <td>Harmless on its own</td>
+            </tr>
+            <tr>
+              <td>Your migration</td>
+              <td>
+                Requests <code>ACCESS EXCLUSIVE</code>, which conflicts with
+                <code>ACCESS SHARE</code>
+              </td>
+              <td>Waits. Indefinitely, by default</td>
+            </tr>
+            <tr>
+              <td>Every subsequent <code>SELECT</code></td>
+              <td>
+                Requests <code>ACCESS SHARE</code> — which does
+                <strong>not</strong> conflict with <code>ACCESS SHARE</code>
+              </td>
+              <td><strong>Waits anyway</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The sentence to keep</span>
+        <p>
+          <strong
+            >A waiting <code>ACCESS EXCLUSIVE</code> request blocks everything
+            queued behind it, including requests that do not conflict with the
+            lock already held.</strong
+          >
+        </p>
+        <p>
+          That is why a migration which would have taken one second takes the
+          site down. The migration is not slow. The migration is
+          <em>queued</em>, and it is holding the door.
+        </p>
+      </div>
+
+      <p>
+        Notice what makes this counter-intuitive.
+        <a href="0003-lock-modes.html">Lesson 3</a> taught you that
+        <code>ACCESS SHARE</code> conflicts with <code>ACCESS EXCLUSIVE</code>
+        only — so reader-against-reader should never wait. And they do not wait
+        for <em>each other</em>. They wait for the <code>ALTER TABLE</code> that
+        is itself waiting, sitting between them in the queue. The conflict table
+        describes lock <em>holders</em>; the queue adds a rule the conflict table
+        does not contain.
+      </p>
+
+      <h2>Now the problem: PostgreSQL never states this</h2>
+
+      <p>
+        This is the single most consequential operational fact about DDL on
+        PostgreSQL, and <strong>the PostgreSQL manual does not contain it</strong>.
+        Not on the locking page, not on <code>ALTER TABLE</code>, not in the
+        MVCC chapter. There is no sentence to quote.
+      </p>
+
+      <p>What the manual offers is circumstantial. Wait queues exist:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Worse, the pg_locks view does not expose information about which
+            processes are ahead of which others in lock wait queues, nor
+            information about which processes are parallel workers running on
+            behalf of which other client sessions.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/view-pg-locks.html"
+            >54.12. <code>pg_locks</code></a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        And one clause on the same page implies you can be blocked by a
+        <em>waiter</em> rather than by a holder — which is the convoy, stated
+        sideways and about a catalog column rather than about behaviour:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            granted is true in a row representing a lock held by the indicated
+            process. False indicates that this process is currently waiting to
+            acquire this lock, which implies that at least one other process is
+            holding <strong>or waiting for</strong> a conflicting lock mode on
+            the same lockable object.
+          </p>
+        </blockquote>
+        <figcaption>Same page. Emphasis added.</figcaption>
+      </figure>
+
+      <p>
+        That is as far as PostgreSQL goes. Two hints and an inference, and
+        neither hint is written as operational guidance.
+      </p>
+
+      <h2>MySQL states the rule outright</h2>
+
+      <p>
+        The same behaviour, in another engine’s manual, written plainly and with
+        a worked example:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Due to the exclusive metadata lock requirements outlined above, an
+            online DDL operation may have to wait for concurrent transactions
+            that hold metadata locks on the table to commit or rollback. […]
+            <strong
+              >Additionally, a pending exclusive metadata lock requested by an
+              online DDL operation blocks subsequent transactions on the
+              table.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>
+          MySQL 8.0 Reference Manual,
+          <a
+            class="citation"
+            href="https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-performance.html"
+            >17.12.2 Online DDL Performance and Concurrency</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>And the example it gives is the three actors above, exactly:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p><strong>Session 1:</strong></p>
+          <p>
+            <code>mysql&gt; CREATE TABLE t1 (c1 INT) ENGINE=InnoDB;</code><br />
+            <code>mysql&gt; START TRANSACTION;</code><br />
+            <code>mysql&gt; SELECT * FROM t1;</code>
+          </p>
+          <p>
+            The session 1 SELECT statement takes a shared metadata lock on table
+            t1.
+          </p>
+          <p><strong>Session 2:</strong></p>
+          <p>
+            <code
+              >mysql&gt; ALTER TABLE t1 ADD COLUMN x INT, ALGORITHM=INPLACE,
+              LOCK=NONE;</code
+            >
+          </p>
+          <p>
+            The online DDL operation in session 2, which requires an exclusive
+            metadata lock on table t1 to commit table definition changes, must
+            wait for the session 1 transaction to commit or roll back.
+          </p>
+          <p><strong>Session 3:</strong></p>
+          <p><code>mysql&gt; SELECT * FROM t1;</code></p>
+          <p>
+            The SELECT statement issued in session 3 is blocked waiting for the
+            exclusive metadata lock requested by the ALTER TABLE operation in
+            session 2 to be granted.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">Look at what session 2 asked for</span>
+        <p>
+          Session 2 specified <code>LOCK=NONE</code> — an assertion that would
+          have failed loudly if concurrent DML could not be permitted — and
+          <em>still</em> produced the outage. <code>LOCK=NONE</code> governs the
+          execution phase, not the brief exclusive metadata lock taken at commit.
+        </p>
+        <p>
+          <strong>“Online” does not mean “lock-free”.</strong> It means the long
+          part is online. The short part still stops the world, and the short
+          part is enough.
+        </p>
+      </div>
+
+      <div class="aside note">
+        <span class="label">How to cite this, and how not to</span>
+        <p>
+          Teaching the convoy from MySQL’s page while noting that PostgreSQL
+          behaves the same way is <strong>defensible</strong>. It is an argument
+          by analogy between two engines that both use a queued table-level lock,
+          and it is labelled as one.
+        </p>
+        <p>
+          Citing <em>PostgreSQL</em> for it is <strong>not</strong> defensible,
+          and you will see it done constantly — usually with a link to the
+          explicit-locking page, which does not say it. If you repeat this fact,
+          repeat the provenance with it.
+        </p>
+      </div>
+
+      <h2>The mitigation, and its wrinkle</h2>
+
+      <p>
+        Since the danger is <em>waiting</em> rather than working, the fix is to
+        refuse to wait:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Abort any statement that waits longer than the specified amount of
+            time while attempting to acquire a lock on a table, index, row, or
+            other database object.
+            <strong
+              >The time limit applies separately to each lock acquisition
+              attempt.</strong
+            >
+            […] A value of zero (the default) disables the timeout.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a
+            class="citation"
+            href="https://www.postgresql.org/docs/16/runtime-config-client.html"
+            >20.11.2. Statement Behavior</a
+          >. Emphasis in the original.
+        </figcaption>
+      </figure>
+
+      <p>
+        Two operational notes the manual makes explicit, and both are easy to get
+        wrong:
+      </p>
+
+      <ul>
+        <li>
+          <strong>The per-attempt scoping means it does not bound the
+          statement.</strong> A multi-subcommand <code>ALTER TABLE</code>
+          touching several relations can wait up to N ×
+          <code>lock_timeout</code> in total.
+        </li>
+        <li>
+          <strong>It must be below <code>statement_timeout</code> to do
+          anything</strong>: “if statement_timeout is nonzero, it is rather
+          pointless to set lock_timeout to the same or larger value, since the
+          statement timeout would always trigger first.”
+        </li>
+      </ul>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this lesson</span>
+        </div>
+        <pre><code class="language-sql">-- The discipline: bound the wait, then retry rather than queue.
+SET lock_timeout = '2s';
+
+ALTER TABLE orders ADD COLUMN note text;   -- fails fast if it would queue
+
+-- On failure: wait, and try again. Do not raise the timeout.
+-- The failure is the feature -- it is the outage you did not have.</code></pre>
+      </div>
+
+      <p>
+        And the other end of the same problem — the long transaction the
+        migration was queued behind in the first place — has its own setting:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Terminate any session that has been idle (that is, waiting for a
+            client query) within an open transaction for longer than the
+            specified amount of time. […] This option can be used to ensure that
+            idle sessions do not hold locks for an unreasonable amount of time.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <code>idle_in_transaction_session_timeout</code>, same page.
+        </figcaption>
+      </figure>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why do plain <code>SELECT</code>s stall behind a waiting
+          <code>ALTER TABLE</code>?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because a SELECT conflicts with the other concurrent SELECTs
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because they queue behind the pending conflicting lock request
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the ALTER already holds an exclusive table lock
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because reads are upgraded whenever DDL is currently pending
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          The <code>ALTER TABLE</code> holds nothing yet — that is the whole
+          point. It is <em>waiting</em>, and requests arriving after it queue
+          behind it even though they would not conflict with the lock currently
+          held. The <code>pg_locks</code> page hints at this with “holding or
+          waiting for”, and MySQL states the equivalent rule outright.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Which source may you legitimately cite for the convoy behaviour?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              PostgreSQL’s explicit locking page, at its section 13.3.1
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              MySQL’s online DDL page, correctly labelled an analogy
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              PostgreSQL’s ALTER TABLE page, within its own description
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              PostgreSQL’s MVCC caveats page, at its section 13.6
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          No PostgreSQL page states the rule; all three PostgreSQL answers are
+          pages people cite for it wrongly. MySQL 8.0’s 17.12.2 states it
+          directly and demonstrates it in three sessions — usable, provided you
+          say out loud that you are arguing from another engine that queues
+          table-level locks the same way.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        If holding <code>ACCESS EXCLUSIVE</code> briefly is survivable and
+        holding it through a scan is not, the obvious move is to get the scans
+        out from under it. PostgreSQL documents exactly how, and it is the
+        closest thing to a blessed recipe in the whole manual:
+        <a href="0006-not-valid-and-validate.html">lesson 6</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-performance.html"
+              >MySQL 8.0, 17.12.2 Online DDL Performance and Concurrency</a
+            >
+            — yes, MySQL, even though you are running PostgreSQL. It is two
+            screens, and it is the only first-party writing that explains this
+            mechanism as a mechanism. Read the three-session example slowly and
+            notice how ordinary each session looks in isolation.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Worth pushing on: ask it to find a
+          PostgreSQL page that states the convoy rule. Watching a careful search
+          come back empty is a much stronger way to internalise “this is
+          undocumented” than being told — and if it produces a page, read the
+          page rather than the summary, because that would be a real finding.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This is the natural long pause in the topic. Lessons 1–5 are the
+            model; 6–8 are what you do with it. Before moving on, try to tell the
+            three-actor story out loud with no notes, and then state who
+            documents it and who does not. Both halves. The two timeouts are
+            written out in the
+            <a href="../reference/lock-and-rewrite-ledger.html"
+              >lock and rewrite ledger</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0004-the-lock-and-rewrite-table.html"
+              >4. The lock and rewrite table</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0006-not-valid-and-validate.html"
+              >6. <code>NOT VALID</code> and <code>VALIDATE</code></a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

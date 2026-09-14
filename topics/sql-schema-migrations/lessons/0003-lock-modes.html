@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3. Lock modes — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0003</span>
+        <h1>Lock modes</h1>
+        <p class="lesson-mission">
+          One sentence from the manual dissolves the whole subject: a lock mode
+          is nothing but the set of modes it conflicts with. Learn to read the
+          names as shorthand for “who waits”, and every later lesson becomes
+          arithmetic.
+        </p>
+      </header>
+
+      <p class="lead">
+        Lock mode names are the worst-designed vocabulary in PostgreSQL, and the
+        manual says so itself. <code>SHARE ROW EXCLUSIVE</code> contains three
+        words that sound like they mean something and, read as English, they
+        mislead. There is exactly one way to make this tractable, and the manual
+        hands it to you in a single sentence.
+      </p>
+
+      <h2>The definition that matters</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            The only real difference between one lock mode and another is the set
+            of lock modes with which each conflicts. Two transactions cannot hold
+            locks of conflicting modes on the same table at the same time.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+            >13.3.1. Table-Level Locks</a
+          >.
+        </figcaption>
+      </figure>
+
+      <div class="aside insight">
+        <span class="label">Read this as a definition, not a remark</span>
+        <p>
+          A lock mode <strong>is</strong> its conflict set. It has no other
+          content — no strength, no scope, no priority. “Stronger” is a
+          convenient shorthand for “conflicts with more”, and nothing else.
+        </p>
+        <p>
+          So the only question ever worth asking about a lock is:
+          <strong>who has to wait for it?</strong>
+        </p>
+      </div>
+
+      <p>And the names genuinely are noise. The manual is blunt:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Remember that all of these lock modes are table-level locks, even if
+            the name contains the word “row”; the names of the lock modes are
+            historical. To some extent the names reflect the typical usage of
+            each lock mode — but the semantics are all the same.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <h2>The two modes your application takes</h2>
+
+      <p>
+        Before the DDL modes, the two that ordinary traffic acquires — because
+        these are the ones your migration will be blocking:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>ACCESS SHARE</strong> — Conflicts with the ACCESS EXCLUSIVE
+            lock mode only.
+          </p>
+          <p>
+            The SELECT command acquires a lock of this mode on referenced tables.
+            In general, any query that only <em>reads</em> a table and does not
+            modify it will acquire this lock mode.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>ROW EXCLUSIVE</strong> — Conflicts with the SHARE, SHARE ROW
+            EXCLUSIVE, EXCLUSIVE, and ACCESS EXCLUSIVE lock modes.
+          </p>
+          <p>
+            The commands UPDATE, DELETE, INSERT, and MERGE acquire this lock mode
+            on the target table (in addition to ACCESS SHARE locks on any other
+            referenced tables). In general, this lock mode will be acquired by
+            any command that <em>modifies data</em> in a table.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <p>
+        <strong>Reads take <code>ACCESS SHARE</code>. Writes take
+        <code>ROW EXCLUSIVE</code>.</strong> Those are the two things that get
+        blocked, so those are the two columns of the only table you need.
+      </p>
+
+      <h2>The three modes migrations take</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong>SHARE UPDATE EXCLUSIVE</strong> — Conflicts with the SHARE
+            UPDATE EXCLUSIVE, SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, and ACCESS
+            EXCLUSIVE lock modes. This mode protects a table against concurrent
+            schema changes and VACUUM runs.
+          </p>
+          <p>
+            <strong>SHARE ROW EXCLUSIVE</strong> — Conflicts with the ROW
+            EXCLUSIVE, SHARE UPDATE EXCLUSIVE, SHARE, SHARE ROW EXCLUSIVE,
+            EXCLUSIVE, and ACCESS EXCLUSIVE lock modes. This mode protects a
+            table against concurrent data changes, and is self-exclusive so that
+            only one session can hold it at a time.
+          </p>
+          <p>
+            <strong>ACCESS EXCLUSIVE</strong> — Conflicts with locks of all modes
+            […] This mode guarantees that the holder is the only transaction
+            accessing the table in any way.
+          </p>
+        </blockquote>
+        <figcaption>Same page, abridged to the three modes that matter here.</figcaption>
+      </figure>
+
+      <h2>The only table you need</h2>
+
+      <p>
+        Now cross the two application modes against the three migration modes.
+        Every entry below is read directly off the conflict lists quoted above —
+        nothing here is inferred.
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            What each migration lock mode blocks. Derived by reading
+            <code>ACCESS SHARE</code> and <code>ROW EXCLUSIVE</code> against each
+            mode’s documented conflict set.
+          </caption>
+          <thead>
+            <tr>
+              <th>Lock held by the migration</th>
+              <th>Blocks <code>SELECT</code>?</th>
+              <th>Blocks writes?</th>
+              <th>What still runs</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>SHARE UPDATE EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+              <td>Everything except other schema changes and <code>VACUUM</code></td>
+            </tr>
+            <tr>
+              <td><code>SHARE ROW EXCLUSIVE</code></td>
+              <td>No</td>
+              <td><strong>Yes</strong></td>
+              <td>Reads only. Self-exclusive, so one session at a time</td>
+            </tr>
+            <tr>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td><strong>Yes</strong></td>
+              <td><strong>Yes</strong></td>
+              <td>Nothing at all</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Work the first row yourself as a check.
+        <code>SHARE UPDATE EXCLUSIVE</code> conflicts with SHARE UPDATE
+        EXCLUSIVE, SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE and ACCESS EXCLUSIVE.
+        Is <code>ACCESS SHARE</code> on that list? No — reads continue. Is
+        <code>ROW EXCLUSIVE</code>? No — writes continue. That is the entire
+        derivation, and it works the same way for every row.
+      </p>
+
+      <p>
+        The manual then summarises the reader’s-eye view of that table in a Tip,
+        and this is the single sentence most worth memorising in this lesson:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            <strong
+              >Only an ACCESS EXCLUSIVE lock blocks a SELECT (without FOR
+              UPDATE/SHARE) statement.</strong
+            >
+          </p>
+        </blockquote>
+        <figcaption>Same page, Tip.</figcaption>
+      </figure>
+
+      <h2>Why this decides how you read the <code>ALTER TABLE</code> page</h2>
+
+      <p>
+        The <code>ALTER TABLE</code> reference page has one rule in its
+        Description that governs everything on it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Note that the lock level required may differ for each subform. An
+            ACCESS EXCLUSIVE lock is acquired unless explicitly noted. When
+            multiple subcommands are given, the lock acquired will be the
+            strictest one required by any subcommand.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+            ><code>ALTER TABLE</code>, Description</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>Two things follow, and both are sourced rather than guessed.</p>
+
+      <div class="aside note">
+        <span class="label">Silence is an answer, not a gap</span>
+        <p>
+          For any subform where the page names no lock, the documented answer
+          <em>is</em> <code>ACCESS EXCLUSIVE</code> — because the default is
+          stated. When you read the page and find nothing about locking under
+          <code>DROP COLUMN</code>, you have your answer: it blocks everything.
+        </p>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Batching is a real trade-off, in both directions</span>
+        <p>
+          “When multiple subcommands are given, the lock acquired will be the
+          strictest one required by any subcommand.” Adding a cheap
+          <code>SHARE ROW EXCLUSIVE</code> foreign key alongside an
+          <code>ACCESS EXCLUSIVE</code> change upgrades the
+          <strong>whole statement</strong> to <code>ACCESS EXCLUSIVE</code>.
+        </p>
+        <p>But the page also gives the reason to batch anyway:</p>
+        <p>
+          “The main reason for providing the option to specify multiple changes
+          in a single ALTER TABLE is that multiple table scans or rewrites can
+          thereby be combined into a single pass over the table.”
+        </p>
+        <p>
+          So: batch things that all scan or rewrite, and never batch a weak-lock
+          operation with a strong-lock one.
+        </p>
+      </div>
+
+      <h2>The last piece: waiting is unbounded</h2>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            So long as no deadlock situation is detected, a transaction seeking
+            either a table-level or row-level lock will wait indefinitely for
+            conflicting locks to be released.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+            >13.3.1. Table-Level Locks</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        By default, a migration that cannot get its lock does not fail. It waits,
+        forever, and so does everything behind it. Hold that thought — it is
+        half of <a href="0005-the-convoy.html">lesson 5</a>, which is the most
+        consequential lesson in this topic.
+      </p>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What, according to the manual, distinguishes one lock mode from
+          another?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              How long the database will hold onto the acquired lock
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The set of other lock modes that it conflicts with
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Whether it applies to the whole table or single rows
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The priority it is given in the pending request queue
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          “The only real difference between one lock mode and another is the set
+          of lock modes with which each conflicts.” Duration is uniform — to end
+          of transaction. Scope is uniform — every mode here is table-level,
+          which is exactly what the “names are historical” note is warning you
+          about. And the modes carry no priority.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A migration holds <code>SHARE ROW EXCLUSIVE</code> on a table. What
+          happens to traffic?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              The reads and the writes on that table are blocked
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              The reads continue and the writes on that table block
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Both the reads and the writes carry on without waiting
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The writes continue and the reads on that table block
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>SHARE ROW EXCLUSIVE</code> lists <code>ROW EXCLUSIVE</code> among
+          its conflicts, so <code>INSERT</code>, <code>UPDATE</code>,
+          <code>DELETE</code> and <code>MERGE</code> wait. It does not list
+          <code>ACCESS SHARE</code>, so <code>SELECT</code> proceeds — which the
+          Tip states directly: only <code>ACCESS EXCLUSIVE</code> blocks a plain
+          <code>SELECT</code>. You can derive this from the conflict lists
+          without memorising anything.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        You can now read any lock mode as a statement about who waits. What you
+        cannot yet do is say which lock a given
+        <code>ALTER TABLE</code> subform takes, or whether it rewrites the table
+        underneath. That table —
+        <a href="0004-the-lock-and-rewrite-table.html">lesson 4</a> — is the
+        reference you will come back to most.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/explicit-locking.html"
+              >PostgreSQL 16, 13.3. Explicit Locking</a
+            >
+            — read §13.3.1 in full, and study
+            <strong>Table 13.2, “Conflicting Lock Modes”</strong>, which is the
+            matrix this lesson derived three rows of. Reading the table once
+            while holding the question “who waits for me?” is worth more than
+            memorising any of it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good exercise to ask for: name a pair of
+          modes and have yourself say, without looking, whether they conflict —
+          then check against Table 13.2. The pairs worth drilling are
+          <code>SHARE UPDATE EXCLUSIVE</code> against <code>ROW EXCLUSIVE</code>,
+          and <code>SHARE ROW EXCLUSIVE</code> against itself.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            This lesson is short on purpose — it is one definition and one
+            derivation. Do not space it away from lesson 4; they work as a pair,
+            and lesson 4 is where the definition starts paying. The longer pause
+            belongs after lesson 5. The full conflict matrix is not worth
+            memorising; it is in the
+            <a href="../reference/lock-and-rewrite-ledger.html"
+              >lock and rewrite ledger</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0002-what-a-half-failed-migration-leaves.html"
+              >2. What a half-failed migration leaves</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0004-the-lock-and-rewrite-table.html"
+              >4. The lock and rewrite table</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/quiz.js"></script>
+  </body>
+</html>

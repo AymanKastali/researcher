@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>12. What autogenerate cannot see — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0012</span>
+        <h1>What autogenerate cannot see</h1>
+        <p class="lesson-mission">
+          Not a list of limitations to memorise — a proof. Nine functions are the
+          entire detection surface, and one of them shows why a column rename can
+          never be detected, no matter how good the heuristics get.
+        </p>
+      </header>
+
+      <p class="lead">
+        <code>alembic revision --autogenerate</code> compares your model metadata
+        against a reflected database and writes the difference into a revision
+        file. The interesting question is not what it detects — the documentation
+        has a list — but what it is <em>structurally incapable</em> of detecting,
+        and whether that published list is accurate. On 1.14.1 it is wrong in
+        both directions.
+      </p>
+
+      <h2>The complete detection surface</h2>
+
+      <p>
+        Autogenerate’s entire detection surface is nine functions registered on
+        one dispatcher in one file. A <code>grep</code> for
+        <code>comparators.dispatch_for</code> across the whole package returns
+        these nine lines and nothing else:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Every comparator in Alembic 1.14.1, in
+            <code>alembic/autogenerate/compare.py</code>.
+            <strong>No dialect registers one.</strong>
+          </caption>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Function</th>
+              <th>Line</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>schema</code></td>
+              <td><code>_autogen_for_tables</code></td>
+              <td>103</td>
+            </tr>
+            <tr>
+              <td><code>table</code></td>
+              <td><code>_compare_indexes_and_uniques</code></td>
+              <td>441</td>
+            </tr>
+            <tr>
+              <td><code>table</code></td>
+              <td><code>_compare_foreign_keys</code></td>
+              <td>1170</td>
+            </tr>
+            <tr>
+              <td><code>table</code></td>
+              <td><code>_compare_table_comment</code></td>
+              <td>1294</td>
+            </tr>
+            <tr>
+              <td><code>column</code></td>
+              <td><code>_compare_nullable</code></td>
+              <td>858</td>
+            </tr>
+            <tr>
+              <td><code>column</code></td>
+              <td><code>_setup_autoincrement</code></td>
+              <td>899</td>
+            </tr>
+            <tr>
+              <td><code>column</code></td>
+              <td><code>_compare_type</code></td>
+              <td>917</td>
+            </tr>
+            <tr>
+              <td><code>column</code></td>
+              <td><code>_compare_server_default</code></td>
+              <td>1054</td>
+            </tr>
+            <tr>
+              <td><code>column</code></td>
+              <td><code>_compare_column_comment</code></td>
+              <td>1142</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">Invisible by construction, not by accident</span>
+        <p>
+          Anything not in that table is not detected — not because it was
+          overlooked, but because there is no code path that could look at it.
+          This is a much stronger statement than a documentation list, and it is
+          one you can verify yourself in about ten seconds with
+          <code>grep</code>.
+        </p>
+      </div>
+
+      <p>Two structural facts frame everything else. First, the downgrade is not computed:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/autogenerate/compare.py:66 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">upgrade_ops.reverse_into(downgrade_ops)</code></pre>
+      </div>
+
+      <p>
+        Your <code>downgrade()</code> is the mechanical reverse of your
+        <code>upgrade()</code>. It has not been checked against anything, and it
+        has never been run. Second, only the default schema is examined unless
+        you pass <code>include_schemas=True</code> —
+        <code>schemas = {None}</code>, <code>compare.py:91</code>.
+      </p>
+
+      <h2>The proof that renames cannot be detected</h2>
+
+      <p>
+        <code>_compare_columns</code> is three set operations, keyed on the
+        column’s name:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/autogenerate/compare.py:366-436, abridged (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">for cname in metadata_col_names.difference(conn_col_names):
+    ...  ops.AddColumnOp.from_column_and_tablename(...)
+
+for colname in metadata_col_names.intersection(conn_col_names):
+    ...  comparators.dispatch("column")(...)
+
+for cname in set(conn_col_names).difference(metadata_col_names):
+    ...  ops.DropColumnOp.from_column_and_tablename(...)</code></pre>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">There is no fourth pass</span>
+        <p>
+          In the model but not the database → <strong>add</strong>. In both →
+          <strong>compare</strong>. In the database but not the model →
+          <strong>drop</strong>. Three sets, and every column falls into exactly
+          one of them.
+        </p>
+        <p>
+          There is no similarity heuristic, no type matching, no ordinal
+          matching — <strong>nothing that could pair a dropped name with an added
+          one</strong>. <code>AlterColumnOp</code> does have a
+          <code>modify_name</code> field (it is how
+          <code>op.alter_column(..., new_column_name=...)</code> is expressed),
+          but no comparator ever assigns it.
+        </p>
+      </div>
+
+      <p>
+        So rename detection is not a limitation that better heuristics could
+        tighten. Rename detection requires <strong>pairing</strong>, and there is
+        no pairing step to improve. <code>_compare_tables</code> has the same
+        shape at the table level, with the same consequence.
+      </p>
+
+      <p>
+        Autogenerate will therefore turn your column rename into a
+        <code>drop_column</code> plus an <code>add_column</code> — which is to
+        say, <strong>it will silently write you a migration that deletes the
+        data</strong>. That is the single most expensive thing in this lesson,
+        and it follows directly from three <code>for</code> loops.
+      </p>
+
+      <h2>Server defaults: off by default, and crude when on</h2>
+
+      <p>
+        <code>MigrationContext._compare_server_default</code> returns
+        <code>False</code> immediately unless
+        <code>compare_server_default=True</code> was passed. When it is on, the
+        generic implementation is the whole of
+        <code>alembic/ddl/impl.py:600-607</code>:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/impl.py:600-607 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">def compare_server_default(
+    self,
+    inspector_column,
+    metadata_column,
+    rendered_metadata_default,
+    rendered_inspector_default,
+):
+    return rendered_inspector_default != rendered_metadata_default</code></pre>
+      </div>
+
+      <p>
+        One string comparison between two rendered defaults.
+        <code>server_default="0"</code> against a database that reflects
+        <code>'0'::integer</code> is a false positive — a migration generated to
+        change nothing.
+      </p>
+
+      <p>PostgreSQL does better, and does it by asking the server:</p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/postgresql.py:142-149 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python"># run a real compare against the server
+conn = self.connection
+assert conn is not None
+return not conn.scalar(
+    sqla_compat._select(
+        literal_column(conn_col_default) == metadata_default
+    )
+)</code></pre>
+      </div>
+
+      <p>
+        It executes <code>SELECT &lt;conn_default&gt; = &lt;metadata_default&gt;</code>
+        and inverts the answer — one round trip per differing column. It also
+        exempts <code>SERIAL</code> primary keys outright
+        (<code>postgresql.py:113-118</code>, with the comment “don’t do defaults
+        for SERIAL columns”), so a <code>nextval(...)</code> default on an
+        autoincrement primary key is never reported.
+      </p>
+
+      <h2>Types: a token comparison with deliberate blind spots</h2>
+
+      <p>
+        <code>compare_type</code> is on by default, but it is a
+        <em>token</em> comparison rather than a semantic one: the type is
+        compiled to a string, regex-split, and compared — with explicit synonym
+        tables that suppress real differences by design.
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/ddl/impl.py:99 and postgresql.py:82-84 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python">type_synonyms: Tuple[Set[str], ...] = ({"NUMERIC", "DECIMAL"},)
+
+# ...and on PostgreSQL:
+type_synonyms = DefaultImpl.type_synonyms + (
+    {"FLOAT", "DOUBLE PRECISION"},
+)</code></pre>
+      </div>
+
+      <p>
+        And <code>_column_args_match</code> deliberately ignores one-sided
+        parameters. Its docstring, <code>impl.py:554-558</code>: “if they both
+        have <code>collation</code>, we want to make sure they are the same.
+        However, if only one specifies it, dont flag it for being less specific.”
+        A collation present only in your model is never reported.
+      </p>
+
+      <h2>Named things only — and one designed-in silent miss</h2>
+
+      <p>
+        The index and constraint comparator states its own assumptions in a
+        comment, which is unusually honest:
+      </p>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Quoted from alembic/autogenerate/compare.py:619-625 (1.14.1)</span>
+        </div>
+        <pre><code class="language-python"># assumptions:
+# 1. a unique constraint or an index from the connection *always*
+#    has a name.
+# 2. an index on the metadata side *always* has a name.
+# 3. a unique constraint on the metadata side *might* have a name.
+# 4. The backend may double up indexes as unique constraints and
+#    vice versa (e.g. MySQL, Postgresql)</code></pre>
+      </div>
+
+      <p>
+        Unnamed <em>unique</em> constraints get a by-column-signature rescue —
+        but an add-only one: there is no corresponding removal pass. Anonymous
+        constraints of any other kind have no rescue at all.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">“Skip” means “considered equal”</span>
+        <p>
+          <code>ComparisonResult.Skip</code> means “cannot be compared”, and its
+          docstring is explicit about the consequence:
+        </p>
+        <p>
+          <em
+            >“the constraint cannot be compared for the provided reason(s). The
+            message is logged, but the constraints will be otherwise considered
+            equal, meaning that no migration command will be generated.”</em
+          >
+          — <code>alembic/ddl/_autogen.py:68-73</code>
+        </p>
+        <p>
+          A thing Alembic cannot understand is treated as a thing that has not
+          changed. That is a defensible default and it is the opposite of what
+          most people assume the word “skip” means.
+        </p>
+      </div>
+
+      <h2>Where the published list and this version part company</h2>
+
+      <div class="aside warning">
+        <span class="label">Source disagrees with documentation</span>
+        <p>
+          The current documentation —
+          <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/autogenerate.html"
+            >Auto Generating Migrations</a
+          >
+          — lists CHECK-constraint detection under “Autogenerate can optionally
+          detect”.
+          <strong>That feature does not exist in 1.14.1.</strong>
+          <code>grep</code> for <code>CheckConstraint</code> in
+          <code>compare.py</code> returns <strong>zero</strong> hits, and the
+          nine-comparator registry has no entry for it.
+        </p>
+        <p>
+          The docs page resolves the discrepancy itself: the subsection is marked
+          <em>“Added in version 1.19.0”</em> and <em>“Changed in version 1.19.2:
+          This feature is no longer enabled by default.”</em> So
+          <code>/en/latest/</code> is documenting a release five minor versions
+          after the one you are reading about. On 1.14.1, CHECK constraints are
+          simply undetectable.
+        </p>
+      </div>
+
+      <p>
+        The published “can not detect” list — table renames, column renames,
+        anonymously named constraints, <code>Enum</code> on backends without a
+        native ENUM — is also considerably <em>shorter</em> than what the source
+        supports. Beyond it, the code shows that all of the following are outside
+        the comparison entirely:
+      </p>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Not detected in 1.14.1, established from the comparator registry
+            rather than from a documentation list.
+          </caption>
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Examples</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Never reflected at all</td>
+              <td>
+                Views (<code>get_view_names</code> is never called anywhere in
+                the package), triggers, stored procedures, functions, extensions,
+                grants, RLS policies, partitions
+              </td>
+            </tr>
+            <tr>
+              <td>No comparator exists</td>
+              <td>
+                CHECK constraints, free-standing PRIMARY KEY and EXCLUDE
+                constraints, sequences, computed/identity changes
+              </td>
+            </tr>
+            <tr>
+              <td>Excluded by configuration</td>
+              <td>
+                Non-default schemas without <code>include_schemas</code>; server
+                defaults without <code>compare_server_default</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Table data</td>
+              <td>
+                Anything at all. Autogenerate compares structure, never rows
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The practical rule</span>
+        <p>
+          <strong>Autogenerate drafts; you review.</strong> Not as a matter of
+          discipline but because the tool is a nine-function comparison that
+          reverses your downgrade mechanically and treats what it cannot
+          understand as unchanged.
+        </p>
+        <p>
+          The review that matters most is the one for renames, because that is
+          the failure mode that costs data rather than time.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          Why can autogenerate never detect a column rename?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Because reflection does not expose the old column name
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Because the comparison has no step pairing names up
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because renames get excluded by a default configuration flag
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Because the operation object has no field recording it
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>_compare_columns</code> is three set operations on names: added,
+          common, removed. Detecting a rename would require pairing a removed
+          name with an added one, and there is no such pass. The last answer is
+          specifically false —
+          <code>AlterColumnOp</code> <em>does</em> have <code>modify_name</code>;
+          no comparator ever assigns it. That is what makes this a proof rather
+          than a missing feature.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          On Alembic 1.14.1, what happens to a CHECK constraint you add to a
+          model?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              It is detected, exactly as the documentation says it is
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              It is not detected, since no comparator exists for it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It is detected only when you name it explicitly yourself
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              It is detected only when the backend fully reflects it
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>grep CheckConstraint alembic/autogenerate/compare.py</code>
+          returns zero hits on 1.14.1. The documentation does list the feature —
+          and marks it “Added in version 1.19.0”, which is the version gap this
+          topic warns about at every Alembic quotation. The documentation is
+          right about a release you are not running.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        Whether you wrote the revision or autogenerate drafted it, the body is a
+        call like <code>op.add_column(...)</code>. What turns that into
+        PostgreSQL-specific SQL, and how much of the resulting statement is
+        actually Alembic’s? Less than you would think.
+        <a href="0013-how-op-add-column-becomes-sql.html">Lesson 13</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a class="citation" href="https://alembic.sqlalchemy.org/en/latest/autogenerate.html"
+              >Alembic documentation, “Auto Generating Migrations”</a
+            >
+            — read the “what it can detect” and “what it can <em>not</em> detect”
+            lists, then check each entry against the nine-comparator table above.
+            Reading a documentation page <em>against</em> the source is the
+            transferable skill here, and this page is an unusually good one to
+            practise on because you already know where it is wrong.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. Ask it to run the greps in this lesson
+          against a real 1.14.1 install —
+          <code>grep -rn 'comparators.dispatch_for' alembic/</code> and
+          <code>grep -c CheckConstraint alembic/autogenerate/compare.py</code>.
+          Watching the second one return <code>0</code> is more convincing than
+          being told, and it is the habit that lets you check any future version
+          for yourself.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            One thing to retain: the three set operations, and what each does.
+            Everything else here is lookup material. If you can say why a rename
+            is structurally undetectable, you have the part of this lesson that
+            will still be true in Alembic 2.0. The nine comparators are
+            tabulated in the
+            <a href="../reference/alembic-internals-map.html">internals map</a>.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0011-branches-merges-and-heads.html"
+              >11. Branches, merges and heads</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0013-how-op-add-column-becomes-sql.html"
+              >13. How <code>op.add_column()</code> becomes SQL</a
+            >
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script src="../../../assets/quiz.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

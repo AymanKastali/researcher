@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Safe migration recipes — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Safe migration recipes</h1>
+        <p class="page-blurb">
+          The step sequences, each annotated with the lock it takes and the
+          sentence in the manual that makes it legal.
+        </p>
+      </header>
+
+      <p class="lead">
+        There are only ever two moves. <strong>Move the long work out from under
+        the strong lock</strong>, or <strong>avoid the operation entirely</strong>.
+        Every recipe below is one or the other. SQL marked “written for this
+        reference” is not quoted from any manual; the sentences that justify each
+        step are.
+      </p>
+
+      <h2>The decision, first</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Which move applies.</caption>
+          <thead>
+            <tr>
+              <th>If the operation…</th>
+              <th>Then</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>is metadata-only</td>
+              <td>
+                Just run it — with <code>lock_timeout</code>, because a brief
+                lock you must <em>wait</em> for is still an outage
+              </td>
+            </tr>
+            <tr>
+              <td>scans</td>
+              <td>
+                Split it. <code>NOT VALID</code> then
+                <code>VALIDATE</code>, or <code>CONCURRENTLY</code> then adopt
+              </td>
+            </tr>
+            <tr>
+              <td>rewrites</td>
+              <td>
+                <strong>Nothing makes it safe.</strong> Use expand/contract, or
+                accept the outage
+              </td>
+            </tr>
+            <tr>
+              <td>is compatible-breaking (a rename)</td>
+              <td>
+                Expand/contract — the cost is a deployment problem, not a
+                database one
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>1. Every migration: bound the wait</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">SET lock_timeout = '2s';
+-- ...the DDL...
+-- On failure: wait and retry. Do NOT raise the timeout.</code></pre>
+      </div>
+
+      <p class="small-print">
+        Why: waiting is unbounded by default — “a transaction seeking either a
+        table-level or row-level lock will wait indefinitely for conflicting
+        locks to be released” (13.3.1) — and a waiting
+        <code>ACCESS EXCLUSIVE</code> request stalls everything behind it. The
+        failure is the feature.
+      </p>
+
+      <h2>2. Add a constraint without a long lock</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- Step 1. No scan, so the lock is momentary. Needs lock_timeout.
+ALTER TABLE orders
+  ADD CONSTRAINT orders_total_positive CHECK (total &gt; 0) NOT VALID;
+
+-- Step 2. Scans, under SHARE UPDATE EXCLUSIVE. Reads and writes continue.
+ALTER TABLE orders VALIDATE CONSTRAINT orders_total_positive;</code></pre>
+      </div>
+
+      <p class="small-print">
+        Why step 2 is safe: “The validation step does not need to lock out
+        concurrent updates, since it knows that other transactions will be
+        enforcing the constraint for rows that they insert or update; only
+        pre-existing rows need to be checked.” — <code>ALTER TABLE</code>, Notes.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Remember what <code>NOT VALID</code> does</span>
+        <p>
+          It removes the <strong>scan</strong>, not the <strong>lock</strong>.
+          <code>ADD CHECK … NOT VALID</code> still takes
+          <code>ACCESS EXCLUSIVE</code>. Only <code>ADD FOREIGN KEY</code> gets a
+          weaker lock, and that is a separate fact about a different subform.
+        </p>
+      </div>
+
+      <h2>3. <code>SET NOT NULL</code> without the scan</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- 1. Instant. ACCESS EXCLUSIVE held momentarily.
+ALTER TABLE orders
+  ADD CONSTRAINT orders_shipped_at_not_null
+  CHECK (shipped_at IS NOT NULL) NOT VALID;
+
+-- 2. Long. SHARE UPDATE EXCLUSIVE -- blocks nothing you care about.
+ALTER TABLE orders VALIDATE CONSTRAINT orders_shipped_at_not_null;
+
+-- 3. Instant. The scan is SKIPPED because a valid CHECK proves no NULL.
+ALTER TABLE orders ALTER COLUMN shipped_at SET NOT NULL;
+
+-- 4. Separate statement. Merging 3 and 4 defeats the optimisation.
+ALTER TABLE orders DROP CONSTRAINT orders_shipped_at_not_null;</code></pre>
+      </div>
+
+      <p class="small-print">
+        Why step 3 skips its scan: “if a valid CHECK constraint exists (and is not
+        dropped in the same command) which proves no NULL can exist, then the
+        table scan is skipped.” — <code>ALTER TABLE</code>. The parenthesis is
+        why steps 3 and 4 must not be batched.
+      </p>
+
+      <div class="aside note">
+        <span class="label">Step 3 is not optional</span>
+        <p>
+          A <code>CHECK (col IS NOT NULL)</code> is not a
+          <code>NOT NULL</code> constraint. Stop at step 2 and the column is
+          still nullable to the catalog, the planner, and every tool that
+          reflects your schema.
+        </p>
+      </div>
+
+      <h2>4. Add a foreign key</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- Step 1. SHARE ROW EXCLUSIVE on BOTH tables -- blocks writes, briefly.
+ALTER TABLE order_lines
+  ADD CONSTRAINT order_lines_order_fk
+  FOREIGN KEY (order_id) REFERENCES orders (id) NOT VALID;
+
+-- Step 2. SHARE UPDATE EXCLUSIVE here, ROW SHARE on orders.
+ALTER TABLE order_lines VALIDATE CONSTRAINT order_lines_order_fk;</code></pre>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The referenced table is locked too</span>
+        <p>
+          “<code>ADD FOREIGN KEY</code> also acquires a
+          <code>SHARE ROW EXCLUSIVE</code> lock on the referenced table, in
+          addition to the lock on the table on which the constraint is declared.”
+        </p>
+        <p>
+          Adding a key to a small child blocks writes to the large parent you did
+          not name. And the mode is self-exclusive, so two FKs pointing at the
+          same parent serialise against each other.
+        </p>
+      </div>
+
+      <h2>5. Add a unique constraint without blocking</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- Step 1. Long, blocks nothing. CANNOT run inside a transaction block.
+CREATE UNIQUE INDEX CONCURRENTLY orders_reference_key ON orders (reference);
+
+-- Check it actually succeeded -- a failure here is silent.
+SELECT indisvalid FROM pg_index
+ WHERE indexrelid = 'orders_reference_key'::regclass;
+
+-- Step 2. Instant. Adopts the index rather than building a new one.
+ALTER TABLE orders
+  ADD CONSTRAINT orders_reference_key UNIQUE USING INDEX orders_reference_key;</code></pre>
+      </div>
+
+      <p class="small-print">
+        The only multi-step recipe PostgreSQL blesses outright: “Adding a
+        constraint using an existing index can be helpful in situations where a
+        new constraint needs to be added without blocking table updates for a
+        long time. To do that, create the index using
+        <code>CREATE INDEX CONCURRENTLY</code>, and then install it as an
+        official constraint using this syntax.” Restrictions: b-tree, default
+        sort order, no expressions, not partial, not partitioned.
+      </p>
+
+      <div class="aside warning">
+        <span class="label">Concurrent builds stall silently</span>
+        <p>
+          A concurrent build “must wait for all existing transactions that could
+          potentially modify or use the index to terminate”. One forgotten
+          <code>idle in transaction</code> session stalls it indefinitely —
+          nothing blocks, nothing errors, it simply never finishes. And only one
+          concurrent build per table at a time (regular builds may overlap
+          freely).
+        </p>
+      </div>
+
+      <h2>6. Add a column</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- Safe: metadata-only. Non-volatile default is evaluated once and stored.
+ALTER TABLE orders ADD COLUMN status text DEFAULT 'pending';
+ALTER TABLE orders ADD COLUMN created_at timestamptz DEFAULT now();  -- STABLE
+
+-- REWRITES THE TABLE: volatile default needs a distinct value per row.
+-- ALTER TABLE orders ADD COLUMN token uuid DEFAULT gen_random_uuid();
+
+-- Instead: add nullable, backfill in batches, then set the default.
+ALTER TABLE orders ADD COLUMN token uuid;
+-- UPDATE orders SET token = gen_random_uuid()
+--  WHERE id IN (SELECT id FROM orders WHERE token IS NULL LIMIT 1000);
+ALTER TABLE orders ALTER COLUMN token SET DEFAULT gen_random_uuid();</code></pre>
+      </div>
+
+      <p class="small-print">
+        The criterion is <strong>non-volatile</strong>, not “constant” — any
+        <code>IMMUTABLE</code> or <code>STABLE</code> expression qualifies. The
+        tutorial’s “constant default value” is narrower than the reference page;
+        prefer the reference page. Fast path added in PostgreSQL 11.
+      </p>
+
+      <h2>7. Expand/contract — when nothing else works</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- Instead of: ALTER TABLE users RENAME COLUMN email TO email_address;
+
+-- Deploy 1 -- EXPAND
+ALTER TABLE users ADD COLUMN email_address text;
+-- ship code that writes BOTH columns, reads the OLD one
+
+-- Deploy 2 -- MIGRATE
+-- backfill in bounded batches:
+--   UPDATE users SET email_address = email
+--    WHERE id IN (SELECT id FROM users WHERE email_address IS NULL LIMIT 1000);
+-- ship code that reads the NEW column
+
+-- Deploy 3 -- CONTRACT
+-- ship code that stops writing the old column, then:
+ALTER TABLE users DROP COLUMN email;</code></pre>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">Sourcing, and the half that gets skipped</span>
+        <p>
+          <strong>No vendor manual documents this pattern.</strong> It is
+          practitioner writing: Danilo Sato,
+          <a class="citation" href="https://martinfowler.com/bliki/ParallelChange.html"
+            ><em>Parallel Change</em></a
+          >, 13 May 2014, crediting Joshua Kerievsky (2006). Not Fowler.
+        </p>
+        <p>
+          Sato’s own warning: “If the contract phase is not executed you might end
+          up in a worse state than you started, therefore you need discipline to
+          finish the transition successfully.” Two phases is not a partial
+          success.
+        </p>
+      </div>
+
+      <h2>8. Serialise two migration runs (Alembic has nothing)</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">Python</span>
+          <span class="code-illustrative">Written for this reference — a sketch, not a recipe with an owner</span>
+        </div>
+        <pre><code class="language-python"># env.py, inside run_migrations_online()
+from sqlalchemy import text
+
+MIGRATION_LOCK_KEY = 0x4D494752  # any constant; all migrators must share it
+
+with connectable.connect() as connection:
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        if not connection.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK_KEY}
+        ):
+            return          # someone else is migrating; exit zero
+        context.run_migrations()
+    # transaction-level lock released automatically at transaction end</code></pre>
+      </div>
+
+      <div class="aside note">
+        <span class="label">Why the <code>_xact_</code> form</span>
+        <p>
+          PgBouncer lists session-level advisory locks as <code>Yes</code> under
+          session pooling and <strong><code>Never</code></strong> under
+          transaction pooling
+          (<a class="citation" href="https://www.pgbouncer.org/features.html"
+            >PgBouncer Features</a
+          >). PostgreSQL’s manual does not discuss pooling at all.
+        </p>
+        <p>
+          Limitation: a transaction-scoped lock cannot span a multi-transaction
+          run, so <code>transaction_per_migration=True</code> or an
+          <code>autocommit_block</code> steps outside its protection.
+        </p>
+      </div>
+
+      <h2>What has no safe form</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Why, and what to do instead</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ALTER COLUMN … TYPE</code> (not binary coercible)</td>
+              <td>
+                Rewrites the table and every index. No option removes it. Use
+                expand/contract with a new column
+              </td>
+            </tr>
+            <tr>
+              <td><code>ADD COLUMN … DEFAULT &lt;volatile&gt;</code></td>
+              <td>Rewrites. Add nullable, backfill in batches, then set default</td>
+            </tr>
+            <tr>
+              <td><code>RENAME COLUMN</code></td>
+              <td>
+                Cheap, and incompatible the instant it commits. Expand/contract
+              </td>
+            </tr>
+            <tr>
+              <td><code>DROP COLUMN</code> on a live column</td>
+              <td>
+                Cheap, and breaks any instance still selecting it. Ship the code
+                change first
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small-print">
+        Every quoted sentence is from the PostgreSQL 16 manual unless attributed
+        otherwise:
+        <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+          ><code>ALTER TABLE</code></a
+        >,
+        <a class="citation" href="https://www.postgresql.org/docs/16/sql-createindex.html"
+          ><code>CREATE INDEX</code></a
+        >,
+        <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+          >13.3. Explicit Locking</a
+        >.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2. What a half-failed migration leaves — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="lesson-header">
+        <span class="lesson-number">Lesson 0002</span>
+        <h1>What a half-failed migration leaves</h1>
+        <p class="lesson-mission">
+          Three answers, depending on where the failure happened: nothing, an
+          index that charges you rent while doing no work, or a schema you have
+          to repair by hand. Knowing which one you are in decides your next move.
+        </p>
+      </header>
+
+      <p class="lead">
+        A migration failed on statement four of five. What is in the database
+        now? This is the question you actually ask at 3am, and it has three
+        different answers on three different sets of circumstances — one of which
+        is not PostgreSQL at all.
+      </p>
+
+      <h2>The ordinary case: nothing</h2>
+
+      <p>
+        If the whole migration ran inside one transaction and a statement raised,
+        the block is left in the aborted state and every effect is discarded on
+        rollback. The locks go with it:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Once acquired, a lock is normally held until the end of the
+            transaction. But if a lock is acquired after establishing a
+            savepoint, the lock is released immediately if the savepoint is
+            rolled back to.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+            >13.3.1. Table-Level Locks</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        This is the good outcome and it is the common one. Nothing to clean up,
+        nothing to diagnose beyond the error itself.
+      </p>
+
+      <div class="aside note">
+        <span class="label">A sourcing note worth having</span>
+        <p>
+          The message everyone recognises from this situation —
+          <code
+            >current transaction is aborted, commands ignored until end of
+            transaction block</code
+          >
+          — is a <strong>server error message, not documentation</strong>. It
+          does not appear on the <code>BEGIN</code>, <code>SAVEPOINT</code>,
+          <code>ROLLBACK TO</code>, transactions-tutorial, isolation or
+          <code>psql</code> pages.
+        </p>
+        <p>
+          The documented description of the state is tucked into the wire
+          protocol chapter: “the session will be left inside a failed regular
+          transaction block, since the ROLLBACK is not reached after the
+          divide-by-zero error. Another ROLLBACK will be needed to restore the
+          session to a usable state.”
+          <a class="citation" href="https://www.postgresql.org/docs/16/protocol-flow.html"
+            >§55.2.2.1</a
+          >. A string you have read a thousand times in a terminal is not a
+          citation — and hunting for where the behaviour is actually written down
+          is a habit worth keeping.
+        </p>
+      </div>
+
+      <h2>The interesting case: the statements outside the transaction</h2>
+
+      <p>
+        Everything on lesson 1’s exception list fails <em>outside</em>
+        transactional protection, and
+        <code>CREATE INDEX CONCURRENTLY</code> is the one you will actually meet.
+        Here the leftover is not nothing, and — this is the part that surprises
+        people — it is not inert either:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            If a problem arises while scanning the table, such as a deadlock or a
+            uniqueness violation in a unique index, the CREATE INDEX command will
+            fail but leave behind an “invalid” index. This index will be ignored
+            for querying purposes because it might be incomplete; however it will
+            still consume update overhead.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-createindex.html"
+            ><code>CREATE INDEX</code>, “Building Indexes Concurrently”</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        Read the two halves against each other. <strong>Ignored for
+        queries</strong>, so no read gets faster. <strong>Still consumes update
+        overhead</strong>, so every <code>INSERT</code> and <code>UPDATE</code>
+        pays to maintain it. You are being charged rent on an index that does no
+        work.
+      </p>
+
+      <p>And in the unique case it is worse than useless:</p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Also, if a failure does occur in the second scan, the “invalid” index
+            continues to enforce its uniqueness constraint afterwards.
+          </p>
+        </blockquote>
+        <figcaption>Same page.</figcaption>
+      </figure>
+
+      <div class="aside warning">
+        <span class="label">The worst of all three worlds</span>
+        <p>
+          A failed concurrent <em>unique</em> index build leaves an index that is
+          <strong>skipped by the planner</strong>, <strong>charged to every
+          writer</strong>, and <strong>still rejecting duplicate rows</strong>.
+        </p>
+        <p>
+          From the application’s side this presents as: writes that used to
+          succeed now fail with a uniqueness violation, against an index no query
+          plan mentions. It is extremely easy to mistake for an application bug,
+          and the migration that caused it may have failed days earlier.
+        </p>
+      </div>
+
+      <h3>How to see it</h3>
+
+      <p>
+        The documented detection route is <code>psql</code>’s <code>\d</code>,
+        which reports the index as <code>INVALID</code>:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>The psql \d command will report such an index as INVALID:</p>
+          <p>
+            <code>Indexes:</code><br />
+            <code>&nbsp;&nbsp;&nbsp;&nbsp;"idx" btree (col) INVALID</code>
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/sql-createindex.html"
+            ><code>CREATE INDEX</code></a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The catalog column people reach for instead is documented on a completely
+        different page, and its wording is more useful than <code>\d</code>’s
+        because it states all three consequences:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p><strong>indisvalid</strong> bool</p>
+          <p>
+            If true, the index is currently valid for queries. False means the
+            index is possibly incomplete: it must still be modified by
+            INSERT/UPDATE operations, but it cannot safely be used for queries.
+            If it is unique, the uniqueness property is not guaranteed true
+            either.
+          </p>
+        </blockquote>
+        <figcaption>
+          PostgreSQL 16 manual,
+          <a class="citation" href="https://www.postgresql.org/docs/16/catalog-pg-index.html"
+            >53.26. <code>pg_index</code></a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        The documented recovery is to drop the index and retry — the manual also
+        offers <code>REINDEX INDEX CONCURRENTLY</code> as an alternative. Either
+        way it is a deliberate action; nothing cleans this up for you.
+      </p>
+
+      <div class="aside insight">
+        <span class="label">A leftover that labels itself</span>
+        <p>
+          <code>REINDEX CONCURRENTLY</code> leaves a better-signposted mess. Its
+          leftover is suffixed <code>_ccnew</code> if the rebuild failed, and
+          <code>_ccold</code> if the rebuild succeeded but the old index could not
+          be dropped, with a numeric suffix added if needed to stay unique.
+        </p>
+        <p>
+          The suffix tells you which half of the swap failed, and therefore which
+          index to drop. That is a genuinely thoughtful piece of design, and it
+          is worth noticing precisely because
+          <code>CREATE INDEX CONCURRENTLY</code> gives you no such hint.
+        </p>
+      </div>
+
+      <h2>The third case: a database that cannot roll DDL back at all</h2>
+
+      <p>
+        MySQL 8.0 introduced <em>atomic DDL</em>, and the feature is real. The
+        announcement:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            An atomic DDL statement combines the data dictionary updates, storage
+            engine operations, and binary log writes associated with a DDL
+            operation into a single, atomic operation. The operation is either
+            committed, with applicable changes persisted to the data dictionary,
+            storage engine, and binary log, or is rolled back, even if the server
+            halts during the operation.
+          </p>
+        </blockquote>
+        <figcaption>
+          MySQL 8.0 Reference Manual,
+          <a class="citation" href="https://dev.mysql.com/doc/refman/8.0/en/atomic-ddl.html"
+            >15.1.1 Atomic Data Definition Statement Support</a
+          >.
+        </figcaption>
+      </figure>
+
+      <p>
+        MySQL’s own documentation then puts the disclaimer in a Note box directly
+        beneath it, which tells you how often the feature is misread:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            Atomic DDL is not transactional DDL. DDL statements, atomic or
+            otherwise, implicitly end any transaction that is active in the
+            current session, as if you had done a COMMIT before executing the
+            statement. This means that DDL statements cannot be performed within
+            another transaction, within transaction control statements such as
+            START TRANSACTION ... COMMIT, or combined with other statements
+            within the same transaction.
+          </p>
+        </blockquote>
+        <figcaption>Same page. Also: “Currently, only the InnoDB storage engine supports atomic DDL.”</figcaption>
+      </figure>
+
+      <div class="definition">
+        <span class="term">Atomic DDL vs transactional DDL</span>
+        <p>
+          <strong>Atomic DDL</strong> is crash atomicity for
+          <em>one statement</em>: the dictionary write, the engine work and the
+          binlog write all land or none do, even if the server dies
+          mid-operation.
+        </p>
+        <p>
+          <strong>Transactional DDL</strong> is <em>composition</em>: several
+          statements roll back together. MySQL does not have this, and cannot,
+          because the second DDL statement implicitly commits the first.
+        </p>
+        <p class="attribution">
+          The distinction is MySQL’s own, from the Note quoted above.
+        </p>
+      </div>
+
+      <p>
+        The practical consequence is the one every MySQL migration tool has to
+        design around. A five-statement migration that fails on statement four
+        leaves statements one through three <strong>committed and unrecoverable
+        by rollback</strong>. The database cannot help you; only a hand-written
+        compensating migration can.
+      </p>
+
+      <p>
+        And one carve-out makes it worse rather than better — a statement that
+        does <em>not</em> implicitly commit, but also cannot be rolled back:
+      </p>
+
+      <figure class="excerpt">
+        <blockquote>
+          <p>
+            However, although no implicit commit occurs, neither can the
+            statement be rolled back, which means that the use of such statements
+            causes transactional atomicity to be violated. For example, if you use
+            CREATE TEMPORARY TABLE and then roll back the transaction, the table
+            remains in existence.
+          </p>
+        </blockquote>
+        <figcaption>
+          MySQL 8.0 Reference Manual,
+          <a
+            class="citation"
+            href="https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html"
+            >15.3.3 Statements That Cause an Implicit Commit</a
+          >.
+        </figcaption>
+      </figure>
+
+      <h2>The three answers, side by side</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            Where the failure happened decides what you are cleaning up.
+          </caption>
+          <thead>
+            <tr>
+              <th>Situation</th>
+              <th>What is left behind</th>
+              <th>Your next move</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PostgreSQL, statement inside the transaction</td>
+              <td>Nothing. Effects discarded, locks released</td>
+              <td>Fix the migration and run it again</td>
+            </tr>
+            <tr>
+              <td>PostgreSQL, <code>CREATE INDEX CONCURRENTLY</code></td>
+              <td>
+                An invalid index: unused by queries, maintained by every writer,
+                and still enforcing uniqueness if unique
+              </td>
+              <td>Find it, drop it, retry — nothing does this for you</td>
+            </tr>
+            <tr>
+              <td>MySQL, statement 4 of 5</td>
+              <td>
+                Statements 1–3 committed. Each was atomic; together they were
+                never a unit
+              </td>
+              <td>Write a compensating migration by hand</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          A <code>CREATE INDEX CONCURRENTLY</code> on a unique index failed
+          overnight. What is true this morning?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              Nothing at all remains, because the failed statement rolled back
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              An unused index is maintained and it still rejects duplicates
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              An unused index remains but costs nothing to keep around
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              The index is complete and simply needs to be revalidated
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          <code>CONCURRENTLY</code> cannot run in a transaction block, so there
+          is no rollback to save you. The manual states all three properties
+          separately: ignored for querying, still consuming update overhead, and
+          — if the failure was in the second scan — still enforcing uniqueness.
+          The third answer is the comfortable misreading, and it is the reason
+          this leftover gets missed.
+        </p>
+      </div>
+
+      <div class="quiz">
+        <span class="label">Check yourself</span>
+        <p class="quiz-question">
+          What does MySQL 8.0’s atomic DDL guarantee about a five-statement
+          migration?
+        </p>
+        <ul class="quiz-answers">
+          <li>
+            <button class="quiz-answer" type="button">
+              All five statements commit together or none of them do
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button" data-correct>
+              Each single statement survives a crash whole; not the five
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              Any failed statement rolls the four others back with it
+            </button>
+          </li>
+          <li>
+            <button class="quiz-answer" type="button">
+              All five roll back, provided InnoDB is the storage engine
+            </button>
+          </li>
+        </ul>
+        <p class="quiz-explanation">
+          Atomic DDL is crash atomicity per statement — dictionary, engine and
+          binlog land together or not at all. It is not composition, and MySQL’s
+          own Note says so directly: DDL “implicitly end[s] any transaction that
+          is active in the current session”. The InnoDB restriction in the fourth
+          answer is real but irrelevant to this question; it limits which engines
+          get atomic DDL, not what atomic DDL means.
+        </p>
+      </div>
+
+      <h2>The question this leaves open</h2>
+
+      <p>
+        You now know what survives a failure. The much more common problem is a
+        migration that does not fail at all — it simply holds a lock, and the
+        application stops. To predict that, you need to know exactly what
+        “holding a lock” excludes, and PostgreSQL’s answer is unusually crisp.
+        That is <a href="0003-lock-modes.html">lesson 3</a>.
+      </p>
+
+      <footer class="lesson-footer">
+        <div class="primary-source">
+          <span class="label">Read next, from the source</span>
+          <p>
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/sql-createindex.html"
+              >PostgreSQL 16, <code>CREATE INDEX</code> — “Building Indexes
+              Concurrently”</a
+            >
+            — read the whole subsection, not just the paragraph quoted here. It
+            is about two pages, it is the most operationally dense writing in the
+            PostgreSQL manual, and you will come back to it in
+            <a href="0007-concurrent-index-builds.html">lesson 7</a> with the
+            lock vocabulary needed to read the rest of it.
+          </p>
+        </div>
+
+        <p class="ask-teacher">
+          Your agent is your teacher. A good thing to push on here: ask what the
+          <em>application-visible symptom</em> of a leftover invalid unique index
+          would be, and work out how you would tell it apart from a genuine
+          application bug. Reasoning from the mechanism to the symptom is the
+          skill this lesson is really for.
+        </p>
+
+        <div class="aside note">
+          <span class="label">On spacing</span>
+          <p>
+            Lessons 1 and 2 are a pair — the guarantee and its limits. This is a
+            natural place to stop for the day. Before lesson 3, try to state the
+            three-row table above from memory; the middle row is the one worth
+            getting exactly right. The leftovers themselves are lookup
+            material and live in the
+            <a href="../reference/lock-and-rewrite-ledger.html"
+              >lock and rewrite ledger</a
+            >.
+          </p>
+        </div>
+
+        <ul class="lesson-nav">
+          <li>
+            <span class="direction">Previous</span>
+            <a href="0001-ddl-inside-a-transaction.html"
+              >1. DDL inside a transaction</a
+            >
+          </li>
+          <li>
+            <span class="direction">Next</span>
+            <a href="0003-lock-modes.html">3. Lock modes</a>
+          </li>
+        </ul>
+      </footer>
+    </main>
+
+    <script src="../../../assets/quiz.js"></script>
+  </body>
+</html>

@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lock and rewrite ledger — SQL Schema Migrations</title>
+    <link rel="stylesheet" href="../../../assets/lesson.css" />
+    <link rel="stylesheet" href="../../../assets/highlight-theme.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <span class="page-eyebrow">Reference</span>
+        <h1>Lock and rewrite ledger</h1>
+        <p class="page-blurb">
+          What each PostgreSQL 16 operation locks, whether it rewrites, and who
+          therefore waits. The lookup table for “is this migration safe?”
+        </p>
+      </header>
+
+      <p class="lead">
+        Everything here is from the PostgreSQL 16 manual. Where a subform names
+        no lock, the documented answer is <code>ACCESS EXCLUSIVE</code> — the
+        <code>ALTER TABLE</code> Description states the default, so silence is an
+        answer rather than a gap.
+      </p>
+
+      <h2>Conflict matrix — the modes that matter</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>
+            Does the migration’s lock block ordinary traffic? Derived from each
+            mode’s documented conflict set in
+            <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+              >13.3.1</a
+            >.
+          </caption>
+          <thead>
+            <tr>
+              <th>Lock held</th>
+              <th><code>SELECT</code><br /><span class="small-print">ACCESS SHARE</span></th>
+              <th>Writes<br /><span class="small-print">ROW EXCLUSIVE</span></th>
+              <th>Other DDL</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>SHARE UPDATE EXCLUSIVE</code></td>
+              <td>runs</td>
+              <td>runs</td>
+              <td>blocked</td>
+            </tr>
+            <tr>
+              <td><code>SHARE</code></td>
+              <td>runs</td>
+              <td><strong>blocked</strong></td>
+              <td>blocked</td>
+            </tr>
+            <tr>
+              <td><code>SHARE ROW EXCLUSIVE</code></td>
+              <td>runs</td>
+              <td><strong>blocked</strong></td>
+              <td>blocked (self-exclusive)</td>
+            </tr>
+            <tr>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td><strong>blocked</strong></td>
+              <td><strong>blocked</strong></td>
+              <td>blocked</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside insight">
+        <span class="label">The one-line version</span>
+        <p>
+          “Only an <code>ACCESS EXCLUSIVE</code> lock blocks a <code>SELECT</code>
+          (without <code>FOR UPDATE/SHARE</code>) statement.” — 13.3.1, Tip.
+        </p>
+      </div>
+
+      <h2>Operations</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>PostgreSQL 16 operations by lock and by work.</caption>
+          <thead>
+            <tr>
+              <th>Operation</th>
+              <th>Lock</th>
+              <th>Rewrites?</th>
+              <th>Scans?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>ADD COLUMN</code>, no default</td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>ADD COLUMN … DEFAULT &lt;non-volatile&gt;</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>ADD COLUMN … DEFAULT &lt;volatile&gt;</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td><strong>Yes</strong></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>ADD COLUMN</code> identity / generated-stored</td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td colspan="2"><strong>Undocumented in PG 16</strong></td>
+            </tr>
+            <tr>
+              <td><code>DROP COLUMN</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>SET NOT NULL</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>Yes, unless a valid <code>CHECK</code> proves it</td>
+            </tr>
+            <tr>
+              <td><code>DROP NOT NULL</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+            <tr>
+              <td><code>ALTER COLUMN … TYPE</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>Yes, unless binary coercible</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>ADD CHECK</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>ADD CHECK … NOT VALID</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td><strong>No</strong></td>
+            </tr>
+            <tr>
+              <td><code>ADD FOREIGN KEY</code></td>
+              <td>
+                <strong><code>SHARE ROW EXCLUSIVE</code></strong> — both tables
+              </td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>ADD FOREIGN KEY … NOT VALID</code></td>
+              <td><code>SHARE ROW EXCLUSIVE</code> — both tables</td>
+              <td>No</td>
+              <td><strong>No</strong></td>
+            </tr>
+            <tr>
+              <td><code>VALIDATE CONSTRAINT</code></td>
+              <td>
+                <strong><code>SHARE UPDATE EXCLUSIVE</code></strong>
+                (+ <code>ROW SHARE</code> on the referenced table for an FK)
+              </td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>CREATE INDEX</code></td>
+              <td><code>SHARE</code></td>
+              <td>No</td>
+              <td>Yes</td>
+            </tr>
+            <tr>
+              <td><code>CREATE INDEX CONCURRENTLY</code></td>
+              <td><code>SHARE UPDATE EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>Twice</td>
+            </tr>
+            <tr>
+              <td><code>DROP INDEX</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>—</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>DROP INDEX CONCURRENTLY</code></td>
+              <td>waits for conflicting transactions</td>
+              <td>—</td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>RENAME COLUMN</code> / <code>RENAME TO</code></td>
+              <td><code>ACCESS EXCLUSIVE</code></td>
+              <td>No</td>
+              <td>No</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>The three rules that govern the page</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>Quoted from <code>ALTER TABLE</code>, Description and Notes.</caption>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>The sentence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Default lock</td>
+              <td>
+                “An <code>ACCESS EXCLUSIVE</code> lock is acquired unless
+                explicitly noted.”
+              </td>
+            </tr>
+            <tr>
+              <td>Batching cost</td>
+              <td>
+                “When multiple subcommands are given, the lock acquired will be
+                the strictest one required by any subcommand.”
+              </td>
+            </tr>
+            <tr>
+              <td>Batching benefit</td>
+              <td>
+                “multiple table scans or rewrites can thereby be combined into a
+                single pass over the table.”
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Statements that cannot run in a transaction block</h2>
+
+      <p>
+        Each restriction is stated on that statement’s own reference page. A
+        failure here is <em>not</em> rolled back.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Statement</th>
+              <th>Leftover on failure</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>CREATE INDEX CONCURRENTLY</code></td>
+              <td>
+                Invalid index: unused by queries, maintained by every writer,
+                still enforcing uniqueness if unique
+              </td>
+            </tr>
+            <tr>
+              <td><code>DROP INDEX CONCURRENTLY</code></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>REINDEX CONCURRENTLY</code></td>
+              <td>
+                <code>_ccnew</code> if the rebuild failed, <code>_ccold</code> if
+                the old index could not be dropped
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>REINDEX SCHEMA</code> / <code>DATABASE</code> /
+                <code>SYSTEM</code>
+              </td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>CREATE DATABASE</code>, <code>CREATE TABLESPACE</code></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>VACUUM</code>, <code>ALTER SYSTEM</code></td>
+              <td>—</td>
+            </tr>
+            <tr>
+              <td><code>ALTER TABLE … DETACH PARTITION CONCURRENTLY</code></td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside note">
+        <span class="label">No longer on this list</span>
+        <p>
+          <code>ALTER TYPE … ADD VALUE</code>. Relaxed in PostgreSQL 12; since
+          then the restriction is only that “the new value cannot be used until
+          after the transaction has been committed”. Advice predating 12 still
+          circulates widely.
+        </p>
+      </div>
+
+      <h2>Finding an invalid index</h2>
+
+      <div class="code">
+        <div class="code-meta">
+          <span class="code-language">SQL</span>
+          <span class="code-illustrative">Written for this reference</span>
+        </div>
+        <pre><code class="language-sql">-- Every invalid index in the database.
+SELECT c.relname AS index_name, t.relname AS table_name
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+JOIN pg_class t ON t.oid = i.indrelid
+WHERE NOT i.indisvalid;
+
+-- Documented alternative: psql reports it as INVALID.
+--   \d tab   ->   "idx" btree (col) INVALID
+
+-- Documented recovery: drop and retry.
+DROP INDEX CONCURRENTLY idx;</code></pre>
+      </div>
+
+      <p class="small-print">
+        <code>indisvalid</code>: “False means the index is possibly incomplete:
+        it must still be modified by INSERT/UPDATE operations, but it cannot
+        safely be used for queries. If it is unique, the uniqueness property is
+        not guaranteed true either.” —
+        <a class="citation" href="https://www.postgresql.org/docs/16/catalog-pg-index.html"
+          >53.26. <code>pg_index</code></a
+        >
+      </p>
+
+      <h2>Timeouts</h2>
+
+      <div class="table-wrap wrapped">
+        <table>
+          <caption>
+            From
+            <a
+              class="citation"
+              href="https://www.postgresql.org/docs/16/runtime-config-client.html"
+              >20.11.2. Statement Behavior</a
+            >.
+          </caption>
+          <thead>
+            <tr>
+              <th>Setting</th>
+              <th>What it does</th>
+              <th>The catch</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>lock_timeout</code></td>
+              <td>Aborts a statement waiting too long for a lock. Default 0 = off</td>
+              <td>
+                Applies <strong>separately to each lock acquisition
+                attempt</strong>, so a multi-relation statement can wait N ×
+                the value. Must be below any nonzero
+                <code>statement_timeout</code> or it never fires
+              </td>
+            </tr>
+            <tr>
+              <td><code>idle_in_transaction_session_timeout</code></td>
+              <td>Terminates sessions idle inside an open transaction</td>
+              <td>
+                The systemic fix for both the convoy and stalled concurrent index
+                builds — it removes what DDL queues behind
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="aside warning">
+        <span class="label">The convoy — cite MySQL, never PostgreSQL</span>
+        <p>
+          A <em>waiting</em> <code>ACCESS EXCLUSIVE</code> request blocks
+          requests queued behind it, including ones that do not conflict with the
+          lock currently held. <strong>PostgreSQL’s manual never states
+          this.</strong>
+        </p>
+        <p>
+          The citable source is MySQL 8.0
+          <a
+            class="citation"
+            href="https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-performance.html"
+            >17.12.2</a
+          >: “a pending exclusive metadata lock requested by an online DDL
+          operation blocks subsequent transactions on the table” — used by
+          analogy, and labelled as one.
+        </p>
+      </div>
+
+      <p class="small-print">
+        Built from
+        <a class="citation" href="https://www.postgresql.org/docs/16/sql-altertable.html"
+          ><code>ALTER TABLE</code></a
+        >,
+        <a class="citation" href="https://www.postgresql.org/docs/16/sql-createindex.html"
+          ><code>CREATE INDEX</code></a
+        >,
+        <a class="citation" href="https://www.postgresql.org/docs/16/explicit-locking.html"
+          >13.3. Explicit Locking</a
+        >
+        and the pages linked above, all PostgreSQL 16.
+        <a href="../index.html">Back to the topic</a>.
+      </p>
+    </main>
+
+    <script src="../../../assets/highlight.min.js"></script>
+    <script>
+      hljs.highlightAll();
+    </script>
+  </body>
+</html>
